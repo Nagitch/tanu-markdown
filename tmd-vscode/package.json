@@ -1,0 +1,70 @@
+{
+  "name": "tmd-vscode",
+  "displayName": "TMD (Tanu Markdown)",
+  "description": "Edit .tmd polyglot Markdown files with embedded attachments and SQLite.",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onLanguage:markdown",
+    "onCommand:tmd.newDocument",
+    "onCommand:tmd.addAttachment",
+    "onCommand:tmd.insertAttachmentLink",
+    "onCommand:tmd.validate",
+    "onCommand:tmd.exportHtml",
+    "onCommand:tmd.convertToTmdz"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "tmd.newDocument",
+        "title": "TMD: New Document"
+      },
+      {
+        "command": "tmd.addAttachment",
+        "title": "TMD: Add Attachment"
+      },
+      {
+        "command": "tmd.insertAttachmentLink",
+        "title": "TMD: Insert Attachment Link"
+      },
+      {
+        "command": "tmd.validate",
+        "title": "TMD: Validate Document"
+      },
+      {
+        "command": "tmd.exportHtml",
+        "title": "TMD: Export HTML (self-contained)"
+      },
+      {
+        "command": "tmd.convertToTmdz",
+        "title": "TMD: Convert to .tmdz"
+      }
+    ],
+    "languages": [
+      {
+        "id": "tmd",
+        "aliases": [
+          "TMD"
+        ],
+        "extensions": [
+          ".tmd"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ]
+  },
+  "main": "./dist/extension.js",
+  "scripts": {
+    "compile": "tsc -p .",
+    "watch": "tsc -w -p ."
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/vscode": "^1.90.0"
+  }
+}

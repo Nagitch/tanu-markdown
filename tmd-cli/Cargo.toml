@@ -1,0 +1,9 @@
+[package]
+name = "tmd-cli"
+version = "0.0.1"
+edition = "2021"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+tmd-core = { path = "../tmd-core" }
