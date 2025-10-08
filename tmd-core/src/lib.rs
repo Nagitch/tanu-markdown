@@ -307,45 +307,4 @@ impl TmdDoc {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use anyhow::Result;
-    use std::collections::BTreeSet;
-    use std::fs;
-    use std::path::PathBuf;
-
-    fn fixture_path(name: &str) -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../tmd-sample")
-            .join(name)
-    }
-
-    #[test]
-    fn open_sample_document() -> Result<()> {
-        let bytes = fs::read(fixture_path("sample.tmd"))?;
-        let doc = TmdDoc::open_bytes(&bytes)?;
-        assert!(doc.markdown.contains("TMD MVP Sample"));
-        assert_eq!(doc.manifest.title, "TMD MVP Sample");
-        assert!(doc.manifest.attachments.contains_key("images/pixel.png"));
-        assert!(doc.attachments.contains_key("images/pixel.png"));
-        Ok(())
-    }
-
-    #[test]
-    fn round_trip_serialisation() -> Result<()> {
-        let bytes = fs::read(fixture_path("sample.tmd"))?;
-        let doc = TmdDoc::open_bytes(&bytes)?;
-        let rebuilt = TmdDoc::open_bytes(&doc.to_bytes()?)?;
-
-        assert_eq!(doc.markdown, rebuilt.markdown);
-        assert_eq!(doc.manifest, rebuilt.manifest);
-        assert_eq!(doc.attachments, rebuilt.attachments);
-
-        // Ensure deterministic ZIP entry ordering by comparing keys.
-        let original_keys: BTreeSet<_> = doc.attachments.keys().cloned().collect();
-        let rebuilt_keys: BTreeSet<_> = rebuilt.attachments.keys().cloned().collect();
-        assert_eq!(original_keys, rebuilt_keys);
-
-        Ok(())
-    }
-}
+mod tests;
