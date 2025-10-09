@@ -2,9 +2,11 @@ use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
-use std::fmt::Write as FmtWrite;
-use std::io::{Cursor, Read, Write};
 use std::convert::TryFrom;
+use std::fmt::Write as FmtWrite;
+use std::fs::File;
+use std::io::{Cursor, Read, Write};
+use std::path::Path;
 use zip::write::FileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
@@ -55,10 +57,8 @@ fn split_tmd_bytes(bytes: &[u8]) -> anyhow::Result<(&[u8], &[u8])> {
         "EOCD extends past end of buffer"
     );
     let comment_len_start = eocd_offset + 20;
-    let comment_len = u16::from_le_bytes([
-        bytes[comment_len_start],
-        bytes[comment_len_start + 1],
-    ]) as usize;
+    let comment_len =
+        u16::from_le_bytes([bytes[comment_len_start], bytes[comment_len_start + 1]]) as usize;
     let comment_start = eocd_offset + 22;
     anyhow::ensure!(
         comment_start + comment_len <= bytes.len(),
@@ -123,7 +123,8 @@ pub struct AttachmentMeta {
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct Manifest {
     pub version: u32,
-    pub schemaVersion: String,
+    #[serde(rename = "schemaVersion")]
+    pub schema_version: String,
     pub title: String,
     pub attachments: HashMap<String, AttachmentMeta>,
     pub data: DataSection,
@@ -142,9 +143,23 @@ pub struct TmdDoc {
     pub attachments: HashMap<String, Vec<u8>>,
 }
 
+struct SerializationPlan {
+    markdown_len: u64,
+    manifest_json: Vec<u8>,
+    attachment_paths: Vec<String>,
+}
+
 impl TmdDoc {
-    pub fn from_parts(markdown: String, manifest: Manifest, attachments: HashMap<String, Vec<u8>>) -> Self {
-        Self { markdown, manifest, attachments }
+    pub fn from_parts(
+        markdown: String,
+        manifest: Manifest,
+        attachments: HashMap<String, Vec<u8>>,
+    ) -> Self {
+        Self {
+            markdown,
+            manifest,
+            attachments,
+        }
     }
 
     pub fn open_bytes(bytes: &[u8]) -> anyhow::Result<Self> {
@@ -165,8 +180,8 @@ impl TmdDoc {
             buf
         };
 
-        let manifest: Manifest = serde_json::from_str(&manifest_json)
-            .context("failed to deserialize manifest.json")?;
+        let manifest: Manifest =
+            serde_json::from_str(&manifest_json).context("failed to deserialize manifest.json")?;
 
         let mut attachments = HashMap::new();
         let mut seen = HashSet::new();
@@ -215,10 +230,14 @@ impl TmdDoc {
             );
         }
 
-        Ok(Self { markdown, manifest, attachments })
+        Ok(Self {
+            markdown,
+            manifest,
+            attachments,
+        })
     }
 
-    pub fn to_bytes(&self) -> anyhow::Result<Vec<u8>> {
+    fn build_serialization_plan(&self) -> anyhow::Result<SerializationPlan> {
         let markdown_bytes = self.markdown.as_bytes();
         let markdown_len = u64::try_from(markdown_bytes.len())
             .map_err(|_| anyhow::anyhow!("markdown length exceeds u64 range"))?;
@@ -261,9 +280,20 @@ impl TmdDoc {
             );
         }
 
+        let mut attachment_paths: Vec<_> = manifest_keys.into_iter().collect();
+        attachment_paths.sort();
+
         let manifest_json = serde_json::to_vec_pretty(&self.manifest)
             .context("failed to serialise manifest.json")?;
 
+        Ok(SerializationPlan {
+            markdown_len,
+            manifest_json,
+            attachment_paths,
+        })
+    }
+
+    fn build_zip_archive(&self, plan: &SerializationPlan) -> anyhow::Result<Vec<u8>> {
         let cursor = Cursor::new(Vec::new());
         let mut writer = ZipWriter::new(cursor);
         let file_options = FileOptions::default()
@@ -274,18 +304,16 @@ impl TmdDoc {
             .start_file("manifest.json", file_options)
             .context("failed to start manifest.json entry")?;
         writer
-            .write_all(&manifest_json)
+            .write_all(&plan.manifest_json)
             .context("failed to write manifest.json")?;
 
-        let mut attachment_paths: Vec<_> = manifest_keys.into_iter().collect();
-        attachment_paths.sort();
-        for path in attachment_paths {
+        for path in &plan.attachment_paths {
             let data = self
                 .attachments
-                .get(&path)
+                .get(path)
                 .expect("attachment paths already validated");
             writer
-                .start_file(&path, file_options)
+                .start_file(path, file_options)
                 .with_context(|| format!("failed to start ZIP entry `{}`", path))?;
             writer
                 .write_all(data)
@@ -297,12 +325,43 @@ impl TmdDoc {
             .context("failed to finalise ZIP archive")?
             .into_inner();
 
-        set_tmd_comment(&mut zip_bytes, markdown_len)?;
+        set_tmd_comment(&mut zip_bytes, plan.markdown_len)?;
+
+        Ok(zip_bytes)
+    }
+
+    /// Serialise the document into a `.tmd` byte vector.
+    pub fn to_bytes(&self) -> anyhow::Result<Vec<u8>> {
+        let plan = self.build_serialization_plan()?;
+        let markdown_bytes = self.markdown.as_bytes();
+        let mut zip_bytes = self.build_zip_archive(&plan)?;
 
         let mut out = Vec::with_capacity(markdown_bytes.len() + zip_bytes.len());
         out.extend_from_slice(markdown_bytes);
-        out.extend_from_slice(&zip_bytes);
+        out.append(&mut zip_bytes);
         Ok(out)
+    }
+
+    /// Write the document to any implementor of [`Write`].
+    pub fn write_to<W: Write>(&self, mut writer: W) -> anyhow::Result<()> {
+        let plan = self.build_serialization_plan()?;
+        let zip_bytes = self.build_zip_archive(&plan)?;
+
+        writer
+            .write_all(self.markdown.as_bytes())
+            .context("failed to write markdown section")?;
+        writer
+            .write_all(&zip_bytes)
+            .context("failed to write ZIP section")?;
+        Ok(())
+    }
+
+    /// Write the document directly to a file on disk.
+    pub fn write_to_path<P: AsRef<Path>>(&self, path: P) -> anyhow::Result<()> {
+        let path_ref = path.as_ref();
+        let mut file = File::create(path_ref)
+            .with_context(|| format!("failed to create `{}`", path_ref.display()))?;
+        self.write_to(&mut file)
     }
 }
 
@@ -346,6 +405,19 @@ mod tests {
         let rebuilt_keys: BTreeSet<_> = rebuilt.attachments.keys().cloned().collect();
         assert_eq!(original_keys, rebuilt_keys);
 
+        Ok(())
+    }
+
+    #[test]
+    fn write_to_vec_matches_to_bytes() -> Result<()> {
+        let bytes = fs::read(fixture_path("sample.tmd"))?;
+        let doc = TmdDoc::open_bytes(&bytes)?;
+
+        let expected = doc.to_bytes()?;
+        let mut buffer = Vec::new();
+        doc.write_to(&mut buffer)?;
+
+        assert_eq!(expected, buffer);
         Ok(())
     }
 }
