@@ -1,5 +1,7 @@
 # 🦝 Tanu Markdown (TMD)
 
+**this is very AI generated bare scaffolding. make sure this is not guaranteed to work normally.**
+
 **Tanu Markdown (TMD)** is a *self-contained Markdown format* that lets you embed **images, databases, and binary data** directly into Markdown.
 
 Each `.tmd` file combines **Markdown text + embedded assets + metadata (manifest)** into a single portable document.
