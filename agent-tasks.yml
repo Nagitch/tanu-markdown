@@ -1,0 +1,225 @@
+# agent-tasks.yml
+# Tanu Markdown (TMD) — Agent/CI task definitions
+# 目的:
+# - ドキュメント同期（README多言語）
+# - 形式検証（.tmd/.tmdz）
+# - ビルド（Rust/VSCode）
+# - 仕様生成（docs/）
+# - プレビュー生成（self-contained HTML）
+# - リリース準備（バージョン/CHANGELOG）
+#
+# このYAMLは「エージェントが何をすべきか」を人間にも機械にも伝えるためのメタ仕様です。
+# GitHub Actions等と併用する場合は、各タスクのcommandsをワークフローファイルに移植してください。
+
+version: 1
+
+meta:
+  project: "Tanu Markdown (TMD)"
+  owners:
+    - "@your-org/tmd-maintainers"
+  entrypoints:
+    - tmd-core/
+    - tmd-cli/
+    - tmd-vscode/
+  docs:
+    - README.md
+    - README_EN.md
+    - AGENT.md
+  conventions:
+    commit_message_prefixes:
+      - "[tmd-core]"
+      - "[tmd-cli]"
+      - "[tmd-vscode]"
+      - "[docs]"
+    versioning: "semver"
+    schemaVersion_in_tmd: "YYYY.MM"
+
+tasks:
+
+  # 1) README 多言語同期
+  sync_readmes:
+    description: "README.md (JA) と README_EN.md (EN) の内容差分を検出して自動同期用のPRを作る。"
+    triggers:
+      - on_pull_request
+      - manual
+    inputs:
+      primary: "README.md"
+      secondary: "README_EN.md"
+    policy:
+      direction: "bidirectional"   # JA→EN / EN→JA どちらも可
+      translation_style: "concise_technical"
+      keep_tables_layout: true
+      preserve_code_blocks: true
+    commands:
+      - name: "diff"
+        run: |
+          # ここでは方針のみ記載。実装はbotやスクリプトに合わせて下さい。
+          echo "Compute semantic diff between README.md and README_EN.md"
+      - name: "propose_patch"
+        run: |
+          echo "Propose patch files under .agent/patches/*"
+    success_criteria:
+      - ".agent/patches/ へ差分パッチが生成される"
+      - "PR Description に差分サマリが含まれる"
+
+  # 2) .tmd / .tmdz の形式検証
+  validate_tmd:
+    description: "サンプルおよび変更対象の .tmd/.tmdz を検証（EOCD, コメント署名, manifest, ハッシュ, attach: 解決）。"
+    triggers:
+      - on_pull_request
+      - pre_release
+      - manual
+    inputs:
+      glob:
+        - "tmd-sample/**/*.tmd"
+        - "tmd-sample/**/*.tmdz"
+        - "**/*.tmd"
+        - "**/*.tmdz"
+    rules:
+      eocd_signature: "TMD1"
+      require_comment_len_field: true      # EOCDコメントに md_len_le64
+      manifest_present: true
+      hash_verify: true
+      attach_resolve: true
+    commands:
+      - name: "run-validator"
+        run: |
+          # 実装が整ったら tmd-cli を使用
+          # cargo run -p tmd-cli -- validate <file>
+          echo "Validate TMD files (stub)"
+    success_criteria:
+      - "全ファイルでエラーなし"
+    artifacts:
+      - ".agent/reports/validate_tmd.json"
+
+  # 3) Rust ビルド & テスト
+  build_rust:
+    description: "tmd-core / tmd-cli のビルドとテスト。"
+    triggers:
+      - on_pull_request
+      - nightly
+      - manual
+    env:
+      toolchain: "stable"
+    commands:
+      - name: "fmt"
+        run: |
+          cargo fmt --all -- --check
+      - name: "clippy"
+        run: |
+          cargo clippy --all-targets -- -D warnings
+      - name: "test"
+        run: |
+          cargo test --workspace --all-features --no-fail-fast
+    success_criteria:
+      - "フォーマット・Lint・テストが全て成功"
+
+  # 4) VSCode 拡張のビルド
+  build_vscode:
+    description: "tmd-vscode を TypeScript でビルドし、型エラーを検出。"
+    triggers:
+      - on_pull_request
+      - nightly
+      - manual
+    working_directory: "tmd-vscode"
+    commands:
+      - name: "install"
+        run: |
+          npm ci
+      - name: "compile"
+        run: |
+          npm run compile
+    success_criteria:
+      - "dist/extension.js が生成される"
+    artifacts:
+      - "tmd-vscode/dist/**"
+
+  # 5) self-contained HTML のプレビュー生成
+  export_html_preview:
+    description: ".tmd から self-contained HTML を生成してPRに添付（将来：PDFも）。"
+    triggers:
+      - on_pull_request
+      - manual
+    inputs:
+      glob:
+        - "tmd-sample/**/*.tmd"
+    commands:
+      - name: "export"
+        run: |
+          # 実装後は tmd-cli を使用
+          # cargo run -p tmd-cli -- export-html sample.tmd out.html --self-contained
+          echo "Export HTML (stub)"
+          mkdir -p .agent/preview && echo "<html><body>TMD preview stub</body></html>" > .agent/preview/sample.html
+    success_criteria:
+      - ".agent/preview/*.html が生成される"
+    artifacts:
+      - ".agent/preview/*"
+
+  # 6) 仕様生成（docs/）
+  generate_spec:
+    description: "docs/spec_tmd_v1.md を自動生成/更新（manifestスキーマや参照ルール、EOCD仕様を反映）。"
+    triggers:
+      - manual
+      - pre_release
+    inputs:
+      schema_sources:
+        - "tmd-core/src/lib.rs"
+        - "AGENT.md"
+        - "README.md"
+        - "README_EN.md"
+    commands:
+      - name: "synthesize_spec"
+        run: |
+          mkdir -p docs
+          echo "# TMD v1 Specification (Draft)" > docs/spec_tmd_v1.md
+          echo "" >> docs/spec_tmd_v1.md
+          echo "This file is auto-generated (draft)." >> docs/spec_tmd_v1.md
+    success_criteria:
+      - "docs/spec_tmd_v1.md が更新される"
+    artifacts:
+      - "docs/spec_tmd_v1.md"
+
+  # 7) バージョンバンプ & リリース準備
+  pre_release:
+    description: "CHANGELOG 集約、Cargo.toml/npm version bump、タグ提案まで。"
+    triggers:
+      - manual
+    inputs:
+      next_version: "auto"   # or x.y.z
+    commands:
+      - name: "changelog"
+        run: |
+          mkdir -p .agent/release
+          echo "## Changes" > .agent/release/CHANGELOG_FRAGMENT.md
+          echo "- Summarize from recent PRs" >> .agent/release/CHANGELOG_FRAGMENT.md
+      - name: "version_bump"
+        run: |
+          echo "Update versions in Cargo.toml and package.json (stub)"
+      - name: "tag_proposal"
+        run: |
+          echo "v0.1.0" > .agent/release/TAG
+    success_criteria:
+      - ".agent/release/CHANGELOG_FRAGMENT.md 生成"
+      - ".agent/release/TAG 生成"
+    artifacts:
+      - ".agent/release/**"
+
+permissions:
+  repo_write: false         # デフォルトはfalse。Bot運用時に必要なタスクのみ true に。
+  open_pr: true
+  leave_comments: true
+  upload_artifacts: true
+
+notifications:
+  on_success:
+    - "post_comment:PR: ✅ all checks passed for {commit}"
+  on_failure:
+    - "post_comment:PR: ❌ some checks failed — see .agent/reports/"
+  channels:
+    - "github_pr_comments"
+    # - "slack:webhook_url_name"
+
+# 補足:
+# - ここに書いた commands は方針です。CI（GitHub Actions等）で使う場合は
+#   .github/workflows/ 内でジョブ化し、実コマンド（cargo run -p tmd-cli など）を実装してください。
+# - artifacts/ や .agent/ 配下は、PRにプレビューを付けるための添付用ディレクトリとして使います。
