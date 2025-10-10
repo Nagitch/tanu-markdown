@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
 use std::fmt::Write as FmtWrite;
 use std::fs::File;
-use std::io::{Cursor, Read, Write};
+use std::io::{Cursor, Read, Seek, Write};
 use std::path::Path;
 use zip::write::FileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
@@ -113,6 +113,88 @@ fn set_tmd_comment(zip_bytes: &mut Vec<u8>, markdown_len: u64) -> anyhow::Result
     Ok(())
 }
 
+fn read_manifest_from_zip<R: Read + Seek>(zip: &mut ZipArchive<R>) -> anyhow::Result<Manifest> {
+    let manifest_json = {
+        let mut file = zip
+            .by_name("manifest.json")
+            .context("manifest.json not found in TMD archive")?;
+        let mut buf = String::new();
+        file.read_to_string(&mut buf)
+            .context("failed to read manifest.json")?;
+        buf
+    };
+
+    serde_json::from_str(&manifest_json).context("failed to deserialize manifest.json")
+}
+
+fn read_markdown_from_zip<R: Read + Seek>(
+    zip: &mut ZipArchive<R>,
+    path: &str,
+) -> anyhow::Result<String> {
+    let mut file = zip
+        .by_name(path)
+        .with_context(|| format!("{} not found in TMD archive", path))?;
+    let mut markdown = String::new();
+    file.read_to_string(&mut markdown)
+        .with_context(|| format!("failed to read {}", path))?;
+    Ok(markdown)
+}
+
+fn read_attachments_from_zip<R: Read + Seek>(
+    zip: &mut ZipArchive<R>,
+    manifest: &Manifest,
+) -> anyhow::Result<HashMap<String, Vec<u8>>> {
+    let mut attachments = HashMap::new();
+
+    for (path, meta) in &manifest.attachments {
+        let mut file = zip
+            .by_name(path)
+            .with_context(|| format!("attachment `{}` not found in archive", path))?;
+        let mut data = Vec::new();
+        file.read_to_end(&mut data)
+            .with_context(|| format!("failed to read attachment `{}`", path))?;
+        anyhow::ensure!(
+            data.len() as u64 == meta.size,
+            "attachment `{}` size mismatch: manifest={} actual={}",
+            path,
+            meta.size,
+            data.len()
+        );
+        let digest_hex = sha256_hex(&data);
+        anyhow::ensure!(
+            digest_hex.eq_ignore_ascii_case(&meta.sha256),
+            "attachment `{}` sha256 mismatch: manifest={} actual={}",
+            path,
+            meta.sha256,
+            digest_hex
+        );
+        attachments.insert(path.clone(), data);
+    }
+
+    Ok(attachments)
+}
+
+fn ensure_only_known_entries<R: Read + Seek>(
+    zip: &mut ZipArchive<R>,
+    allowed: &HashSet<String>,
+) -> anyhow::Result<()> {
+    for idx in 0..zip.len() {
+        let file = zip
+            .by_index(idx)
+            .with_context(|| format!("failed to inspect ZIP entry at index {}", idx))?;
+        if file.is_dir() {
+            continue;
+        }
+        let name = file.name();
+        anyhow::ensure!(
+            allowed.contains(name),
+            "ZIP archive contains undeclared entry `{}`",
+            name
+        );
+    }
+    Ok(())
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct AttachmentMeta {
     pub mime: String,
@@ -170,65 +252,35 @@ impl TmdDoc {
         let mut zip = ZipArchive::new(Cursor::new(zip_bytes))
             .context("failed to open embedded ZIP archive")?;
 
-        let manifest_json = {
-            let mut file = zip
-                .by_name("manifest.json")
-                .context("manifest.json not found in TMD archive")?;
-            let mut buf = String::new();
-            file.read_to_string(&mut buf)
-                .context("failed to read manifest.json")?;
-            buf
-        };
+        let manifest = read_manifest_from_zip(&mut zip)?;
+        let attachments = read_attachments_from_zip(&mut zip, &manifest)?;
 
-        let manifest: Manifest =
-            serde_json::from_str(&manifest_json).context("failed to deserialize manifest.json")?;
+        let mut allowed = HashSet::new();
+        allowed.insert(String::from("manifest.json"));
+        allowed.extend(manifest.attachments.keys().cloned());
+        ensure_only_known_entries(&mut zip, &allowed)?;
 
-        let mut attachments = HashMap::new();
-        let mut seen = HashSet::new();
+        Ok(Self {
+            markdown,
+            manifest,
+            attachments,
+        })
+    }
 
-        for (path, meta) in &manifest.attachments {
-            let mut file = zip
-                .by_name(path)
-                .with_context(|| format!("attachment `{}` not found in archive", path))?;
-            let mut data = Vec::new();
-            file.read_to_end(&mut data)
-                .with_context(|| format!("failed to read attachment `{}`", path))?;
-            anyhow::ensure!(
-                data.len() as u64 == meta.size,
-                "attachment `{}` size mismatch: manifest={} actual={}",
-                path,
-                meta.size,
-                data.len()
-            );
-            let digest_hex = sha256_hex(&data);
-            anyhow::ensure!(
-                digest_hex.eq_ignore_ascii_case(&meta.sha256),
-                "attachment `{}` sha256 mismatch: manifest={} actual={}",
-                path,
-                meta.sha256,
-                digest_hex
-            );
-            attachments.insert(path.clone(), data);
-            seen.insert(path.clone());
-        }
+    /// Open a `.tmdz` archive, validating attachment sizes and hashes.
+    pub fn from_tmdz_bytes(bytes: &[u8]) -> anyhow::Result<Self> {
+        let mut zip =
+            ZipArchive::new(Cursor::new(bytes)).context("failed to open `.tmdz` ZIP archive")?;
 
-        for idx in 0..zip.len() {
-            let file = zip
-                .by_index(idx)
-                .with_context(|| format!("failed to inspect ZIP entry at index {}", idx))?;
-            if file.is_dir() {
-                continue;
-            }
-            let name = file.name().to_string();
-            if name == "manifest.json" {
-                continue;
-            }
-            anyhow::ensure!(
-                seen.contains(&name),
-                "ZIP archive contains undeclared entry `{}`",
-                name
-            );
-        }
+        let markdown = read_markdown_from_zip(&mut zip, "index.md")?;
+        let manifest = read_manifest_from_zip(&mut zip)?;
+        let attachments = read_attachments_from_zip(&mut zip, &manifest)?;
+
+        let mut allowed = HashSet::new();
+        allowed.insert(String::from("manifest.json"));
+        allowed.insert(String::from("index.md"));
+        allowed.extend(manifest.attachments.keys().cloned());
+        ensure_only_known_entries(&mut zip, &allowed)?;
 
         Ok(Self {
             markdown,
@@ -369,7 +421,7 @@ impl TmdDoc {
 mod tests {
     use super::*;
     use anyhow::Result;
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeSet, HashMap};
     use std::fs;
     use std::path::PathBuf;
 
@@ -377,6 +429,17 @@ mod tests {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../tmd-sample")
             .join(name)
+    }
+
+    #[test]
+    fn open_sample_tmdz_document() -> Result<()> {
+        let bytes = fs::read(fixture_path("sample.tmdz"))?;
+        let doc = TmdDoc::from_tmdz_bytes(&bytes)?;
+        assert!(doc.markdown.contains("TMD MVP Sample"));
+        assert_eq!(doc.manifest.title, "TMD MVP Sample");
+        assert!(doc.manifest.attachments.contains_key("images/pixel.png"));
+        assert!(doc.attachments.contains_key("images/pixel.png"));
+        Ok(())
     }
 
     #[test]
@@ -419,5 +482,66 @@ mod tests {
 
         assert_eq!(expected, buffer);
         Ok(())
+    }
+
+    #[test]
+    fn tmdz_validation_rejects_truncated_attachment() {
+        use zip::write::FileOptions;
+        use zip::CompressionMethod;
+
+        let mut attachments = HashMap::new();
+        attachments.insert(
+            "assets/blob.bin".to_string(),
+            AttachmentMeta {
+                mime: "application/octet-stream".to_string(),
+                sha256: sha256_hex(&[0u8; 4]),
+                size: 4,
+            },
+        );
+
+        let manifest = Manifest {
+            version: 1,
+            schema_version: "2025.10".to_string(),
+            title: "Truncated Attachment".to_string(),
+            attachments,
+            data: DataSection {
+                engine: "blob".to_string(),
+                entry: "assets/blob.bin".to_string(),
+            },
+        };
+
+        let manifest_json = serde_json::to_vec(&manifest).expect("manifest serialises");
+
+        let cursor = Cursor::new(Vec::new());
+        let mut writer = ZipWriter::new(cursor);
+        let options = FileOptions::default()
+            .compression_method(CompressionMethod::Stored)
+            .large_file(true);
+
+        writer
+            .start_file("manifest.json", options)
+            .expect("manifest entry");
+        writer.write_all(&manifest_json).expect("write manifest");
+        writer
+            .start_file("index.md", options)
+            .expect("markdown entry");
+        writer.write_all(b"# Broken\n").expect("write markdown");
+        writer
+            .start_file("assets/blob.bin", options)
+            .expect("attachment entry");
+        writer
+            .write_all(&[0u8; 2])
+            .expect("write truncated attachment");
+
+        let bytes = writer.finish().expect("finish archive").into_inner();
+
+        let err =
+            TmdDoc::from_tmdz_bytes(&bytes).expect_err("truncated attachment should be rejected");
+        let message = err.to_string();
+        assert!(
+            message.contains("size mismatch"),
+            "unexpected error: {}",
+            message
+        );
     }
 }
