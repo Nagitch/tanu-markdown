@@ -14,3 +14,4 @@ base64 = "0.21"
 html-escape = "0.2"
 rusqlite = { version = "0.31", features = ["bundled"] }
 tempfile = "3"
+sha2 = "0.10"

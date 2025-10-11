@@ -1,6 +1,6 @@
 //! Tanu Markdown CLI entrypoint.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::fs::File;
 use std::io::{Read, Write};
@@ -13,6 +13,7 @@ use clap::{Parser, Subcommand};
 use html_escape::encode_text;
 use pulldown_cmark::{html, Options, Parser as MdParser};
 use rusqlite::{types::Value as SqlValue, Connection, OpenFlags};
+use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
 use tmd_core::{Manifest, TmdDoc};
 use zip::write::FileOptions;
@@ -332,17 +333,66 @@ fn load_from_tmdz(path: &Path) -> Result<TmdDoc> {
     };
 
     let mut attachments = HashMap::new();
-    for path_entry in manifest.attachments.keys() {
+    let mut seen = HashSet::new();
+    for (path_entry, meta) in &manifest.attachments {
         let mut file = archive
             .by_name(path_entry)
             .with_context(|| format!("attachment `{}` missing from archive", path_entry))?;
         let mut data = Vec::new();
         file.read_to_end(&mut data)
             .with_context(|| format!("failed to read attachment `{}`", path_entry))?;
+
+        anyhow::ensure!(
+            data.len() as u64 == meta.size,
+            "attachment `{}` size mismatch: manifest={} actual={}",
+            path_entry,
+            meta.size,
+            data.len()
+        );
+
+        let digest_hex = sha256_hex(&data);
+        anyhow::ensure!(
+            digest_hex.eq_ignore_ascii_case(&meta.sha256),
+            "attachment `{}` sha256 mismatch: manifest={} actual={}",
+            path_entry,
+            meta.sha256,
+            digest_hex
+        );
+
         attachments.insert(path_entry.clone(), data);
+        seen.insert(path_entry.clone());
+    }
+
+    for idx in 0..archive.len() {
+        let file = archive
+            .by_index(idx)
+            .with_context(|| format!("failed to inspect ZIP entry at index {}", idx))?;
+        if file.is_dir() {
+            continue;
+        }
+        let name = file.name();
+        if name == "index.md" || name == "manifest.json" {
+            continue;
+        }
+        anyhow::ensure!(
+            seen.contains(name),
+            "ZIP archive contains undeclared entry `{}`",
+            name
+        );
     }
 
     Ok(TmdDoc::from_parts(markdown, manifest, attachments))
+}
+
+fn sha256_hex(data: &[u8]) -> String {
+    let digest = Sha256::digest(data);
+    let mut out = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        use std::fmt::Write as _;
+        // Writing to `String` cannot fail.
+        let _ = write!(&mut out, "{:02x}", byte);
+    }
+    out
 }
 
 fn write_directory(doc: &TmdDoc, output: &Path) -> Result<()> {
