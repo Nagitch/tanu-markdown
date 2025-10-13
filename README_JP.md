@@ -19,6 +19,25 @@ TMD は `.tmd` 拡張子を持ち、1 つのファイルに **Markdown本文 + �
 
 ---
 
+## 🛠 開発環境
+
+### Docker でまとめて構築する
+
+リポジトリには開発用の Docker イメージが含まれています。以下のコマンドでビルドし、対話的なシェルを起動できます。
+
+```bash
+docker compose build
+docker compose run --rm dev bash
+```
+
+Rust / Cargo / Node.js / TypeScript など必要なツールが揃っており、ワークスペースはホストとマウントされます。
+
+### VS Code Dev Container
+
+VS Code の **Dev Containers** 拡張機能を利用すると、同じイメージを使ってフォルダーを直接コンテナー内で開けます。`.devcontainer` の設定により `rustfmt` / `clippy` のインストールと、VSCode 拡張向けの `npm install` が自動で実行されます。
+
+---
+
 ## 🧩 ファイル形式概要
 
 ### `.tmd` — Polyglot 形式 (Markdown + ZIP)

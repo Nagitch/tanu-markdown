@@ -1,0 +1,34 @@
+{
+  "name": "Tanu Markdown",
+  "build": {
+    "dockerfile": "../Dockerfile",
+    "context": ".."
+  },
+  "remoteUser": "vscode",
+  "workspaceFolder": "/workspace/tanu-markdown",
+  "features": {},
+  "mounts": [
+    "source=${localWorkspaceFolder},target=/workspace/tanu-markdown,type=bind,consistency=cached"
+  ],
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "serayuzgur.crates",
+        "tamasfe.even-better-toml",
+        "esbenp.prettier-vscode",
+        "dbaeumer.vscode-eslint"
+      ],
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "bash",
+        "rust-analyzer.cargo.features": "all",
+        "editor.formatOnSave": true
+      }
+    }
+  },
+  "postCreateCommand": "cargo --version && npm --version && rustup component add rustfmt clippy && cd tmd-vscode && npm install",
+  "containerEnv": {
+    "CARGO_HOME": "/usr/local/cargo",
+    "RUSTUP_HOME": "/usr/local/rustup"
+  }
+}
