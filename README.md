@@ -19,6 +19,25 @@ Each `.tmd` file combines **Markdown text + embedded assets + metadata (manifest
 
 ---
 
+## 🛠 Development Environment
+
+### Run everything in Docker
+
+The repository ships with a ready-to-use development image. Build it once and start an interactive shell:
+
+```bash
+docker compose build
+docker compose run --rm dev bash
+```
+
+Rust, Cargo, Node.js and the TypeScript toolchain are available in the container. Workspace volumes are mounted so edits on the host are reflected instantly.
+
+### VS Code Dev Container
+
+When using VS Code, install the **Dev Containers** extension and choose **“Open Folder in Container…”**. The `.devcontainer` configuration provisions the same image, installs `rustfmt`/`clippy`, and runs `npm install` for the VSCode extension automatically.
+
+---
+
 ## 🧩 File Format Overview
 
 ### `.tmd` — Polyglot Format (Markdown + ZIP)

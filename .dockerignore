@@ -1,0 +1,8 @@
+# Ignore build outputs and editor settings when building the dev image.
+**/target
+**/node_modules
+.git
+.gitignore
+.vscode
+.idea
+.DS_Store

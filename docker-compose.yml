@@ -1,0 +1,20 @@
+version: "3.8"
+
+services:
+  dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - .:/workspace/tanu-markdown:cached
+      - cargo-cache:/usr/local/cargo
+      - rustup-cache:/usr/local/rustup
+    working_dir: /workspace/tanu-markdown
+    user: "vscode"
+    tty: true
+    init: true
+    command: ["sleep", "infinity"]
+
+volumes:
+  cargo-cache:
+  rustup-cache:
