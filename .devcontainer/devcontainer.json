@@ -6,7 +6,11 @@
   },
   "remoteUser": "vscode",
   "workspaceFolder": "/workspace/tanu-markdown",
-  "features": {},
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "22"
+    }
+  },
   "mounts": [
     "source=${localWorkspaceFolder},target=/workspace/tanu-markdown,type=bind,consistency=cached"
   ],

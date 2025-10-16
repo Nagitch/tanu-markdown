@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.5
-FROM mcr.microsoft.com/devcontainers/rust-node:1-22-bullseye
+FROM mcr.microsoft.com/devcontainers/rust:1-bookworm
 
 # Install additional build tooling and libraries used across the workspace.
 RUN apt-get update \
@@ -17,6 +17,13 @@ RUN mkdir -p /workspace /workspaces /usr/local/cargo/registry /usr/local/cargo/g
 
 # Set default working directory used by docker-compose and devcontainers.
 WORKDIR /workspace
+
+# Install additional components.
+USER root
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential pkg-config libssl-dev git ca-certificates curl \
+ && rm -rf /var/lib/apt/lists/*
 
 # Use the non-root "vscode" user that ships with the base image for day-to-day work.
 USER vscode
