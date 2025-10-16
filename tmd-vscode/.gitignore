@@ -1,0 +1,29 @@
+# Node.js dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Package managers
+package-lock.json
+yarn.lock
+
+# Build outputs
+out/
+dist/
+
+# VS Code extension package
+*.vsix
+
+# TypeScript
+*.tsbuildinfo
+
+# Test coverage
+coverage/
+
+# Logs
+*.log
+
+# VS Code specific
+.vscode/settings.json
+.vscode/launch.json

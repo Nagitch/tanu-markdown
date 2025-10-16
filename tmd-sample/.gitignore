@@ -1,0 +1,11 @@
+# Sample-specific temporary files
+*.tmp
+*.backup
+
+# Generated test files
+test_output/
+generated/
+
+# Sample data that shouldn't be tracked
+*.large
+*.test
