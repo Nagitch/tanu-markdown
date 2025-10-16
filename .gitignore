@@ -1,2 +1,22 @@
+# OS generated files
 .DS_Store
-thumbs.db
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE files (global)
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment variables
+.env
+.env.local
+
+# Project specific temporary files
+*.tmdz.tmp
+*.tmd.backup

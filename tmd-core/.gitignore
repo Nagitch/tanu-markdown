@@ -1,0 +1,13 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+*.pdb
+
+# Cargo.lock for library crates (keep for binaries)
+Cargo.lock
+
+# Test artifacts
+*.profraw
+
+# Documentation build
+/doc/

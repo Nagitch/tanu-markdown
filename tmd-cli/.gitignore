@@ -1,0 +1,14 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+*.pdb
+
+# Keep Cargo.lock for binary crates
+# Cargo.lock
+
+# Test artifacts
+*.profraw
+
+# CLI specific
+/debug/
+/release/
