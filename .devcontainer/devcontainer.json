@@ -28,7 +28,7 @@
   },
   "postCreateCommand": "cargo --version && npm --version && rustup component add rustfmt clippy && cd tmd-vscode && npm install",
   "containerEnv": {
-    "CARGO_HOME": "/usr/local/cargo",
-    "RUSTUP_HOME": "/usr/local/rustup"
+    "CARGO_HOME": "/home/vscode/.cargo",
+    "RUSTUP_HOME": "/home/vscode/.rustup"
   }
 }
