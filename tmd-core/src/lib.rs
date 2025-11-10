@@ -628,12 +628,14 @@ mod db {
     }
 
     pub fn reset_db(doc: &mut TmdDoc, schema_sql: &str, version: u32) -> TmdResult<()> {
-        let _ = doc.db.with_conn_mut(|conn| -> rusqlite::Result<()> {
-            conn.execute_batch("VACUUM;")?;
-            conn.execute_batch(schema_sql)?;
-            conn.pragma_update(None, "user_version", version as i64)?;
-            Ok(())
-        })?;
+        doc.db
+            .with_conn_mut(|conn| -> rusqlite::Result<()> {
+                conn.execute_batch("VACUUM;")?;
+                conn.execute_batch(schema_sql)?;
+                conn.pragma_update(None, "user_version", version as i64)?;
+                Ok(())
+            })?
+            .map_err(TmdError::from)?;
         Ok(())
     }
 
@@ -648,11 +650,13 @@ mod db {
                 from, current
             )));
         }
-        let _ = doc.db.with_conn_mut(|conn| -> rusqlite::Result<()> {
-            conn.execute_batch(up_sql)?;
-            conn.pragma_update(None, "user_version", to as i64)?;
-            Ok(())
-        })?;
+        doc.db
+            .with_conn_mut(|conn| -> rusqlite::Result<()> {
+                conn.execute_batch(up_sql)?;
+                conn.pragma_update(None, "user_version", to as i64)?;
+                Ok(())
+            })?
+            .map_err(TmdError::from)?;
         Ok(())
     }
 }
@@ -1259,6 +1263,51 @@ mod tests {
             })
             .expect("user_version");
         assert_eq!(version, 2);
+    }
+
+    #[test]
+    fn reset_db_propagates_sql_errors() {
+        let mut doc = sample_doc();
+        let err = reset_db(&mut doc, "CREATE TABLE ???", 1).expect_err("reset should fail");
+        match err {
+            TmdError::Db(message) => assert!(
+                message.contains("near") || message.contains("syntax"),
+                "unexpected error message: {}",
+                message
+            ),
+            other => panic!("expected database error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn migrate_propagates_sql_errors() {
+        let mut doc = sample_doc();
+        reset_db(&mut doc, "CREATE TABLE base(id INTEGER PRIMARY KEY);", 1).expect("reset");
+
+        let err = migrate(
+            &mut doc,
+            "ALTER TABLE missing ADD COLUMN value INTEGER;",
+            1,
+            2,
+        )
+        .expect_err("migrate should fail");
+
+        match err {
+            TmdError::Db(message) => assert!(
+                message.contains("no such table") || message.contains("missing"),
+                "unexpected error message: {}",
+                message
+            ),
+            other => panic!("expected database error, got {:?}", other),
+        }
+
+        let version: u32 = doc
+            .db_with_conn(|conn| {
+                conn.query_row("PRAGMA user_version", [], |row| row.get(0))
+                    .unwrap()
+            })
+            .expect("user_version");
+        assert_eq!(version, 1);
     }
 
     #[test]
