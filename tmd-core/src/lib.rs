@@ -1,6 +1,6 @@
 //! Core library for handling Tanu Markdown documents.
 
-pub use attach::{AttachmentStore, AttachmentStoreIter};
+pub use attach::{AttachmentDataMut, AttachmentStore, AttachmentStoreIter};
 pub use db::{
     export_db, import_db, migrate, reset_db, with_conn, with_conn_mut, DbHandle, DbOptions,
 };
@@ -345,6 +345,7 @@ mod attach {
     use serde_json;
     use sha2::{Digest, Sha256};
     use std::collections::{hash_map::Values, HashMap};
+    use std::ops::{Deref, DerefMut};
 
     #[derive(Debug)]
     struct AttachmentEntry {
@@ -443,8 +444,10 @@ mod attach {
             self.entries.get(&id).map(|entry| entry.data.as_slice())
         }
 
-        pub fn data_mut(&mut self, id: AttachmentId) -> Option<&mut Vec<u8>> {
-            self.entries.get_mut(&id).map(|entry| &mut entry.data)
+        pub fn data_mut(&mut self, id: AttachmentId) -> Option<AttachmentDataMut<'_>> {
+            self.entries
+                .get_mut(&id)
+                .map(|entry| AttachmentDataMut { entry })
         }
 
         pub fn iter(&self) -> AttachmentStoreIter<'_> {
@@ -507,6 +510,34 @@ mod attach {
         }
     }
 
+    pub struct AttachmentDataMut<'a> {
+        entry: &'a mut AttachmentEntry,
+    }
+
+    impl<'a> Deref for AttachmentDataMut<'a> {
+        type Target = Vec<u8>;
+
+        fn deref(&self) -> &Self::Target {
+            &self.entry.data
+        }
+    }
+
+    impl<'a> DerefMut for AttachmentDataMut<'a> {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            &mut self.entry.data
+        }
+    }
+
+    impl<'a> Drop for AttachmentDataMut<'a> {
+        fn drop(&mut self) {
+            self.entry.meta.length = self.entry.data.len() as u64;
+            let digest = Sha256::digest(&self.entry.data);
+            let mut sha = [0u8; 32];
+            sha.copy_from_slice(&digest);
+            self.entry.meta.sha256 = Some(sha);
+        }
+    }
+
     pub struct AttachmentStoreIter<'a> {
         inner: Values<'a, AttachmentId, AttachmentEntry>,
     }
@@ -543,7 +574,10 @@ mod db {
         pub fn new_empty() -> TmdResult<Self> {
             let temp_dir = TempDir::new()?;
             let path = temp_dir.path().join("main.sqlite3");
-            Connection::open(&path)?;
+            let conn = Connection::open(&path)?;
+            conn.execute_batch("PRAGMA user_version = 0;")?;
+            conn.close()
+                .map_err(|(_, err)| TmdError::Db(err.to_string()))?;
             Ok(Self {
                 _temp_dir: temp_dir,
                 path,
@@ -1068,6 +1102,7 @@ mod format {
 mod tests {
     use super::*;
     use mime::TEXT_PLAIN;
+    use sha2::{Digest, Sha256};
     use std::io::{Cursor, Seek, SeekFrom};
     use tempfile::tempdir;
 
@@ -1116,6 +1151,67 @@ mod tests {
 
         doc.remove_attachment(attachment_id).expect("remove");
         assert!(doc.attachment_meta(attachment_id).is_none());
+    }
+
+    #[test]
+    fn attachment_data_mut_refreshes_metadata() {
+        let mut doc = sample_doc();
+        let attachment_id = doc
+            .add_attachment("attachments/blob.bin", TEXT_PLAIN, vec![0, 1, 2, 3])
+            .expect("add attachment");
+
+        {
+            let mut data = doc
+                .attachments
+                .data_mut(attachment_id)
+                .expect("mutable handle");
+            data.extend_from_slice(&[4, 5, 6]);
+        }
+
+        let meta = doc
+            .attachment_meta(attachment_id)
+            .expect("updated metadata");
+        assert_eq!(meta.length, 7);
+
+        let expected = {
+            let digest = Sha256::digest([0, 1, 2, 3, 4, 5, 6]);
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&digest);
+            arr
+        };
+        assert_eq!(meta.sha256, Some(expected));
+    }
+
+    #[test]
+    fn writing_after_mutation_keeps_manifest_consistent() {
+        let mut doc = sample_doc();
+        let attachment_id = doc
+            .add_attachment("attachments/data.bin", TEXT_PLAIN, vec![1, 2, 3, 4])
+            .expect("add attachment");
+
+        {
+            let mut data = doc
+                .attachments
+                .data_mut(attachment_id)
+                .expect("mutable handle");
+            data.extend_from_slice(&[5, 6]);
+        }
+
+        let mut buffer = Cursor::new(Vec::new());
+        write_tmd(&mut buffer, &doc, WriteMode::default()).expect("write");
+        buffer.seek(SeekFrom::Start(0)).unwrap();
+        let mut reader =
+            Reader::new(buffer, Some(Format::Tmd), ReadMode::default()).expect("reader");
+        let rebuilt = reader.read_doc().expect("read");
+
+        let rebuilt_meta = rebuilt
+            .attachment_meta(attachment_id)
+            .expect("attachment meta");
+        assert_eq!(rebuilt_meta.length, 6);
+        assert_eq!(
+            rebuilt.attachments.data(attachment_id).unwrap(),
+            &[1, 2, 3, 4, 5, 6]
+        );
     }
 
     fn build_doc_with_attachment() -> TmdDoc {
