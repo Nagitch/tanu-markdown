@@ -248,6 +248,7 @@ fn cmd_db_init(doc_path: &Path, schema_path: Option<&Path>, version: Option<u32>
 fn cmd_db_exec(doc_path: &Path, sql: &str) -> Result<()> {
     let (mut doc, format) = read_document(doc_path)?;
     let mut mutated = false;
+    let leading_keyword = leading_sql_keyword(sql);
 
     doc.db_with_conn_mut(|conn| -> rusqlite::Result<()> {
         let mut stmt = conn.prepare(sql)?;
@@ -283,7 +284,7 @@ fn cmd_db_exec(doc_path: &Path, sql: &str) -> Result<()> {
                 println!("| {} |", values.join(" | "));
             }
 
-            if !readonly {
+            if !readonly || matches!(leading_keyword.as_deref(), Some("pragma") | Some("with")) {
                 mutated = true;
             }
             return Ok(());
@@ -304,6 +305,28 @@ fn cmd_db_exec(doc_path: &Path, sql: &str) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn leading_sql_keyword(sql: &str) -> Option<String> {
+    let token = sql
+        .trim_start()
+        .split_whitespace()
+        .next()
+        .map(|candidate| {
+            candidate
+                .trim_start_matches(|c: char| !c.is_ascii_alphabetic())
+                .chars()
+                .take_while(|c| c.is_ascii_alphabetic())
+                .map(|c| c.to_ascii_lowercase())
+                .collect::<String>()
+        })
+        .unwrap_or_default();
+
+    if token.is_empty() {
+        None
+    } else {
+        Some(token)
+    }
 }
 
 fn cmd_db_import(doc_path: &Path, source: &Path) -> Result<()> {
