@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
 use clap::{Parser, Subcommand};
@@ -248,6 +248,7 @@ fn cmd_db_init(doc_path: &Path, schema_path: Option<&Path>, version: Option<u32>
 fn cmd_db_exec(doc_path: &Path, sql: &str) -> Result<()> {
     let (mut doc, format) = read_document(doc_path)?;
     let mut mutated = false;
+    let mut has_trailing_sql = false;
     let leading_keyword = leading_sql_keyword(sql);
 
     doc.db_with_conn_mut(|conn| -> rusqlite::Result<()> {
@@ -274,19 +275,36 @@ fn cmd_db_exec(doc_path: &Path, sql: &str) -> Result<()> {
                 );
             }
 
-            let mut rows = stmt.query([])?;
-            while let Some(row) = rows.next()? {
-                let mut values = Vec::with_capacity(column_count);
-                for idx in 0..column_count {
-                    let value: SqlValue = row.get(idx)?;
-                    values.push(display_sql_value(&value));
+            {
+                let mut rows = stmt.query([])?;
+                while let Some(row) = rows.next()? {
+                    let mut values = Vec::with_capacity(column_count);
+                    for idx in 0..column_count {
+                        let value: SqlValue = row.get(idx)?;
+                        values.push(display_sql_value(&value));
+                    }
+                    println!("| {} |", values.join(" | "));
                 }
-                println!("| {} |", values.join(" | "));
             }
 
             if !readonly || matches!(leading_keyword.as_deref(), Some("pragma") | Some("with")) {
                 mutated = true;
             }
+
+            if let Some(consumed_sql) = stmt.expanded_sql() {
+                let tail_offset = sql
+                    .find(&consumed_sql)
+                    .map(|idx| idx + consumed_sql.len())
+                    .unwrap_or(sql.len());
+
+                let remainder =
+                    sql[tail_offset..].trim_start_matches(|c: char| c.is_whitespace() || c == ';');
+
+                if !remainder.is_empty() {
+                    has_trailing_sql = true;
+                }
+            }
+
             return Ok(());
         }
 
@@ -297,6 +315,10 @@ fn cmd_db_exec(doc_path: &Path, sql: &str) -> Result<()> {
     })
     .context("failed to access embedded database")?
     .context("failed to execute SQL against embedded database")?;
+
+    if has_trailing_sql {
+        bail!("multi-statement SQL is not supported when the first statement returns rows");
+    }
 
     if mutated {
         doc.touch();
