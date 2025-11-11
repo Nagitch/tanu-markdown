@@ -247,20 +247,14 @@ fn cmd_db_init(doc_path: &Path, schema_path: Option<&Path>, version: Option<u32>
 
 fn cmd_db_exec(doc_path: &Path, sql: &str) -> Result<()> {
     let (mut doc, format) = read_document(doc_path)?;
-    let trimmed = sql.trim_start();
-    let lowered = trimmed
-        .chars()
-        .take(16)
-        .collect::<String>()
-        .to_ascii_lowercase();
-    let looks_like_query = lowered.starts_with("select")
-        || lowered.starts_with("pragma")
-        || lowered.starts_with("with");
+    let mut mutated = false;
 
-    if looks_like_query {
-        doc.db_with_conn(|conn| -> rusqlite::Result<()> {
-            let mut stmt = conn.prepare(sql)?;
-            let column_count = stmt.column_count();
+    doc.db_with_conn_mut(|conn| -> rusqlite::Result<()> {
+        let mut stmt = conn.prepare(sql)?;
+        let column_count = stmt.column_count();
+        let readonly = stmt.readonly();
+
+        if column_count > 0 {
             let column_names: Vec<String> = stmt
                 .column_names()
                 .into_iter()
@@ -288,21 +282,25 @@ fn cmd_db_exec(doc_path: &Path, sql: &str) -> Result<()> {
                 }
                 println!("| {} |", values.join(" | "));
             }
-            Ok(())
-        })
-        .context("failed to access embedded database")?
-        .context("failed to execute query")?;
-    } else {
-        doc.db_with_conn_mut(|conn| -> rusqlite::Result<()> {
-            conn.execute_batch(sql)?;
-            Ok(())
-        })
-        .context("failed to access embedded database")?
-        .context("failed to execute SQL against embedded database")?;
+
+            if !readonly {
+                mutated = true;
+            }
+            return Ok(());
+        }
+
+        drop(stmt);
+        conn.execute_batch(sql)?;
+        mutated = true;
+        Ok(())
+    })
+    .context("failed to access embedded database")?
+    .context("failed to execute SQL against embedded database")?;
+
+    if mutated {
         doc.touch();
         write_document(doc_path, &doc, format)?;
         println!("Executed SQL and updated `{}`", doc_path.display());
-        return Ok(());
     }
 
     Ok(())
