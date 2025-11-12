@@ -18,8 +18,8 @@ Goal:
 | `tmd-cli/` | Rust command-line tool using `tmd-core` |
 | `tmd-vscode/` | VSCode extension for authoring and previewing `.tmd` documents |
 | `tmd-sample/` | Reference examples (`.tmd`, `.tmdz`) and structure docs |
-| `README.md` | Project overview (Japanese) |
-| `README_EN.md` | Project overview (English) |
+| `README.md` | Project overview (English) |
+| `README_JP.md` | Project overview (Japanese) |
 
 ---
 
