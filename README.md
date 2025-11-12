@@ -76,10 +76,59 @@ Rust library defining the TMD document model:
 
 ### `tmd-cli/`
 Rust CLI utility for working with `.tmd` files.
+
+**Available Commands:**
+
+#### Document Operations
 ```bash
-cargo run -- new mydoc.tmd --title "My Document"
-cargo run -- validate mydoc.tmd
-cargo run -- export-html mydoc.tmd out.html --self-contained
+# Create a new document
+tmd new mydoc.tmd --title "My Document"
+
+# Convert between .tmd and .tmdz formats
+tmd convert mydoc.tmd mydoc.tmdz
+tmd convert mydoc.tmdz mydoc.tmd
+
+# Validate a document
+tmd validate mydoc.tmd
+
+# Export to HTML
+tmd export-html mydoc.tmd output.html
+tmd export-html mydoc.tmd output.html --self-contained
+```
+
+#### Database Operations
+```bash
+# Initialize/reset embedded database
+tmd db init mydoc.tmd --schema schema.sql --version 1
+tmd db init mydoc.tmd --version 2
+
+# Execute SQL queries
+tmd db exec mydoc.tmd --sql "SELECT * FROM users"
+tmd db exec mydoc.tmd --sql "INSERT INTO users (name) VALUES ('Alice')"
+
+# Import SQLite database
+tmd db import mydoc.tmd database.db
+
+# Export embedded database
+tmd db export mydoc.tmd output.db
+```
+
+**Usage Examples:**
+
+```bash
+# Build and run CLI
+cd tmd-cli
+cargo build
+cargo run -- --help
+
+# Create and work with a document
+cargo run -- new example.tmd --title "Example Document"
+cargo run -- db init example.tmd --version 1
+cargo run -- db exec example.tmd --sql "CREATE TABLE notes (id INTEGER PRIMARY KEY, content TEXT)"
+cargo run -- db exec example.tmd --sql "INSERT INTO notes (content) VALUES ('Hello, TMD!')"
+cargo run -- db exec example.tmd --sql "SELECT * FROM notes"
+cargo run -- validate example.tmd
+cargo run -- export-html example.tmd example.html --self-contained
 ```
 
 ---

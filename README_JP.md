@@ -83,11 +83,60 @@ Rust ライブラリ。
 - `to_bytes()` / `open_bytes()` : polyglot 形式の生成・読取 (未実装スタブ)
 
 ### `tmd-cli/`
-Rust CLI。
+Rust CLI。TMD ドキュメントを操作するためのコマンドラインツールです。
+
+**利用可能なコマンド:**
+
+#### ドキュメント操作
 ```bash
-cargo run -- new mydoc.tmd --title "My Document"
-cargo run -- validate mydoc.tmd
-cargo run -- export-html mydoc.tmd out.html --self-contained
+# 新しいドキュメントを作成
+tmd new mydoc.tmd --title "マイドキュメント"
+
+# .tmd と .tmdz 形式間の変換
+tmd convert mydoc.tmd mydoc.tmdz
+tmd convert mydoc.tmdz mydoc.tmd
+
+# ドキュメントの検証
+tmd validate mydoc.tmd
+
+# HTML形式への出力
+tmd export-html mydoc.tmd output.html
+tmd export-html mydoc.tmd output.html --self-contained
+```
+
+#### データベース操作
+```bash
+# 埋め込みデータベースの初期化/リセット
+tmd db init mydoc.tmd --schema schema.sql --version 1
+tmd db init mydoc.tmd --version 2
+
+# SQLクエリの実行
+tmd db exec mydoc.tmd --sql "SELECT * FROM users"
+tmd db exec mydoc.tmd --sql "INSERT INTO users (name) VALUES ('太郎')"
+
+# SQLiteデータベースのインポート
+tmd db import mydoc.tmd database.db
+
+# 埋め込みデータベースの出力
+tmd db export mydoc.tmd output.db
+```
+
+**使用例:**
+
+```bash
+# CLIのビルドと実行
+cd tmd-cli
+cargo build
+cargo run -- --help
+
+# ドキュメントの作成と操作
+cargo run -- new example.tmd --title "サンプルドキュメント"
+cargo run -- db init example.tmd --version 1
+cargo run -- db exec example.tmd --sql "CREATE TABLE notes (id INTEGER PRIMARY KEY, content TEXT)"
+cargo run -- db exec example.tmd --sql "INSERT INTO notes (content) VALUES ('こんにちは、TMD!')"
+cargo run -- db exec example.tmd --sql "SELECT * FROM notes"
+cargo run -- validate example.tmd
+cargo run -- export-html example.tmd example.html --self-contained
 ```
 
 ---
