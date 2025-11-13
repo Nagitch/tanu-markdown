@@ -1188,8 +1188,13 @@ pub mod ffi {
     }
 
     /// Create a new in-memory document from the provided Markdown string.
+    ///
+    /// # Safety
+    ///
+    /// `markdown` must either be null or point to a valid, NUL-terminated
+    /// UTF-8 string.
     #[no_mangle]
-    pub extern "C" fn tmd_doc_new(markdown: *const c_char) -> *mut TmdDoc {
+    pub unsafe extern "C" fn tmd_doc_new(markdown: *const c_char) -> *mut TmdDoc {
         let markdown = match string_from_ptr(markdown) {
             Ok(value) => value,
             Err(message) => {
@@ -1213,8 +1218,16 @@ pub mod ffi {
     /// Load a document from disk, optionally specifying the expected format.
     ///
     /// Pass `0` for automatic format detection, `1` for `.tmd`, and `2` for `.tmdz`.
+    ///
+    /// # Safety
+    ///
+    /// `path` must either be null or point to a valid, NUL-terminated UTF-8
+    /// string representing a filesystem path.
     #[no_mangle]
-    pub extern "C" fn tmd_doc_read_from_path(path: *const c_char, format: i32) -> *mut TmdDoc {
+    pub unsafe extern "C" fn tmd_doc_read_from_path(
+        path: *const c_char,
+        format: i32,
+    ) -> *mut TmdDoc {
         let assumed = match parse_optional_format(format) {
             Ok(value) => value,
             Err(message) => {
@@ -1246,8 +1259,14 @@ pub mod ffi {
     /// Persist the document to disk using the specified format.
     ///
     /// Pass `1` for `.tmd` or `2` for `.tmdz`.
+    ///
+    /// # Safety
+    ///
+    /// `doc` must either be null or point to a [`TmdDoc`] previously returned
+    /// by this library. `path` must either be null or point to a valid,
+    /// NUL-terminated UTF-8 string.
     #[no_mangle]
-    pub extern "C" fn tmd_doc_write_to_path(
+    pub unsafe extern "C" fn tmd_doc_write_to_path(
         doc: *const TmdDoc,
         path: *const c_char,
         format: i32,
@@ -1289,8 +1308,13 @@ pub mod ffi {
     /// Retrieve the Markdown content of the document.
     ///
     /// The returned pointer must be released with [`tmd_string_free`].
+    ///
+    /// # Safety
+    ///
+    /// `doc` must either be null or point to a [`TmdDoc`] allocated by this
+    /// library.
     #[no_mangle]
-    pub extern "C" fn tmd_doc_get_markdown(doc: *const TmdDoc) -> *mut c_char {
+    pub unsafe extern "C" fn tmd_doc_get_markdown(doc: *const TmdDoc) -> *mut c_char {
         if doc.is_null() {
             set_last_error_message(NULL_PTR_MESSAGE);
             return ptr::null_mut();
@@ -1310,8 +1334,17 @@ pub mod ffi {
     }
 
     /// Replace the Markdown content of the document.
+    ///
+    /// # Safety
+    ///
+    /// `doc` must either be null or point to a [`TmdDoc`] allocated by this
+    /// library. `markdown` must either be null or point to a valid,
+    /// NUL-terminated UTF-8 string.
     #[no_mangle]
-    pub extern "C" fn tmd_doc_set_markdown(doc: *mut TmdDoc, markdown: *const c_char) -> i32 {
+    pub unsafe extern "C" fn tmd_doc_set_markdown(
+        doc: *mut TmdDoc,
+        markdown: *const c_char,
+    ) -> i32 {
         if doc.is_null() {
             set_last_error_message(NULL_PTR_MESSAGE);
             return -1;
@@ -1332,8 +1365,13 @@ pub mod ffi {
     }
 
     /// Release a document created by the FFI helpers.
+    ///
+    /// # Safety
+    ///
+    /// `doc` must be a pointer previously returned by this library or null.
+    /// Each document must be freed at most once.
     #[no_mangle]
-    pub extern "C" fn tmd_doc_free(doc: *mut TmdDoc) {
+    pub unsafe extern "C" fn tmd_doc_free(doc: *mut TmdDoc) {
         if doc.is_null() {
             return;
         }
@@ -1344,8 +1382,13 @@ pub mod ffi {
     }
 
     /// Release a string allocated by the FFI helpers.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must be a pointer previously returned by this library or null.
+    /// Each string must be freed at most once.
     #[no_mangle]
-    pub extern "C" fn tmd_string_free(ptr: *mut c_char) {
+    pub unsafe extern "C" fn tmd_string_free(ptr: *mut c_char) {
         if ptr.is_null() {
             return;
         }
