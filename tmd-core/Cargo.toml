@@ -3,6 +3,10 @@ name = "tmd-core"
 version = "0.0.1"
 edition = "2021"
 
+[lib]
+path = "src/lib.rs"
+crate-type = ["rlib"]
+
 [dependencies]
 anyhow = "1"
 thiserror = "1"
