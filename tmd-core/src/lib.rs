@@ -1360,6 +1360,7 @@ pub mod ffi {
 
         let doc_ref = unsafe { &mut *doc };
         doc_ref.markdown = markdown;
+        doc_ref.touch();
         clear_last_error();
         0
     }
