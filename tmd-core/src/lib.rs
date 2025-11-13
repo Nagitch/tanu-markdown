@@ -1163,7 +1163,7 @@ pub mod ffi {
 
     fn string_from_ptr(ptr: *const c_char) -> Result<String, String> {
         if ptr.is_null() {
-            return Err(NULL_PTR_MESSAGE.to_string());
+            return Ok(String::new());
         }
         let c_str = unsafe { CStr::from_ptr(ptr) };
         Ok(c_str
@@ -1734,5 +1734,40 @@ mod tests {
         let loaded = read_from_path(&path, Some(Format::Tmd)).expect("read path");
         assert_eq!(loaded.markdown, doc.markdown);
         assert_eq!(loaded.list_attachments().count(), 1);
+    }
+
+    #[cfg(feature = "ffi")]
+    #[test]
+    fn ffi_allows_null_markdown_pointers() {
+        use crate::ffi::{
+            tmd_doc_free, tmd_doc_get_markdown, tmd_doc_new, tmd_doc_set_markdown, tmd_string_free,
+        };
+        use std::ffi::CStr;
+        use std::ptr;
+
+        unsafe {
+            let doc = tmd_doc_new(ptr::null());
+            assert!(
+                !doc.is_null(),
+                "null markdown should create an empty document"
+            );
+
+            assert_eq!(tmd_doc_set_markdown(doc, ptr::null()), 0);
+
+            let markdown = tmd_doc_get_markdown(doc);
+            assert!(
+                !markdown.is_null(),
+                "get_markdown must return a string buffer"
+            );
+
+            let text = CStr::from_ptr(markdown).to_str().expect("utf8");
+            assert!(
+                text.is_empty(),
+                "null markdown pointers should map to empty strings"
+            );
+
+            tmd_string_free(markdown);
+            tmd_doc_free(doc);
+        }
     }
 }
