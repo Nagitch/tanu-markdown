@@ -5,7 +5,10 @@ edition = "2021"
 
 [lib]
 path = "src/lib.rs"
-crate-type = ["rlib"]
+
+[features]
+default = []
+ffi = []
 
 [dependencies]
 anyhow = "1"
