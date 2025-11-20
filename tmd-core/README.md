@@ -1,65 +1,65 @@
-# tmd-core API ドキュメント
+# tmd-core API Guide
 
-`tmd-core` は Tanu Markdown (`.tmd` / `.tmdz`) 文書を読み書きするための Rust ライブラリです。Markdown 本文、マニフェスト、添付ファイル、および組み込み SQLite データベースを 1 つの `TmdDoc` 構造体で管理します。本書では公開 API の仕様と利用方法をまとめます。
+`tmd-core` is a Rust library for reading and writing Tanu Markdown (`.tmd` / `.tmdz`) documents. A single `TmdDoc` struct holds the Markdown body, manifest, attachments, and an embedded SQLite database. This guide summarizes the public API surface and how to use it.
 
-## 依存関係
-Cargo.toml に次のように追記します。
+## Dependencies
+Add the following to your `Cargo.toml`:
 
 ```toml
 [dependencies]
 tmd-core = { path = "../tmd-core" }
 mime = "0.3"
-``` 
+```
 
-## 主要な型とエイリアス
+## Key Types and Aliases
 
-- `TmdDoc` — Markdown、`Manifest`、`AttachmentStore`、`DbHandle` を保持する文書コンテナ。【F:tmd-core/src/lib.rs†L38-L113】
-- `Manifest` — バージョン、作成者、タグ、リンク、スキーマバージョンなどの文書メタデータを表現。`Semver` で TMD バージョンを保持。【F:tmd-core/src/lib.rs†L212-L261】
-- `AttachmentStore` — 添付ファイルのメタデータとバイト列を管理し、`AttachmentStoreIter` で列挙できる。【F:tmd-core/src/lib.rs†L214-L235】【F:tmd-core/src/lib.rs†L273-L361】
-- `AttachmentDataMut` — 添付データの可変参照を安全に扱い、Drop 時に長さと SHA-256 を再計算するスマートポインタ。【F:tmd-core/src/lib.rs†L520-L548】
-- `DbHandle` — SQLite 接続を保持し、`with_conn`/`with_conn_mut` 経由で SQL を実行。【F:tmd-core/src/lib.rs†L5-L9】【F:tmd-core/src/lib.rs†L575-L624】
-- `DbOptions` — `page_size` / `journal_mode` / `synchronous` を指定し、`ensure_initialized` 時に PRAGMA を適用する設定。【F:tmd-core/src/lib.rs†L551-L595】
-- `Format` — `Tmd`（プレーン）と `Tmdz`（ZIP 包含形式）を識別。【F:tmd-core/src/lib.rs†L702-L743】
-- `ReadMode` / `WriteMode` — 読み書き時の検証・ZIP 生成オプション。【F:tmd-core/src/lib.rs†L343-L431】
-- `AttachmentId` / `LogicalPath` — 添付の UUID と論理パスのエイリアス。【F:tmd-core/src/lib.rs†L17-L20】
-- `TmdResult<T>` / `TmdError` — ライブラリ全体で使用する Result/エラー型。【F:tmd-core/src/lib.rs†L21-L53】
+- `TmdDoc` — Document container that holds Markdown, `Manifest`, `AttachmentStore`, and `DbHandle`.【F:tmd-core/src/lib.rs†L38-L113】
+- `Manifest` — Document metadata (version, authors, tags, links, schema version). Uses `Semver` for the TMD version.【F:tmd-core/src/lib.rs†L212-L261】
+- `AttachmentStore` — Manages attachment metadata and bytes; enumerable via `AttachmentStoreIter`.【F:tmd-core/src/lib.rs†L214-L235】【F:tmd-core/src/lib.rs†L273-L361】
+- `AttachmentDataMut` — Smart pointer that provides mutable access to attachment data and recomputes length/SHA-256 on drop.【F:tmd-core/src/lib.rs†L520-L548】
+- `DbHandle` — Holds the SQLite connection and executes SQL via `with_conn`/`with_conn_mut`.【F:tmd-core/src/lib.rs†L5-L9】【F:tmd-core/src/lib.rs†L575-L624】
+- `DbOptions` — Applies PRAGMAs such as `page_size`, `journal_mode`, and `synchronous` during `ensure_initialized`.【F:tmd-core/src/lib.rs†L551-L595】
+- `Format` — Identifies `Tmd` (plain) vs `Tmdz` (ZIP-embedded).【F:tmd-core/src/lib.rs†L702-L743】
+- `ReadMode` / `WriteMode` — Read/write options for validation and ZIP creation.【F:tmd-core/src/lib.rs†L343-L431】
+- `AttachmentId` / `LogicalPath` — Aliases for attachment UUID and logical path.【F:tmd-core/src/lib.rs†L17-L20】
+- `TmdResult<T>` / `TmdError` — Result/error types used across the library.【F:tmd-core/src/lib.rs†L21-L53】
 
-## 文書の生成と保存
+## Creating and Saving Documents
 
-### 新規文書の作成
+### Create a New Document
 
 ```rust
 use mime::IMAGE_PNG;
 use tmd_core::{write_to_path, AttachmentId, Format, TmdDoc};
 
 fn main() -> tmd_core::TmdResult<()> {
-    // Markdown 文字列から空の文書を生成
+    // Create an empty document from Markdown text
     let mut doc = TmdDoc::new("# Hello TMD".to_string())?;
 
-    // 添付ファイルを追加（SHA-256 は自動計算され、重複パスはエラー）
+    // Add an attachment (SHA-256 auto-computed; duplicate paths error)
     let _logo: AttachmentId = doc.add_attachment("images/logo.png", IMAGE_PNG, b"...bytes...")?;
 
-    // 文書を TMDZ 形式で保存
+    // Save as TMDZ
     write_to_path("hello.tmdz", &doc, Format::Tmdz)?;
     Ok(())
 }
 ```
 
-- `TmdDoc::new` はデフォルトマニフェストと空の SQLite を初期化します。【F:tmd-core/src/lib.rs†L36-L101】
-- `write_to_path` は `Format` に応じて `.tmd` または `.tmdz` を生成します。【F:tmd-core/src/lib.rs†L702-L726】
-- 添付は論理パス衝突時に `TmdError::Attachment` を返します。【F:tmd-core/src/lib.rs†L272-L332】
+- `TmdDoc::new` initializes a default manifest and empty SQLite database.【F:tmd-core/src/lib.rs†L36-L101】
+- `write_to_path` emits `.tmd` or `.tmdz` based on `Format`.【F:tmd-core/src/lib.rs†L702-L726】
+- `add_attachment` returns `TmdError::Attachment` on logical path collisions.【F:tmd-core/src/lib.rs†L272-L332】
 
-### 既存文書の読み込み
+### Load an Existing Document
 
 ```rust
 use tmd_core::{read_from_path, Format, ReadMode};
 
 fn main() -> tmd_core::TmdResult<()> {
-    // 拡張子からフォーマット推測（Auto）
+    // Auto-detect format from extension (or header)
     let doc = read_from_path("hello.tmdz", None)?;
     println!("Title: {:?}, tags: {:?}", doc.manifest.title, doc.manifest.tags);
 
-    // 検証やレイジー読み込みを制御したい場合
+    // Control verification and lazy loading
     use std::fs::File;
     use std::io::{BufReader, Seek};
     use tmd_core::{Reader, TmdDoc};
@@ -74,25 +74,25 @@ fn main() -> tmd_core::TmdResult<()> {
 }
 ```
 
-- `sniff_format` でヘッダーを見て自動判定します。【F:tmd-core/src/lib.rs†L433-L452】
-- `sniff_format` は ZIP EOCD から TMD コメントを読み、拡張子に依存しないフォーマット判定を返します。【F:tmd-core/src/lib.rs†L702-L743】
-- `ReadMode::verify_hashes` を `true` にすると、添付の長さや SHA-256 をチェックします。【F:tmd-core/src/lib.rs†L343-L387】
-- `ReadMode::lazy_attachments` を `true` にすると添付を遅延ロードできます（デフォルトは `false`）。【F:tmd-core/src/lib.rs†L343-L387】
+- `sniff_format` inspects the header to auto-detect the format.【F:tmd-core/src/lib.rs†L433-L452】
+- `sniff_format` reads the ZIP EOCD comment and does not rely solely on the extension.【F:tmd-core/src/lib.rs†L702-L743】
+- `ReadMode::verify_hashes = true` checks attachment lengths and SHA-256 values.【F:tmd-core/src/lib.rs†L343-L387】
+- `ReadMode::lazy_attachments = true` defers attachment loading (default: `false`).【F:tmd-core/src/lib.rs†L343-L387】
 
-## 添付ファイル操作
+## Attachment Operations
 
-- 追加: `add_attachment`（バッファ）または `add_attachment_stream`（ストリーム）。後者は別スレッドで読み込み、`TmdError::Attachment` を伝播します。【F:tmd-core/src/lib.rs†L65-L116】
-- 削除: `remove_attachment(id)`。【F:tmd-core/src/lib.rs†L136-L145】
-- リネーム: `rename_attachment(id, new_path)`（パス正規化込み）。【F:tmd-core/src/lib.rs†L145-L158】【F:tmd-core/src/lib.rs†L416-L434】
-- メタ情報取得: `attachment_meta(id)` / `attachment_meta_by_path(path)`。【F:tmd-core/src/lib.rs†L149-L158】
-- 一覧: `list_attachments()` で `AttachmentStoreIter` を返す。【F:tmd-core/src/lib.rs†L158-L168】
-- データ参照: `attachments.data(id)` で `&[u8]`、`attachments.iter_with_data()` でメタとバイト列の組を列挙。【F:tmd-core/src/lib.rs†L443-L484】
-- 書き換え: `attachments.data_mut(id)` で `AttachmentDataMut` を取得し、ドロップ時に `length` と `sha256` が自動更新されます。【F:tmd-core/src/lib.rs†L447-L548】
-- 検証付き挿入: `attachments.insert_entry(meta, data, verify_hashes)` で長さ不一致や SHA-256 不一致をチェックしつつメタと実データを同時登録します。【F:tmd-core/src/lib.rs†L469-L520】
+- Add: `add_attachment` (buffer) or `add_attachment_stream` (streaming). The streaming variant reads on a background thread and returns `TmdError::Attachment` on failure.【F:tmd-core/src/lib.rs†L65-L116】
+- Remove: `remove_attachment(id)`.【F:tmd-core/src/lib.rs†L136-L145】
+- Rename: `rename_attachment(id, new_path)` with path normalization.【F:tmd-core/src/lib.rs†L145-L158】【F:tmd-core/src/lib.rs†L416-L434】
+- Fetch metadata: `attachment_meta(id)` / `attachment_meta_by_path(path)`.【F:tmd-core/src/lib.rs†L149-L158】
+- List: `list_attachments()` returns `AttachmentStoreIter`.【F:tmd-core/src/lib.rs†L158-L168】
+- Access data: `attachments.data(id)` yields `&[u8]`; `attachments.iter_with_data()` enumerates metadata and bytes.【F:tmd-core/src/lib.rs†L443-L484】
+- Mutate data: `attachments.data_mut(id)` returns `AttachmentDataMut`; dropping it updates `length` and `sha256`.【F:tmd-core/src/lib.rs†L447-L548】
+- Verified insert: `attachments.insert_entry(meta, data, verify_hashes)` checks length/SHA-256 while inserting metadata and bytes together.【F:tmd-core/src/lib.rs†L469-L520】
 
-## マニフェスト編集
+## Editing the Manifest
 
-`TmdDoc.manifest` を直接編集するか、`with_manifest` で置換します。
+Edit `TmdDoc.manifest` directly or replace it with `with_manifest`.
 
 ```rust
 use tmd_core::{Manifest, Semver, TmdDoc};
@@ -114,60 +114,59 @@ let manifest = Manifest {
 let doc = TmdDoc::new("# Document".into())?.with_manifest(manifest);
 ```
 
-`touch()` を呼ぶと `modified_utc` のみ現在時刻に更新されます。【F:tmd-core/src/lib.rs†L151-L158】
+Calling `touch()` updates only `modified_utc` to the current time.【F:tmd-core/src/lib.rs†L151-L158】
 
-## 組み込みデータベースの利用
+## Embedded Database
 
-- 読み取り専用: `db_with_conn(|conn| { /* SELECT ... */ })`（`TmdDoc` メソッド）。【F:tmd-core/src/lib.rs†L164-L171】
-- 書き込み: `db_with_conn_mut(|conn| { /* INSERT/UPDATE */ })`。処理後に自動で `rusqlite::Error` を `TmdError::Db` へ変換します。【F:tmd-core/src/lib.rs†L171-L174】【F:tmd-core/src/lib.rs†L24-L53】
-- グローバル関数版: `with_conn(doc, f)` / `with_conn_mut(doc, f)` は `TmdDoc` を直接受け取るショートカットです。【F:tmd-core/src/lib.rs†L641-L652】
-- DB ファイル出力/入力: `export_db(doc, path)` で一時 DB をファイルへ書き出し、`import_db(doc, path)` で差し替えます。`reset_db(doc, schema_sql, version)` では指定 SQL を適用し `PRAGMA user_version` を更新します。【F:tmd-core/src/lib.rs†L652-L677】
-- マイグレーション: `migrate(doc, up_sql, from, to)` で現在の `user_version` と `from` が一致することを確認し、`up_sql` を適用後 `to` へ進めます。【F:tmd-core/src/lib.rs†L677-L700】
-- 初期化オプション: `DbOptions` を `DbHandle::ensure_initialized` に渡すと `page_size` や `journal_mode` などの PRAGMA を事前適用できます。【F:tmd-core/src/lib.rs†L551-L614】
+- Read-only: `db_with_conn(|conn| { /* SELECT ... */ })` on `TmdDoc`.【F:tmd-core/src/lib.rs†L164-L171】
+- Write: `db_with_conn_mut(|conn| { /* INSERT/UPDATE */ })`; converts `rusqlite::Error` into `TmdError::Db`.【F:tmd-core/src/lib.rs†L171-L174】【F:tmd-core/src/lib.rs†L24-L53】
+- Free functions: `with_conn(doc, f)` / `with_conn_mut(doc, f)` are shortcuts that take a `TmdDoc`.【F:tmd-core/src/lib.rs†L641-L652】
+- Export/import: `export_db(doc, path)` writes the temp DB to disk; `import_db(doc, path)` replaces it. `reset_db(doc, schema_sql, version)` applies SQL and updates `PRAGMA user_version`.【F:tmd-core/src/lib.rs†L652-L677】
+- Migration: `migrate(doc, up_sql, from, to)` asserts the current `user_version` matches `from`, applies `up_sql`, then moves to `to`.【F:tmd-core/src/lib.rs†L677-L700】
+- Initialization options: pass `DbOptions` to `DbHandle::ensure_initialized` to pre-apply PRAGMAs like `page_size` or `journal_mode`.【F:tmd-core/src/lib.rs†L551-L614】
 
-## 読み書きオプション
+## Read/Write Options
 
-- `ReadMode` — `verify_hashes`（添付のハッシュ検証）、`lazy_attachments`（遅延読込）。【F:tmd-core/src/lib.rs†L343-L387】
-- `WriteMode` — `compute_hashes`（添付の SHA-256 出力）、`solid_zip`（ZIP を単一ストリームで格納）、`dedup_by_hash`（添付の重複排除）。【F:tmd-core/src/lib.rs†L387-L431】
-- `Reader::new(reader, assumed, mode)` でフォーマットを推測・検証しつつ読み取り、`Reader::read_doc()` で `TmdDoc` を返します。【F:tmd-core/src/lib.rs†L744-L806】
-- `Writer::new(writer, format, mode)` で書き込みコンテキストを構築し、`Writer::write_doc(&doc)` で出力、`finish()` でリソースを解放します。【F:tmd-core/src/lib.rs†L806-L844】
-- 低レベル I/O: `read_tmd` / `read_tmdz` / `write_tmd` / `write_tmdz` は `Read`/`Write` トレイトを直接扱うストリーム API です。【F:tmd-core/src/lib.rs†L965-L1095】
-- パス版ヘルパー: `read_from_path(path, assumed)` は拡張子やヘッダーを見て `Format` を決定し、`write_to_path(path, doc, format)` は `Format` ごとに書き分けます。【F:tmd-core/src/lib.rs†L1085-L1107】
+- `ReadMode` — `verify_hashes` (attachment hash validation), `lazy_attachments` (deferred loading).【F:tmd-core/src/lib.rs†L343-L387】
+- `WriteMode` — `compute_hashes` (emit SHA-256), `solid_zip` (store ZIP as a single stream), `dedup_by_hash` (deduplicate attachments).【F:tmd-core/src/lib.rs†L387-L431】
+- `Reader::new(reader, assumed, mode)` detects/validates the format and reads via `Reader::read_doc()`.【F:tmd-core/src/lib.rs†L744-L806】
+- `Writer::new(writer, format, mode)` builds a write context; `Writer::write_doc(&doc)` outputs data and `finish()` releases resources.【F:tmd-core/src/lib.rs†L806-L844】
+- Low-level I/O: `read_tmd` / `read_tmdz` / `write_tmd` / `write_tmdz` operate directly on `Read`/`Write` streams.【F:tmd-core/src/lib.rs†L965-L1095】
+- Path helpers: `read_from_path(path, assumed)` chooses `Format` from extension or header; `write_to_path(path, doc, format)` dispatches per `Format`.【F:tmd-core/src/lib.rs†L1085-L1107】
 
-## エラー処理
+## Error Handling
 
-すべての関数は `TmdResult<T>` を返し、失敗時は `TmdError` を返します。
+All functions return `TmdResult<T>` and yield `TmdError` on failure.
 
 - I/O: `TmdError::Io`
 - JSON: `TmdError::Json`
 - ZIP: `TmdError::Zip`
-- 添付管理: `TmdError::Attachment`（重複、ハッシュ不一致、パスの検証エラーなど）
-- フォーマット: `TmdError::InvalidFormat`（EOCD 署名不正、コメント長不正など）
-- DB: `TmdError::Db`（`rusqlite` エラーを文字列化）【F:tmd-core/src/lib.rs†L21-L53】【F:tmd-core/src/lib.rs†L598-L679】
+- Attachments: `TmdError::Attachment` (duplicates, hash mismatch, path validation errors, etc.)
+- Format: `TmdError::InvalidFormat` (bad EOCD signature, invalid comment length, etc.)
+- DB: `TmdError::Db` (stringified `rusqlite` errors).【F:tmd-core/src/lib.rs†L21-L53】【F:tmd-core/src/lib.rs†L598-L679】
 
-## 典型的なワークフロー
+## Typical Workflow
 
-1. `TmdDoc::new` で文書作成、または `read_from_path` で既存文書をロード。
-2. Markdown 編集・マニフェスト更新・添付追加／削除。
-3. 必要に応じて `db_with_conn_mut` で DB を更新、`migrate` でスキーマを進める。
-4. `write_to_path` / `Writer` で `.tmd` または `.tmdz` に保存。
+1. Create with `TmdDoc::new` or load with `read_from_path`.
+2. Edit Markdown, update the manifest, add/remove attachments.
+3. Update the DB with `db_with_conn_mut` and advance schemas with `migrate` as needed.
+4. Save as `.tmd` or `.tmdz` via `write_to_path` / `Writer`.
 
-`write_tmdz` / `write_tmd` を直接使う場合は、`WriteMode` でハッシュ計算や ZIP オプションを制御できます。【F:tmd-core/src/lib.rs†L598-L679】
+When using `write_tmdz` / `write_tmd` directly, control hash computation and ZIP options through `WriteMode`.【F:tmd-core/src/lib.rs†L598-L679】
 
-## ユーティリティ
+## Utilities
 
-- `now_utc()` — `chrono::Utc::now()` をラップしたユーティリティ。【F:tmd-core/src/lib.rs†L189-L194】
-- `normalize_logical_path(input)` — 添付の論理パスを POSIX 形式へ正規化し、空/絶対パス/`..` を拒否します。【F:tmd-core/src/lib.rs†L194-L214】
+- `now_utc()` — Wrapper around `chrono::Utc::now()`.【F:tmd-core/src/lib.rs†L189-L194】
+- `normalize_logical_path(input)` — Normalizes attachment paths to POSIX form and rejects empty, absolute, or `..` paths.【F:tmd-core/src/lib.rs†L194-L214】
 
-## FFI（オプション）
+## FFI (Optional)
 
-`ffi` フィーチャを有効化すると、C 互換関数で文書の読み書きやエラー取得が可能になります。主なエントリーポイントは以下です。【F:tmd-core/src/lib.rs†L1109-L1458】
+Enabling the `ffi` feature exposes C-compatible functions for reading/writing documents and retrieving errors. Key entry points include the following.【F:tmd-core/src/lib.rs†L1109-L1458】
 
-- ドキュメント管理: `tmd_doc_new` / `tmd_doc_free` / `tmd_doc_markdown` / `tmd_doc_set_markdown`
-- パス I/O: `tmd_read_from_path` / `tmd_write_to_path`
-- メタデータ取得: `tmd_doc_title` / `tmd_doc_tags` / `tmd_doc_attachments`
-- 例外管理: `tmd_last_error_message`
-- 添付: `tmd_doc_add_attachment` / `tmd_doc_get_attachment`
+- Document management: `tmd_doc_new` / `tmd_doc_free` / `tmd_doc_markdown` / `tmd_doc_set_markdown`
+- Path I/O: `tmd_read_from_path` / `tmd_write_to_path`
+- Metadata: `tmd_doc_title` / `tmd_doc_tags` / `tmd_doc_attachments`
+- Error surface: `tmd_last_error_message`
+- Attachments: `tmd_doc_add_attachment` / `tmd_doc_get_attachment`
 
-FFI 層ではポインタの NULL チェックや UTF-8 変換エラーを専用メッセージとして保持します。
-
+The FFI layer performs NULL checks and UTF-8 conversions, keeping dedicated error messages for misuse.
