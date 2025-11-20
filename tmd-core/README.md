@@ -1,6 +1,6 @@
 # tmd-core API ドキュメント
 
-`tmd-core` は Tanu Markdown (`.tmd` / `.tmdz`) 文書を読み書きするための Rust ライブラリです。Markdown 本文、マニフェスト、添付ファイル、および組み込み SQLite データベースを 1 つの `TmdDoc` 構造体で管理します。本書では、利用者が主に使用する API をまとめます。
+`tmd-core` は Tanu Markdown (`.tmd` / `.tmdz`) 文書を読み書きするための Rust ライブラリです。Markdown 本文、マニフェスト、添付ファイル、および組み込み SQLite データベースを 1 つの `TmdDoc` 構造体で管理します。本書では公開 API の仕様と利用方法をまとめます。
 
 ## 依存関係
 Cargo.toml に次のように追記します。
@@ -13,12 +13,16 @@ mime = "0.3"
 
 ## 主要な型とエイリアス
 
-- `TmdDoc` — Markdown、`Manifest`、`AttachmentStore`、`DbHandle` を保持する文書コンテナ。
-- `Manifest` — バージョン、作成者、タグ、リンク、スキーマバージョンなどの文書メタデータを表現。`Semver` で TMD バージョンを保持。【F:tmd-core/src/lib.rs†L37-L87】【F:tmd-core/src/lib.rs†L211-L261】
-- `AttachmentStore` — 添付ファイルのメタデータとバイト列を管理し、`AttachmentStoreIter` で列挙できる。【F:tmd-core/src/lib.rs†L213-L234】【F:tmd-core/src/lib.rs†L272-L360】
-- `DbHandle` — SQLite 接続を保持し、`with_conn`/`with_conn_mut` 経由で SQL を実行。【F:tmd-core/src/lib.rs†L4-L8】【F:tmd-core/src/lib.rs†L104-L113】
-- `Format` — `Tmd`（プレーン）と `Tmdz`（ZIP 包含形式）を識別。【F:tmd-core/src/lib.rs†L433-L453】
-- `TmdResult<T>` / `TmdError` — ライブラリ全体で使用する Result/エラー型。【F:tmd-core/src/lib.rs†L21-L34】
+- `TmdDoc` — Markdown、`Manifest`、`AttachmentStore`、`DbHandle` を保持する文書コンテナ。【F:tmd-core/src/lib.rs†L38-L113】
+- `Manifest` — バージョン、作成者、タグ、リンク、スキーマバージョンなどの文書メタデータを表現。`Semver` で TMD バージョンを保持。【F:tmd-core/src/lib.rs†L212-L261】
+- `AttachmentStore` — 添付ファイルのメタデータとバイト列を管理し、`AttachmentStoreIter` で列挙できる。【F:tmd-core/src/lib.rs†L214-L235】【F:tmd-core/src/lib.rs†L273-L361】
+- `AttachmentDataMut` — 添付データの可変参照を安全に扱い、Drop 時に長さと SHA-256 を再計算するスマートポインタ。【F:tmd-core/src/lib.rs†L520-L548】
+- `DbHandle` — SQLite 接続を保持し、`with_conn`/`with_conn_mut` 経由で SQL を実行。【F:tmd-core/src/lib.rs†L5-L9】【F:tmd-core/src/lib.rs†L575-L624】
+- `DbOptions` — `page_size` / `journal_mode` / `synchronous` を指定し、`ensure_initialized` 時に PRAGMA を適用する設定。【F:tmd-core/src/lib.rs†L551-L595】
+- `Format` — `Tmd`（プレーン）と `Tmdz`（ZIP 包含形式）を識別。【F:tmd-core/src/lib.rs†L702-L743】
+- `ReadMode` / `WriteMode` — 読み書き時の検証・ZIP 生成オプション。【F:tmd-core/src/lib.rs†L343-L431】
+- `AttachmentId` / `LogicalPath` — 添付の UUID と論理パスのエイリアス。【F:tmd-core/src/lib.rs†L17-L20】
+- `TmdResult<T>` / `TmdError` — ライブラリ全体で使用する Result/エラー型。【F:tmd-core/src/lib.rs†L21-L53】
 
 ## 文書の生成と保存
 
@@ -71,17 +75,20 @@ fn main() -> tmd_core::TmdResult<()> {
 ```
 
 - `sniff_format` でヘッダーを見て自動判定します。【F:tmd-core/src/lib.rs†L433-L452】
-- `ReadMode::verify_hashes` を `true` にすると、添付の長さや SHA-256 をチェックします。【F:tmd-core/src/lib.rs†L351-L387】
-- `ReadMode::lazy_attachments` を `true` にすると添付を遅延ロードできます（デフォルトは `false`）。【F:tmd-core/src/lib.rs†L351-L387】
+- `sniff_format` は ZIP EOCD から TMD コメントを読み、拡張子に依存しないフォーマット判定を返します。【F:tmd-core/src/lib.rs†L702-L743】
+- `ReadMode::verify_hashes` を `true` にすると、添付の長さや SHA-256 をチェックします。【F:tmd-core/src/lib.rs†L343-L387】
+- `ReadMode::lazy_attachments` を `true` にすると添付を遅延ロードできます（デフォルトは `false`）。【F:tmd-core/src/lib.rs†L343-L387】
 
 ## 添付ファイル操作
 
-- 追加: `add_attachment`（バッファ）または `add_attachment_stream`（ストリーム）。【F:tmd-core/src/lib.rs†L64-L92】【F:tmd-core/src/lib.rs†L92-L116】
-- 削除: `remove_attachment(id)`。【F:tmd-core/src/lib.rs†L116-L125】
-- リネーム: `rename_attachment(id, new_path)`（パス正規化込み）。【F:tmd-core/src/lib.rs†L125-L135】【F:tmd-core/src/lib.rs†L181-L202】
-- メタ情報取得: `attachment_meta(id)` / `attachment_meta_by_path(path)`。【F:tmd-core/src/lib.rs†L135-L145】
-- 一覧: `list_attachments()` で `AttachmentStoreIter` を返す。【F:tmd-core/src/lib.rs†L145-L154】
-- データ参照: `attachments.data(id)` で `&[u8]`、`attachments.iter_with_data()` でメタとバイト列の組を列挙。【F:tmd-core/src/lib.rs†L334-L360】
+- 追加: `add_attachment`（バッファ）または `add_attachment_stream`（ストリーム）。後者は別スレッドで読み込み、`TmdError::Attachment` を伝播します。【F:tmd-core/src/lib.rs†L65-L116】
+- 削除: `remove_attachment(id)`。【F:tmd-core/src/lib.rs†L136-L145】
+- リネーム: `rename_attachment(id, new_path)`（パス正規化込み）。【F:tmd-core/src/lib.rs†L145-L158】【F:tmd-core/src/lib.rs†L416-L434】
+- メタ情報取得: `attachment_meta(id)` / `attachment_meta_by_path(path)`。【F:tmd-core/src/lib.rs†L149-L158】
+- 一覧: `list_attachments()` で `AttachmentStoreIter` を返す。【F:tmd-core/src/lib.rs†L158-L168】
+- データ参照: `attachments.data(id)` で `&[u8]`、`attachments.iter_with_data()` でメタとバイト列の組を列挙。【F:tmd-core/src/lib.rs†L443-L484】
+- 書き換え: `attachments.data_mut(id)` で `AttachmentDataMut` を取得し、ドロップ時に `length` と `sha256` が自動更新されます。【F:tmd-core/src/lib.rs†L447-L548】
+- 検証付き挿入: `attachments.insert_entry(meta, data, verify_hashes)` で長さ不一致や SHA-256 不一致をチェックしつつメタと実データを同時登録します。【F:tmd-core/src/lib.rs†L469-L520】
 
 ## マニフェスト編集
 
@@ -111,15 +118,21 @@ let doc = TmdDoc::new("# Document".into())?.with_manifest(manifest);
 
 ## 組み込みデータベースの利用
 
-- 読み取り専用: `db_with_conn(|conn| { /* SELECT ... */ })`。【F:tmd-core/src/lib.rs†L104-L110】
-- 書き込み: `db_with_conn_mut(|conn| { /* INSERT/UPDATE */ })`。処理後に自動で `rusqlite::Error` を `TmdError::Db` へ変換します。【F:tmd-core/src/lib.rs†L110-L113】【F:tmd-core/src/lib.rs†L34-L52】
-- マイグレーション: `migrate(&mut doc, from, to, up_sql)` で `PRAGMA user_version` を検証しながらバージョンを進めます。【F:tmd-core/src/lib.rs†L361-L422】
+- 読み取り専用: `db_with_conn(|conn| { /* SELECT ... */ })`（`TmdDoc` メソッド）。【F:tmd-core/src/lib.rs†L164-L171】
+- 書き込み: `db_with_conn_mut(|conn| { /* INSERT/UPDATE */ })`。処理後に自動で `rusqlite::Error` を `TmdError::Db` へ変換します。【F:tmd-core/src/lib.rs†L171-L174】【F:tmd-core/src/lib.rs†L24-L53】
+- グローバル関数版: `with_conn(doc, f)` / `with_conn_mut(doc, f)` は `TmdDoc` を直接受け取るショートカットです。【F:tmd-core/src/lib.rs†L641-L652】
+- DB ファイル出力/入力: `export_db(doc, path)` で一時 DB をファイルへ書き出し、`import_db(doc, path)` で差し替えます。`reset_db(doc, schema_sql, version)` では指定 SQL を適用し `PRAGMA user_version` を更新します。【F:tmd-core/src/lib.rs†L652-L677】
+- マイグレーション: `migrate(doc, up_sql, from, to)` で現在の `user_version` と `from` が一致することを確認し、`up_sql` を適用後 `to` へ進めます。【F:tmd-core/src/lib.rs†L677-L700】
+- 初期化オプション: `DbOptions` を `DbHandle::ensure_initialized` に渡すと `page_size` や `journal_mode` などの PRAGMA を事前適用できます。【F:tmd-core/src/lib.rs†L551-L614】
 
 ## 読み書きオプション
 
-- `ReadMode` — `verify_hashes`（添付のハッシュ検証）、`lazy_attachments`（遅延読込）。【F:tmd-core/src/lib.rs†L351-L387】
+- `ReadMode` — `verify_hashes`（添付のハッシュ検証）、`lazy_attachments`（遅延読込）。【F:tmd-core/src/lib.rs†L343-L387】
 - `WriteMode` — `compute_hashes`（添付の SHA-256 出力）、`solid_zip`（ZIP を単一ストリームで格納）、`dedup_by_hash`（添付の重複排除）。【F:tmd-core/src/lib.rs†L387-L431】
-- `Writer::write_doc` / `Reader::read_doc` で `Format` とモードを指定できます。【F:tmd-core/src/lib.rs†L453-L501】【F:tmd-core/src/lib.rs†L431-L453】
+- `Reader::new(reader, assumed, mode)` でフォーマットを推測・検証しつつ読み取り、`Reader::read_doc()` で `TmdDoc` を返します。【F:tmd-core/src/lib.rs†L744-L806】
+- `Writer::new(writer, format, mode)` で書き込みコンテキストを構築し、`Writer::write_doc(&doc)` で出力、`finish()` でリソースを解放します。【F:tmd-core/src/lib.rs†L806-L844】
+- 低レベル I/O: `read_tmd` / `read_tmdz` / `write_tmd` / `write_tmdz` は `Read`/`Write` トレイトを直接扱うストリーム API です。【F:tmd-core/src/lib.rs†L965-L1095】
+- パス版ヘルパー: `read_from_path(path, assumed)` は拡張子やヘッダーを見て `Format` を決定し、`write_to_path(path, doc, format)` は `Format` ごとに書き分けます。【F:tmd-core/src/lib.rs†L1085-L1107】
 
 ## エラー処理
 
@@ -132,17 +145,6 @@ let doc = TmdDoc::new("# Document".into())?.with_manifest(manifest);
 - フォーマット: `TmdError::InvalidFormat`（EOCD 署名不正、コメント長不正など）
 - DB: `TmdError::Db`（`rusqlite` エラーを文字列化）【F:tmd-core/src/lib.rs†L21-L53】【F:tmd-core/src/lib.rs†L598-L679】
 
-## FFI（オプション）
-
-`ffi` フィーチャを有効化すると、C 互換関数で文書の読み書きやエラー取得が可能になります。主なエントリーポイントは以下です。【F:tmd-core/src/lib.rs†L728-L1207】
-
-- `tmd_doc_new` / `tmd_doc_free`
-- `tmd_read_from_path` / `tmd_write_to_path`
-- `tmd_last_error_message`
-- `tmd_doc_markdown`（Markdown 取得）、`tmd_doc_set_markdown`（設定）
-
-FFI 層ではポインタの NULL チェックや UTF-8 変換エラーを専用メッセージとして保持します。
-
 ## 典型的なワークフロー
 
 1. `TmdDoc::new` で文書作成、または `read_from_path` で既存文書をロード。
@@ -151,4 +153,21 @@ FFI 層ではポインタの NULL チェックや UTF-8 変換エラーを専用
 4. `write_to_path` / `Writer` で `.tmd` または `.tmdz` に保存。
 
 `write_tmdz` / `write_tmd` を直接使う場合は、`WriteMode` でハッシュ計算や ZIP オプションを制御できます。【F:tmd-core/src/lib.rs†L598-L679】
+
+## ユーティリティ
+
+- `now_utc()` — `chrono::Utc::now()` をラップしたユーティリティ。【F:tmd-core/src/lib.rs†L189-L194】
+- `normalize_logical_path(input)` — 添付の論理パスを POSIX 形式へ正規化し、空/絶対パス/`..` を拒否します。【F:tmd-core/src/lib.rs†L194-L214】
+
+## FFI（オプション）
+
+`ffi` フィーチャを有効化すると、C 互換関数で文書の読み書きやエラー取得が可能になります。主なエントリーポイントは以下です。【F:tmd-core/src/lib.rs†L1109-L1458】
+
+- ドキュメント管理: `tmd_doc_new` / `tmd_doc_free` / `tmd_doc_markdown` / `tmd_doc_set_markdown`
+- パス I/O: `tmd_read_from_path` / `tmd_write_to_path`
+- メタデータ取得: `tmd_doc_title` / `tmd_doc_tags` / `tmd_doc_attachments`
+- 例外管理: `tmd_last_error_message`
+- 添付: `tmd_doc_add_attachment` / `tmd_doc_get_attachment`
+
+FFI 層ではポインタの NULL チェックや UTF-8 変換エラーを専用メッセージとして保持します。
 
