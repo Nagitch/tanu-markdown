@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import { Buffer } from "node:buffer";
 
 export function activate(context: vscode.ExtensionContext) {
   const newDoc = vscode.commands.registerCommand("tmd.newDocument", async () => {
@@ -32,7 +33,9 @@ Hello!
   });
 
   const validate = vscode.commands.registerCommand("tmd.validate", async () => {
-    vscode.window.showInformationMessage("Validate: (MVP stub) parse EOCD comment, match markdown length, check manifest hashes.");
+    vscode.window.showInformationMessage(
+      "Validate: (MVP stub) parse EOCD comment, match markdown length, check manifest hashes.",
+    );
   });
 
   const exportHtml = vscode.commands.registerCommand("tmd.exportHtml", async () => {
@@ -43,7 +46,12 @@ Hello!
     vscode.window.showInformationMessage("Convert to .tmdz: (MVP stub)");
   });
 
-  context.subscriptions.push(newDoc, insertAttach, validate, exportHtml, convertToTmdz);
+  const welcome = vscode.commands.registerCommand("tanuMarkdownEditor.showWelcome", () => {
+    const message = "Tanu Markdown Editor is installed. Features will arrive in a future release.";
+    vscode.window.showInformationMessage(message);
+  });
+
+  context.subscriptions.push(newDoc, insertAttach, validate, exportHtml, convertToTmdz, welcome);
 }
 
 export function deactivate() {}

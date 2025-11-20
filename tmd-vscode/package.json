@@ -1,8 +1,9 @@
 {
-  "name": "tmd-vscode",
-  "displayName": "TMD (Tanu Markdown)",
-  "description": "Edit .tmd polyglot Markdown files with embedded attachments and SQLite.",
+  "name": "tanu-markdown-editor",
+  "displayName": "Tanu Markdown Editor",
+  "description": "Preview placeholder for editing Tanu Markdown (.tmd) documents in VS Code.",
   "version": "0.0.1",
+  "publisher": "tanu-markdown",
   "engines": {
     "vscode": "^1.90.0"
   },
@@ -12,21 +13,17 @@
   "activationEvents": [
     "onLanguage:markdown",
     "onCommand:tmd.newDocument",
-    "onCommand:tmd.addAttachment",
     "onCommand:tmd.insertAttachmentLink",
     "onCommand:tmd.validate",
     "onCommand:tmd.exportHtml",
-    "onCommand:tmd.convertToTmdz"
+    "onCommand:tmd.convertToTmdz",
+    "onCommand:tanuMarkdownEditor.showWelcome"
   ],
   "contributes": {
     "commands": [
       {
         "command": "tmd.newDocument",
         "title": "TMD: New Document"
-      },
-      {
-        "command": "tmd.addAttachment",
-        "title": "TMD: Add Attachment"
       },
       {
         "command": "tmd.insertAttachmentLink",
@@ -43,13 +40,18 @@
       {
         "command": "tmd.convertToTmdz",
         "title": "TMD: Convert to .tmdz"
+      },
+      {
+        "command": "tanuMarkdownEditor.showWelcome",
+        "title": "Tanu Markdown Editor: Show Welcome"
       }
     ],
     "languages": [
       {
         "id": "tmd",
         "aliases": [
-          "TMD"
+          "TMD",
+          "Tanu Markdown"
         ],
         "extensions": [
           ".tmd"
@@ -65,6 +67,7 @@
   },
   "devDependencies": {
     "typescript": "^5.5.0",
-    "@types/vscode": "^1.90.0"
+    "@types/vscode": "^1.90.0",
+    "@types/node": "^22.0.0"
   }
 }

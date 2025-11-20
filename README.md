@@ -13,7 +13,7 @@ Each `.tmd` file combines **Markdown text + embedded assets + metadata (manifest
 | Directory | Description |
 |------------|-------------|
 | `tmd-sample/` | `.tmd` / `.tmdz` samples and format reference |
-| `tmd-vscode/` | VSCode extension (TypeScript) |
+| `tmd-vscode/` | VSCode extension placeholder "Tanu Markdown Editor" (TypeScript) |
 | `tmd-core/` | Rust library core (data structures, manifest handling) |
 | `tmd-cli/` | Rust CLI tool for TMD document operations |
 
@@ -35,6 +35,18 @@ Rust, Cargo, Node.js and the TypeScript toolchain are available in the container
 ### VS Code Dev Container
 
 When using VS Code, install the **Dev Containers** extension and choose **“Open Folder in Container…”**. The `.devcontainer` configuration provisions the same image, installs `rustfmt`/`clippy`, and runs `npm install` for the VSCode extension automatically.
+
+### Install the VS Code extension (developer build)
+
+You can side-load the placeholder extension package into VS Code to verify activation before editor features ship:
+
+1. `cd tmd-vscode`
+2. `npm install`
+3. `npm run compile`
+4. `npm exec vsce package`
+5. `code --install-extension tanu-markdown-editor-0.0.1.vsix`
+
+The packaged extension only exposes a welcome command (`Tanu Markdown Editor: Show Welcome`) that confirms successful installation.
 
 ---
 
@@ -64,10 +76,7 @@ When using VS Code, install the **Dev Containers** extension and choose **“Ope
 ## 🧰 Components
 
 ### `tmd-vscode/`
-A **VSCode extension (MVP)** implemented in TypeScript providing:
-- New `.tmd` creation
-- Insert `attach:` links
-- Validate & Convert to `.tmdz` (stub)
+**Tanu Markdown Editor**, a VS Code extension placeholder written in TypeScript. The current build only registers a welcome command so that the package can be installed and tested before real editing features arrive.
 
 ### `tmd-core/`
 Rust library defining the TMD document model:
