@@ -13,7 +13,7 @@ TMD は `.tmd` 拡張子を持ち、1 つのファイルに **Markdown本文 + �
 | ディレクトリ | 内容 |
 |--------------|------|
 | `tmd-sample/` | `.tmd` / `.tmdz` サンプルと構造解説 |
-| `tmd-vscode/` | VSCode 拡張の雛形 (TypeScript) |
+| `tmd-vscode/` | VSCode 拡張「Tanu Markdown Editor」のプレースホルダー (TypeScript) |
 | `tmd-core/` | Rust ライブラリコア (TMDドキュメント構造体と基本処理) |
 | `tmd-cli/` | Rust CLI (TMDドキュメントを操作するツール) |
 
@@ -35,6 +35,18 @@ Rust / Cargo / Node.js / TypeScript など必要なツールが揃っており�
 ### VS Code Dev Container
 
 VS Code の **Dev Containers** 拡張機能を利用すると、同じイメージを使ってフォルダーを直接コンテナー内で開けます。`.devcontainer` の設定により `rustfmt` / `clippy` のインストールと、VSCode 拡張向けの `npm install` が自動で実行されます。
+
+### VS Code 拡張（開発者向けビルド）のインストール
+
+プレースホルダー拡張「Tanu Markdown Editor」を VS Code にサイドロードして、動作確認ができます。
+
+1. `cd tmd-vscode`
+2. `npm install`
+3. `npm run compile`
+4. `npm exec vsce package`
+5. `code --install-extension tanu-markdown-editor-0.0.1.vsix`
+
+現時点のパッケージはウェルカムコマンド（`Tanu Markdown Editor: Show Welcome`）のみを提供し、将来的な編集機能に向けた土台となります。
 
 ---
 
@@ -64,18 +76,7 @@ VS Code の **Dev Containers** 拡張機能を利用すると、同じイメー�
 ## 🧰 各コンポーネント
 
 ### `tmd-vscode/`
-VSCode 拡張 (MVP)。TypeScript 製で、次の機能を提供します：
-- `.tmd` ファイルの新規作成
-- `attach:` リンクの挿入
-- バリデーション / `.tmdz` 変換（スタブ）
-
-```bash
-cd tmd-vscode
-npm install
-npm run compile
-```
-
-VSCode で `F5` を押すとデバッグ起動します。
+TypeScript 製の VSCode 拡張「Tanu Markdown Editor」のプレースホルダーです。現状はウェルカムコマンドのみを登録しており、将来的な編集機能を追加するための土台となります。
 
 ### `tmd-core/`
 Rust ライブラリ。
