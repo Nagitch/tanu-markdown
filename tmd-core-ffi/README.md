@@ -21,7 +21,6 @@ The wrapper keeps the core FFI functions alive so the linker does not drop them.
 - `tmd_doc_new` / `tmd_doc_free`
 - `tmd_doc_read_from_path` / `tmd_doc_write_to_path`
 - `tmd_doc_get_markdown` / `tmd_doc_set_markdown`
-- `tmd_doc_add_attachment` / `tmd_doc_get_attachment`
 - `tmd_last_error_message`
 
 Refer to `tmd-core` for the full FFI contract and error semantics.
