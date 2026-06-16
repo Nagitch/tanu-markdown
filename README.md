@@ -1,6 +1,6 @@
 **this is very AI generated bare scaffolding. make sure this is not guaranteed to work normally.**
 
-# 🦝 Tanu Markdown (TMD)
+# Tanu Markdown (TMD)
 
 **Tanu Markdown (TMD)** is a *self-contained Markdown format* that lets you embed **images, databases, and binary data** directly into Markdown.
 
@@ -8,7 +8,7 @@ Each `.tmd` file combines **Markdown text + embedded assets + metadata (manifest
 
 ---
 
-## 📦 Repository Structure
+## Repository Structure
 
 | Directory | Description |
 |------------|-------------|
@@ -19,7 +19,7 @@ Each `.tmd` file combines **Markdown text + embedded assets + metadata (manifest
 
 ---
 
-## 🛠 Development Environment
+## Development Environment
 
 ### Run everything in Docker
 
@@ -50,7 +50,7 @@ The packaged extension only exposes a welcome command (`Tanu Markdown Editor: Sh
 
 ---
 
-## 🧩 File Format Overview
+## File Format Overview
 
 ### `.tmd` — Polyglot Format (Markdown + ZIP)
 
@@ -73,7 +73,7 @@ The packaged extension only exposes a welcome command (`Tanu Markdown Editor: Sh
 
 ---
 
-## 🧰 Components
+## Components
 
 ### `tmd-vscode/`
 **Tanu Markdown Editor**, a VS Code extension placeholder written in TypeScript. The current build only registers a welcome command so that the package can be installed and tested before real editing features arrive.
@@ -93,7 +93,7 @@ cargo run -- export-html mydoc.tmd out.html --self-contained
 
 ---
 
-## 🧱 Roadmap
+## Roadmap
 
 - [ ] Implement `.tmd` read/write logic (EOCD parsing, ZIP build)
 - [ ] Attachment management UI in VSCode extension
@@ -103,11 +103,11 @@ cargo run -- export-html mydoc.tmd out.html --self-contained
 
 ---
 
-## 📜 License
+## License
 
 MIT License  
 (c) 2025 Tanu Markdown Project
 
 ---
 
-🧡 *Tanu Markdown — Markdown that packs everything inside.*
+*Tanu Markdown — Markdown that packs everything inside.*

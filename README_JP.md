@@ -1,4 +1,4 @@
-# 🦝 Tanu Markdown (TMD)
+# Tanu Markdown (TMD)
 
 **Tanu Markdown (TMD)** は、通常の Markdown ファイルに **画像・データベース・添付リソースを同梱できる**
 「自己完結型ドキュメント形式」を目指す新しい仕様です。
@@ -8,7 +8,7 @@ TMD は `.tmd` 拡張子を持ち、1 つのファイルに **Markdown本文 + �
 
 ---
 
-## 📦 構成概要
+## 構成概要
 
 | ディレクトリ | 内容 |
 |--------------|------|
@@ -19,7 +19,7 @@ TMD は `.tmd` 拡張子を持ち、1 つのファイルに **Markdown本文 + �
 
 ---
 
-## 🛠 開発環境
+## 開発環境
 
 ### Docker でまとめて構築する
 
@@ -50,7 +50,7 @@ VS Code の **Dev Containers** 拡張機能を利用すると、同じイメー�
 
 ---
 
-## 🧩 ファイル形式概要
+## ファイル形式概要
 
 ### `.tmd` — Polyglot 形式 (Markdown + ZIP)
 
@@ -73,7 +73,7 @@ VS Code の **Dev Containers** 拡張機能を利用すると、同じイメー�
 
 ---
 
-## 🧰 各コンポーネント
+## 各コンポーネント
 
 ### `tmd-vscode/`
 TypeScript 製の VSCode 拡張「Tanu Markdown Editor」のプレースホルダーです。現状はウェルカムコマンドのみを登録しており、将来的な編集機能を追加するための土台となります。
@@ -93,7 +93,7 @@ cargo run -- export-html mydoc.tmd out.html --self-contained
 
 ---
 
-## 🧱 今後の展開
+## 今後の展開
 
 - [ ] `.tmd` 読み書き処理の実装
 - [ ] VSCode 拡張での添付管理 UI
@@ -103,11 +103,11 @@ cargo run -- export-html mydoc.tmd out.html --self-contained
 
 ---
 
-## 📜 ライセンス
+## ライセンス
 
 MIT License  
 (c) 2025 Tanu Markdown Project
 
 ---
 
-🧡 *Tanu Markdown — Markdown that packs everything inside.*
+*Tanu Markdown — Markdown that packs everything inside.*
