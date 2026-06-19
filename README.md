@@ -12,7 +12,7 @@ Each `.tmd` file combines **Markdown text + embedded assets + metadata (manifest
 
 | Directory | Description |
 |------------|-------------|
-| `tmd-sample/` | `.tmd` / `.tmdz` samples and format reference |
+| `tmd-sample/` | `.tmd` / `.tmdp` samples and format reference |
 | `tmd-vscode/` | VSCode extension placeholder "Tanu Markdown Editor" (TypeScript) |
 | `tmd-core/` | Rust library core (data structures, manifest handling) |
 | `tmd-cli/` | Rust CLI tool for TMD document operations |
@@ -52,7 +52,7 @@ The packaged extension only exposes a welcome command (`Tanu Markdown Editor: Sh
 
 ## File Format Overview
 
-### `.tmd` — Polyglot Format (Markdown + ZIP)
+### `.tmdp` — Polyglot Format (Markdown + ZIP)
 
 ```
 +------------------------+
@@ -66,9 +66,9 @@ The packaged extension only exposes a welcome command (`Tanu Markdown Editor: Sh
 +------------------------+
 ```
 
-### `.tmdz` — ZIP format
+### `.tmd` — ZIP format
 
-- Same as `.tmd` but stored as a regular ZIP file  
+- Same as `.tmdp` but stored as a regular ZIP file  
 - Contains `index.md`, `manifest.json`, `images/`, and `data/`
 
 ---
@@ -84,7 +84,7 @@ Rust library defining the TMD document model:
 - `to_bytes()` / `open_bytes()` (stubs for polyglot serialization)
 
 ### `tmd-cli/`
-Rust CLI utility for working with `.tmd` files.
+Rust CLI utility for working with `.tmdp` files.
 ```bash
 cargo run -- new mydoc.tmd --title "My Document"
 cargo run -- validate mydoc.tmd
@@ -95,9 +95,9 @@ cargo run -- export-html mydoc.tmd out.html --self-contained
 
 ## Roadmap
 
-- [ ] Implement `.tmd` read/write logic (EOCD parsing, ZIP build)
+- [ ] Implement `.tmdp` read/write logic (EOCD parsing, ZIP build)
 - [ ] Attachment management UI in VSCode extension
-- [ ] `.tmd` → HTML / PDF export
+- [ ] `.tmdp` → HTML / PDF export
 - [ ] SQLite embedding and SQL evaluation
 - [ ] Draft formal file specification
 

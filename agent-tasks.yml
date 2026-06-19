@@ -2,7 +2,7 @@
 # Tanu Markdown (TMD) — Agent/CI task definitions
 # 目的:
 # - ドキュメント同期（README多言語）
-# - 形式検証（.tmd/.tmdz）
+# - 形式検証（.tmdp/.tmd）
 # - ビルド（Rust/VSCode）
 # - 仕様生成（docs/）
 # - プレビュー生成（self-contained HTML）
@@ -62,19 +62,19 @@ tasks:
       - ".agent/patches/ へ差分パッチが生成される"
       - "PR Description に差分サマリが含まれる"
 
-  # 2) .tmd / .tmdz の形式検証
+  # 2) .tmdp / .tmd の形式検証
   validate_tmd:
-    description: "サンプルおよび変更対象の .tmd/.tmdz を検証（EOCD, コメント署名, manifest, ハッシュ, attach: 解決）。"
+    description: "サンプルおよび変更対象の .tmdp/.tmd を検証（EOCD, コメント署名, manifest, ハッシュ, attach: 解決）。"
     triggers:
       - on_pull_request
       - pre_release
       - manual
     inputs:
       glob:
+        - "tmd-sample/**/*.tmdp"
         - "tmd-sample/**/*.tmd"
-        - "tmd-sample/**/*.tmdz"
+        - "**/*.tmdp"
         - "**/*.tmd"
-        - "**/*.tmdz"
     rules:
       eocd_signature: "TMD1"
       require_comment_len_field: true      # EOCDコメントに md_len_le64
@@ -136,18 +136,18 @@ tasks:
 
   # 5) self-contained HTML のプレビュー生成
   export_html_preview:
-    description: ".tmd から self-contained HTML を生成してPRに添付（将来：PDFも）。"
+    description: ".tmdp から self-contained HTML を生成してPRに添付（将来：PDFも）。"
     triggers:
       - on_pull_request
       - manual
     inputs:
       glob:
-        - "tmd-sample/**/*.tmd"
+        - "tmd-sample/**/*.tmdp"
     commands:
       - name: "export"
         run: |
           # 実装後は tmd-cli を使用
-          # cargo run -p tmd-cli -- export-html sample.tmd out.html --self-contained
+          # cargo run -p tmd-cli -- export-html sample.tmdp out.html --self-contained
           echo "Export HTML (stub)"
           mkdir -p .agent/preview && echo "<html><body>TMD preview stub</body></html>" > .agent/preview/sample.html
     success_criteria:

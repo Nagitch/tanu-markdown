@@ -1,6 +1,6 @@
 # tmd-core API ドキュメント
 
-`tmd-core` は Tanu Markdown (`.tmd` / `.tmdz`) 文書を読み書きするための Rust ライブラリです。Markdown 本文、マニフェスト、添付ファイル、および組み込み SQLite データベースを 1 つの `TmdDoc` 構造体で管理します。本書では公開 API の仕様と利用方法をまとめます。
+`tmd-core` は Tanu Markdown (`.tmd` / `.tmdp`) 文書を読み書きするための Rust ライブラリです。Markdown 本文、マニフェスト、添付ファイル、および組み込み SQLite データベースを 1 つの `TmdDoc` 構造体で管理します。本書では公開 API の仕様と利用方法をまとめます。
 
 ## 依存関係
 Cargo.toml に次のように追記します。
@@ -19,7 +19,7 @@ mime = "0.3"
 - `AttachmentDataMut` — 添付データの可変参照を安全に扱い、Drop 時に長さと SHA-256 を再計算するスマートポインタ。【F:tmd-core/src/lib.rs†L520-L548】
 - `DbHandle` — SQLite 接続を保持し、`with_conn`/`with_conn_mut` 経由で SQL を実行。【F:tmd-core/src/lib.rs†L5-L9】【F:tmd-core/src/lib.rs†L575-L624】
 - `DbOptions` — `page_size` / `journal_mode` / `synchronous` を指定し、`ensure_initialized` 時に PRAGMA を適用する設定。【F:tmd-core/src/lib.rs†L551-L595】
-- `Format` — `Tmd`（プレーン）と `Tmdz`（ZIP 包含形式）を識別。【F:tmd-core/src/lib.rs†L702-L743】
+- `Format` — `Tmd`（通常ZIP主形式）と `Tmdp`（Markdown先頭のpolyglot形式）を識別。【F:tmd-core/src/lib.rs†L702-L743】
 - `ReadMode` / `WriteMode` — 読み書き時の検証・ZIP 生成オプション。【F:tmd-core/src/lib.rs†L343-L431】
 - `AttachmentId` / `LogicalPath` — 添付の UUID と論理パスのエイリアス。【F:tmd-core/src/lib.rs†L17-L20】
 - `TmdResult<T>` / `TmdError` — ライブラリ全体で使用する Result/エラー型。【F:tmd-core/src/lib.rs†L21-L53】
@@ -40,13 +40,13 @@ fn main() -> tmd_core::TmdResult<()> {
     let _logo: AttachmentId = doc.add_attachment("images/logo.png", IMAGE_PNG, b"...bytes...")?;
 
     // 文書を TMDZ 形式で保存
-    write_to_path("hello.tmdz", &doc, Format::Tmdz)?;
+    write_to_path("hello.tmd", &doc, Format::Tmd)?;
     Ok(())
 }
 ```
 
 - `TmdDoc::new` はデフォルトマニフェストと空の SQLite を初期化します。【F:tmd-core/src/lib.rs†L36-L101】
-- `write_to_path` は `Format` に応じて `.tmd` または `.tmdz` を生成します。【F:tmd-core/src/lib.rs†L702-L726】
+- `write_to_path` は `Format` に応じて `.tmdp` または `.tmd` を生成します。【F:tmd-core/src/lib.rs†L702-L726】
 - 添付は論理パス衝突時に `TmdError::Attachment` を返します。【F:tmd-core/src/lib.rs†L272-L332】
 
 ### 既存文書の読み込み
@@ -56,7 +56,7 @@ use tmd_core::{read_from_path, Format, ReadMode};
 
 fn main() -> tmd_core::TmdResult<()> {
     // 拡張子からフォーマット推測（Auto）
-    let doc = read_from_path("hello.tmdz", None)?;
+    let doc = read_from_path("hello.tmd", None)?;
     println!("Title: {:?}, tags: {:?}", doc.manifest.title, doc.manifest.tags);
 
     // 検証やレイジー読み込みを制御したい場合
@@ -64,8 +64,8 @@ fn main() -> tmd_core::TmdResult<()> {
     use std::io::{BufReader, Seek};
     use tmd_core::{Reader, TmdDoc};
 
-    let file = File::open("hello.tmdz")?;
-    let mut reader = Reader::new(BufReader::new(file), Some(Format::Tmdz), ReadMode {
+    let file = File::open("hello.tmd")?;
+    let mut reader = Reader::new(BufReader::new(file), Some(Format::Tmd), ReadMode {
         verify_hashes: true,
         lazy_attachments: false,
     })?;
@@ -131,7 +131,7 @@ let doc = TmdDoc::new("# Document".into())?.with_manifest(manifest);
 - `WriteMode` — `compute_hashes`（添付の SHA-256 出力）、`solid_zip`（ZIP を単一ストリームで格納）、`dedup_by_hash`（添付の重複排除）。【F:tmd-core/src/lib.rs†L387-L431】
 - `Reader::new(reader, assumed, mode)` でフォーマットを推測・検証しつつ読み取り、`Reader::read_doc()` で `TmdDoc` を返します。【F:tmd-core/src/lib.rs†L744-L806】
 - `Writer::new(writer, format, mode)` で書き込みコンテキストを構築し、`Writer::write_doc(&doc)` で出力、`finish()` でリソースを解放します。【F:tmd-core/src/lib.rs†L806-L844】
-- 低レベル I/O: `read_tmd` / `read_tmdz` / `write_tmd` / `write_tmdz` は `Read`/`Write` トレイトを直接扱うストリーム API です。【F:tmd-core/src/lib.rs†L965-L1095】
+- 低レベル I/O: `read_tmdp` / `read_tmd` / `write_tmdp` / `write_tmd` は `Read`/`Write` トレイトを直接扱うストリーム API です。【F:tmd-core/src/lib.rs†L965-L1095】
 - パス版ヘルパー: `read_from_path(path, assumed)` は拡張子やヘッダーを見て `Format` を決定し、`write_to_path(path, doc, format)` は `Format` ごとに書き分けます。【F:tmd-core/src/lib.rs†L1085-L1107】
 
 ## エラー処理
@@ -150,9 +150,9 @@ let doc = TmdDoc::new("# Document".into())?.with_manifest(manifest);
 1. `TmdDoc::new` で文書作成、または `read_from_path` で既存文書をロード。
 2. Markdown 編集・マニフェスト更新・添付追加／削除。
 3. 必要に応じて `db_with_conn_mut` で DB を更新、`migrate` でスキーマを進める。
-4. `write_to_path` / `Writer` で `.tmd` または `.tmdz` に保存。
+4. `write_to_path` / `Writer` で `.tmdp` または `.tmd` に保存。
 
-`write_tmdz` / `write_tmd` を直接使う場合は、`WriteMode` でハッシュ計算や ZIP オプションを制御できます。【F:tmd-core/src/lib.rs†L598-L679】
+`write_tmd` / `write_tmdp` を直接使う場合は、`WriteMode` でハッシュ計算や ZIP オプションを制御できます。【F:tmd-core/src/lib.rs†L598-L679】
 
 ## ユーティリティ
 

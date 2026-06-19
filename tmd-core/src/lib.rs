@@ -5,7 +5,7 @@ pub use db::{
     export_db, import_db, migrate, reset_db, with_conn, with_conn_mut, DbHandle, DbOptions,
 };
 pub use format::{
-    read_from_path, read_tmd, read_tmdz, sniff_format, write_tmd, write_tmdz, write_to_path,
+    read_from_path, read_tmdp, read_tmd, sniff_format, write_tmdp, write_tmd, write_to_path,
     Format, ReadMode, Reader, WriteMode, Writer,
 };
 pub use manifest::{AttachmentMeta, AttachmentRef, LinkRef, Manifest, Semver};
@@ -714,14 +714,14 @@ mod format {
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum Format {
         Tmd,
-        Tmdz,
+        Tmdp,
     }
 
     pub fn sniff_format(header: &[u8]) -> Option<Format> {
         if header.len() >= 4 && &header[0..4] == b"PK\x03\x04" {
-            Some(Format::Tmdz)
-        } else if !header.is_empty() {
             Some(Format::Tmd)
+        } else if !header.is_empty() {
+            Some(Format::Tmdp)
         } else {
             None
         }
@@ -789,7 +789,7 @@ mod format {
         pub fn read_doc(&mut self) -> TmdResult<TmdDoc> {
             match self.format {
                 Format::Tmd => read_tmd(&mut self.inner, self.mode),
-                Format::Tmdz => read_tmdz(&mut self.inner, self.mode),
+                Format::Tmdp => read_tmdp(&mut self.inner, self.mode),
             }
         }
     }
@@ -814,7 +814,7 @@ mod format {
         pub fn write_doc(&mut self, doc: &TmdDoc) -> TmdResult<()> {
             match self.format {
                 Format::Tmd => write_tmd(&mut self.inner, doc, self.mode),
-                Format::Tmdz => write_tmdz(&mut self.inner, doc, self.mode),
+                Format::Tmdp => write_tmdp(&mut self.inner, doc, self.mode),
             }
         }
 
@@ -962,7 +962,7 @@ mod format {
         })
     }
 
-    pub fn read_tmd<R: Read + Seek>(reader: &mut R, mode: ReadMode) -> TmdResult<TmdDoc> {
+    pub fn read_tmdp<R: Read + Seek>(reader: &mut R, mode: ReadMode) -> TmdResult<TmdDoc> {
         reader.seek(SeekFrom::Start(0))?;
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes)?;
@@ -976,7 +976,7 @@ mod format {
         Ok(doc)
     }
 
-    pub fn read_tmdz<R: Read + Seek>(reader: &mut R, mode: ReadMode) -> TmdResult<TmdDoc> {
+    pub fn read_tmd<R: Read + Seek>(reader: &mut R, mode: ReadMode) -> TmdResult<TmdDoc> {
         reader.seek(SeekFrom::Start(0))?;
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes)?;
@@ -1057,7 +1057,7 @@ mod format {
         Ok(zip_bytes)
     }
 
-    pub fn write_tmd<W: Write + Seek>(
+    pub fn write_tmdp<W: Write + Seek>(
         writer: &mut W,
         doc: &TmdDoc,
         mode: WriteMode,
@@ -1072,7 +1072,7 @@ mod format {
         Ok(())
     }
 
-    pub fn write_tmdz<W: Write + Seek>(
+    pub fn write_tmd<W: Write + Seek>(
         writer: &mut W,
         doc: &TmdDoc,
         mode: WriteMode,
@@ -1151,7 +1151,7 @@ pub mod ffi {
         match value {
             0 => Ok(None),
             1 => Ok(Some(Format::Tmd)),
-            2 => Ok(Some(Format::Tmdz)),
+            2 => Ok(Some(Format::Tmdp)),
             other => Err(format!("unknown format value: {}", other)),
         }
     }
@@ -1217,7 +1217,7 @@ pub mod ffi {
 
     /// Load a document from disk, optionally specifying the expected format.
     ///
-    /// Pass `0` for automatic format detection, `1` for `.tmd`, and `2` for `.tmdz`.
+    /// Pass `0` for automatic format detection, `1` for `.tmd`, and `2` for `.tmdp`.
     ///
     /// # Safety
     ///
@@ -1258,7 +1258,7 @@ pub mod ffi {
 
     /// Persist the document to disk using the specified format.
     ///
-    /// Pass `1` for `.tmd` or `2` for `.tmdz`.
+    /// Pass `1` for `.tmd` or `2` for `.tmdp`.
     ///
     /// # Safety
     ///
@@ -1499,10 +1499,10 @@ mod tests {
         }
 
         let mut buffer = Cursor::new(Vec::new());
-        write_tmd(&mut buffer, &doc, WriteMode::default()).expect("write");
+        write_tmdp(&mut buffer, &doc, WriteMode::default()).expect("write");
         buffer.seek(SeekFrom::Start(0)).unwrap();
         let mut reader =
-            Reader::new(buffer, Some(Format::Tmd), ReadMode::default()).expect("reader");
+            Reader::new(buffer, Some(Format::Tmdp), ReadMode::default()).expect("reader");
         let rebuilt = reader.read_doc().expect("read");
 
         let rebuilt_meta = rebuilt
@@ -1539,13 +1539,13 @@ mod tests {
     }
 
     #[test]
-    fn tmd_roundtrip_preserves_content() {
+    fn tmdp_roundtrip_preserves_content() {
         let doc = build_doc_with_attachment();
         let mut buffer = Cursor::new(Vec::new());
-        write_tmd(&mut buffer, &doc, WriteMode::default()).expect("write");
+        write_tmdp(&mut buffer, &doc, WriteMode::default()).expect("write");
         buffer.seek(SeekFrom::Start(0)).unwrap();
         let mut reader =
-            Reader::new(buffer, Some(Format::Tmd), ReadMode::default()).expect("reader");
+            Reader::new(buffer, Some(Format::Tmdp), ReadMode::default()).expect("reader");
         let rebuilt = reader.read_doc().expect("read");
 
         assert_eq!(rebuilt.markdown, doc.markdown);
@@ -1580,13 +1580,13 @@ mod tests {
     }
 
     #[test]
-    fn tmdz_roundtrip_preserves_content() {
+    fn tmd_roundtrip_preserves_content() {
         let doc = build_doc_with_attachment();
         let mut buffer = Cursor::new(Vec::new());
-        write_tmdz(&mut buffer, &doc, WriteMode::default()).expect("write");
+        write_tmd(&mut buffer, &doc, WriteMode::default()).expect("write");
         buffer.seek(SeekFrom::Start(0)).unwrap();
         let mut reader =
-            Reader::new(buffer, Some(Format::Tmdz), ReadMode::default()).expect("reader");
+            Reader::new(buffer, Some(Format::Tmd), ReadMode::default()).expect("reader");
         let rebuilt = reader.read_doc().expect("read");
         assert_eq!(rebuilt.markdown, doc.markdown);
         assert_eq!(rebuilt.manifest.title, doc.manifest.title);
@@ -1594,8 +1594,8 @@ mod tests {
 
     #[test]
     fn sniff_format_detects_variants() {
-        assert_eq!(sniff_format(b"PK\x03\x04"), Some(Format::Tmdz));
-        assert_eq!(sniff_format(b"#"), Some(Format::Tmd));
+        assert_eq!(sniff_format(b"PK\x03\x04"), Some(Format::Tmd));
+        assert_eq!(sniff_format(b"#"), Some(Format::Tmdp));
         assert_eq!(sniff_format(b""), None);
     }
 

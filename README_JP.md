@@ -12,7 +12,7 @@ TMD は `.tmd` 拡張子を持ち、1 つのファイルに **Markdown本文 + �
 
 | ディレクトリ | 内容 |
 |--------------|------|
-| `tmd-sample/` | `.tmd` / `.tmdz` サンプルと構造解説 |
+| `tmd-sample/` | `.tmd` / `.tmdp` サンプルと構造解説 |
 | `tmd-vscode/` | VSCode 拡張「Tanu Markdown Editor」のプレースホルダー (TypeScript) |
 | `tmd-core/` | Rust ライブラリコア (TMDドキュメント構造体と基本処理) |
 | `tmd-cli/` | Rust CLI (TMDドキュメントを操作するツール) |
@@ -52,7 +52,7 @@ VS Code の **Dev Containers** 拡張機能を利用すると、同じイメー�
 
 ## ファイル形式概要
 
-### `.tmd` — Polyglot 形式 (Markdown + ZIP)
+### `.tmdp` — Polyglot 形式 (Markdown + ZIP)
 
 ```
 +------------------------+
@@ -66,9 +66,9 @@ VS Code の **Dev Containers** 拡張機能を利用すると、同じイメー�
 +------------------------+
 ```
 
-### `.tmdz` — ZIP 形式
+### `.tmd` — ZIP 形式
 
-- `.tmd` を展開した構造をそのまま ZIP 化
+- `.tmdp` を展開した構造をそのまま ZIP 化
 - `index.md`, `manifest.json`, `images/`, `data/` を格納
 
 ---
@@ -95,7 +95,7 @@ cargo run -- export-html mydoc.tmd out.html --self-contained
 
 ## 今後の展開
 
-- [ ] `.tmd` 読み書き処理の実装
+- [ ] `.tmdp` 読み書き処理の実装
 - [ ] VSCode 拡張での添付管理 UI
 - [ ] HTML / PDF 出力機能
 - [ ] SQLite・SQL ブロック評価

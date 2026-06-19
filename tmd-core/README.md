@@ -1,6 +1,6 @@
 # tmd-core API Guide
 
-`tmd-core` is a Rust library for reading and writing Tanu Markdown (`.tmd` / `.tmdz`) documents. A single `TmdDoc` struct holds the Markdown body, manifest, attachments, and an embedded SQLite database. This guide summarizes the public API surface and how to use it.
+`tmd-core` is a Rust library for reading and writing Tanu Markdown (`.tmd` / `.tmdp`) documents. A single `TmdDoc` struct holds the Markdown body, manifest, attachments, and an embedded SQLite database. This guide summarizes the public API surface and how to use it.
 
 ## Dependencies
 Add the following to your `Cargo.toml`:
@@ -19,7 +19,7 @@ mime = "0.3"
 - `AttachmentDataMut` — Smart pointer that provides mutable access to attachment data and recomputes length/SHA-256 on drop.【F:tmd-core/src/lib.rs†L520-L548】
 - `DbHandle` — Holds the SQLite connection and executes SQL via `with_conn`/`with_conn_mut`.【F:tmd-core/src/lib.rs†L5-L9】【F:tmd-core/src/lib.rs†L575-L624】
 - `DbOptions` — Applies PRAGMAs such as `page_size`, `journal_mode`, and `synchronous` during `ensure_initialized`.【F:tmd-core/src/lib.rs†L551-L595】
-- `Format` — Identifies `Tmd` (plain) vs `Tmdz` (ZIP-embedded).【F:tmd-core/src/lib.rs†L702-L743】
+- `Format` — Identifies `Tmd` (plain) vs `Tmdp` (ZIP-embedded).【F:tmd-core/src/lib.rs†L702-L743】
 - `ReadMode` / `WriteMode` — Read/write options for validation and ZIP creation.【F:tmd-core/src/lib.rs†L343-L431】
 - `AttachmentId` / `LogicalPath` — Aliases for attachment UUID and logical path.【F:tmd-core/src/lib.rs†L17-L20】
 - `TmdResult<T>` / `TmdError` — Result/error types used across the library.【F:tmd-core/src/lib.rs†L21-L53】
@@ -40,13 +40,13 @@ fn main() -> tmd_core::TmdResult<()> {
     let _logo: AttachmentId = doc.add_attachment("images/logo.png", IMAGE_PNG, b"...bytes...")?;
 
     // Save as TMDZ
-    write_to_path("hello.tmdz", &doc, Format::Tmdz)?;
+    write_to_path("hello.tmd", &doc, Format::Tmd)?;
     Ok(())
 }
 ```
 
 - `TmdDoc::new` initializes a default manifest and empty SQLite database.【F:tmd-core/src/lib.rs†L36-L101】
-- `write_to_path` emits `.tmd` or `.tmdz` based on `Format`.【F:tmd-core/src/lib.rs†L702-L726】
+- `write_to_path` emits `.tmdp` or `.tmd` based on `Format`.【F:tmd-core/src/lib.rs†L702-L726】
 - `add_attachment` returns `TmdError::Attachment` on logical path collisions.【F:tmd-core/src/lib.rs†L272-L332】
 
 ### Load an Existing Document
@@ -56,7 +56,7 @@ use tmd_core::{read_from_path, Format, ReadMode};
 
 fn main() -> tmd_core::TmdResult<()> {
     // Auto-detect format from extension (or header)
-    let doc = read_from_path("hello.tmdz", None)?;
+    let doc = read_from_path("hello.tmd", None)?;
     println!("Title: {:?}, tags: {:?}", doc.manifest.title, doc.manifest.tags);
 
     // Control verification and lazy loading
@@ -64,8 +64,8 @@ fn main() -> tmd_core::TmdResult<()> {
     use std::io::{BufReader, Seek};
     use tmd_core::{Reader, TmdDoc};
 
-    let file = File::open("hello.tmdz")?;
-    let mut reader = Reader::new(BufReader::new(file), Some(Format::Tmdz), ReadMode {
+    let file = File::open("hello.tmd")?;
+    let mut reader = Reader::new(BufReader::new(file), Some(Format::Tmd), ReadMode {
         verify_hashes: true,
         lazy_attachments: false,
     })?;
@@ -131,7 +131,7 @@ Calling `touch()` updates only `modified_utc` to the current time.【F:tmd-core/
 - `WriteMode` — `compute_hashes` (emit SHA-256), `solid_zip` (store ZIP as a single stream), `dedup_by_hash` (deduplicate attachments).【F:tmd-core/src/lib.rs†L387-L431】
 - `Reader::new(reader, assumed, mode)` detects/validates the format and reads via `Reader::read_doc()`.【F:tmd-core/src/lib.rs†L744-L806】
 - `Writer::new(writer, format, mode)` builds a write context; `Writer::write_doc(&doc)` outputs data and `finish()` releases resources.【F:tmd-core/src/lib.rs†L806-L844】
-- Low-level I/O: `read_tmd` / `read_tmdz` / `write_tmd` / `write_tmdz` operate directly on `Read`/`Write` streams.【F:tmd-core/src/lib.rs†L965-L1095】
+- Low-level I/O: `read_tmdp` / `read_tmd` / `write_tmdp` / `write_tmd` operate directly on `Read`/`Write` streams.【F:tmd-core/src/lib.rs†L965-L1095】
 - Path helpers: `read_from_path(path, assumed)` chooses `Format` from extension or header; `write_to_path(path, doc, format)` dispatches per `Format`.【F:tmd-core/src/lib.rs†L1085-L1107】
 
 ## Error Handling
@@ -150,9 +150,9 @@ All functions return `TmdResult<T>` and yield `TmdError` on failure.
 1. Create with `TmdDoc::new` or load with `read_from_path`.
 2. Edit Markdown, update the manifest, add/remove attachments.
 3. Update the DB with `db_with_conn_mut` and advance schemas with `migrate` as needed.
-4. Save as `.tmd` or `.tmdz` via `write_to_path` / `Writer`.
+4. Save as `.tmdp` or `.tmd` via `write_to_path` / `Writer`.
 
-When using `write_tmdz` / `write_tmd` directly, control hash computation and ZIP options through `WriteMode`.【F:tmd-core/src/lib.rs†L598-L679】
+When using `write_tmd` / `write_tmdp` directly, control hash computation and ZIP options through `WriteMode`.【F:tmd-core/src/lib.rs†L598-L679】
 
 ## Utilities
 
