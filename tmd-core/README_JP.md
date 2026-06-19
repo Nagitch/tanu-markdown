@@ -65,7 +65,7 @@ fn main() -> tmd_core::TmdResult<()> {
     use tmd_core::{Reader, TmdDoc};
 
     let file = File::open("hello.tmd")?;
-    let mut reader = Reader::new(BufReader::new(file), Some(Format::Tmdp), ReadMode {
+    let mut reader = Reader::new(BufReader::new(file), Some(Format::Tmd), ReadMode {
         verify_hashes: true,
         lazy_attachments: false,
     })?;
