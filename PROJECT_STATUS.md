@@ -21,10 +21,10 @@ _Last updated: 2025-10-09 (rev.1: SQLite moved to MVP)_
 
 | 形式 | 内容 | 用途 |
 |------|------|------|
-| `.tmd` | MarkdownとZIPを連結したポリグロット形式（ZIPコメントにMarkdown長を格納） | 配布・共有向け |
-| `.tmdz` | 通常のZIP形式（`index.md`, `manifest.json`, `images/`, `data/`, `db/`） | 編集・構築向け |
+| `.tmdp` | MarkdownとZIPを連結したポリグロット形式（ZIPコメントにMarkdown長を格納） | 配布・共有向け |
+| `.tmd` | 通常のZIP形式（`index.md`, `manifest.json`, `images/`, `data/`, `db/`） | 編集・構築向け |
 
-### `.tmd` ファイル構造（簡略）
+### `.tmdp` ファイル構造（簡略）
 
 ```
 
@@ -60,14 +60,14 @@ _Last updated: 2025-10-09 (rev.1: SQLite moved to MVP)_
 ## 現在の進行状況
 
 ### 実装済み
-- `.tmd` 読み取り（MarkdownとZIPの分離）
+- `.tmdp` 読み取り（MarkdownとZIPの分離）
   - EOCD検出・コメント解析 (`find_eocd_offset`)
   - Markdownサイズ取得・分離 (`split_tmd_bytes`)
   - manifestのサイズ／SHA256検証
   - ZIPコメント再設定ユーティリティ (`set_tmd_comment`)
 
 ### 進行中
-- `.tmd` 書き出しロジック (`to_bytes()`, `to_tmdz_bytes()`)
+- `.tmdp` 書き出しロジック (`to_bytes()`, `to_tmd_bytes()`)
 - CLI MVP構築（`pack/unpack/validate/export-html`）
 - SQLite埋め込み基盤（読み取り専用）
 - VSCode拡張スタブ（コマンドスケルトン）
@@ -81,9 +81,9 @@ _Last updated: 2025-10-09 (rev.1: SQLite moved to MVP)_
 
 ## 今後のタスク（優先度順）
 
-### 1. コア書き出し (`.tmd` 生成)
+### 1. コア書き出し (`.tmdp` 生成)
 - Markdown + ZIP + EOCDコメント統合
-- `.tmdz` と `.tmd` 相互変換
+- `.tmd` と `.tmdp` 相互変換
 - SQLiteファイル (`db/main.sqlite`) 埋め込み対応
 - 大容量ファイル対応（ストリーミングZipWriter）
 
@@ -92,10 +92,10 @@ _Last updated: 2025-10-09 (rev.1: SQLite moved to MVP)_
 - `tmd pack/unpack` — フォーマット相互変換  
 - `tmd validate` — manifest・SQLite整合性検証  
 - `tmd export-html` — 自己完結HTML出力  
-- `tmd query` — `.tmd` 内 SQLite に対する読み取りクエリ実行（read-only）  
+- `tmd query` — `.tmdp` 内 SQLite に対する読み取りクエリ実行（read-only）  
 
 ### 3. VSCode拡張
-- `.tmd` 新規作成ウィザード  
+- `.tmdp` 新規作成ウィザード  
 - `attach:` リンクのドラッグ&ドロップ  
 - SQLiteテーブルのプレビュー／クエリ実行UI  
 - 検証結果・エラーのUI表示  
@@ -124,8 +124,8 @@ _Last updated: 2025-10-09 (rev.1: SQLite moved to MVP)_
 
 | スプリント | 内容 | 目的 |
 |-------------|------|------|
-| **A. Writeパス実装** | `.tmd` 書き出しロジック追加 | 読み書き往復を可能に |
-| **B. SQLite統合** | `.tmd` 内に SQLite を安全に埋め込み、`tmd query` で参照可能に | データ再現性・柔軟性の基礎構築 |
+| **A. Writeパス実装** | `.tmdp` 書き出しロジック追加 | 読み書き往復を可能に |
+| **B. SQLite統合** | `.tmdp` 内に SQLite を安全に埋め込み、`tmd query` で参照可能に | データ再現性・柔軟性の基礎構築 |
 | **C. CLI MVP実装** | `pack/unpack/validate` + `query` 機能を提供 | ファイル検証とDB参照を一体化 |
 | **D. サンプル整備** | `tmd-sample/hello-world`, `tmd-sample/sqlite-demo` | 実例・回帰テスト両用データの作成 |
 
@@ -134,8 +134,8 @@ _Last updated: 2025-10-09 (rev.1: SQLite moved to MVP)_
 ## 将来的なユースケース
 
 - 技術文書・ノート・研究ログを**自己完結型で保存・共有**  
-- `.tmd` 内に実験データやAI生成ログをSQLiteで埋め込み管理  
-- `.tmd` + クエリで「再現可能なレポート」を構築  
+- `.tmdp` 内に実験データやAI生成ログをSQLiteで埋め込み管理  
+- `.tmdp` + クエリで「再現可能なレポート」を構築  
 - Webやクラウド環境を介さない**安全なドキュメント流通形式**
 
 ---

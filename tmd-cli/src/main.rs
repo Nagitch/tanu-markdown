@@ -21,17 +21,17 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Create a new `.tmd` or `.tmdz` document with an embedded SQLite database.
+    /// Create a new `.tmd` or `.tmdp` document with an embedded SQLite database.
     New {
         output: PathBuf,
         #[arg(long)]
         title: Option<String>,
     },
-    /// Convert between `.tmd` and `.tmdz` containers.
+    /// Convert between `.tmd` and `.tmdp` containers.
     Convert { input: PathBuf, output: PathBuf },
-    /// Validate a `.tmd` or `.tmdz` document.
+    /// Validate a `.tmd` or `.tmdp` document.
     Validate { input: PathBuf },
-    /// Export a `.tmd`/`.tmdz` document to HTML.
+    /// Export a `.tmd`/`.tmdp` document to HTML.
     ExportHtml {
         input: PathBuf,
         output: PathBuf,
@@ -402,9 +402,9 @@ fn detect_format(path: &Path) -> Result<Format> {
         .as_deref()
     {
         Some("tmd") => Ok(Format::Tmd),
-        Some("tmdz") => Ok(Format::Tmdz),
+        Some("tmdp") => Ok(Format::Tmdp),
         _ => Err(anyhow!(
-            "unsupported path `{}` — expected extension .tmd or .tmdz",
+            "unsupported path `{}` — expected extension .tmd or .tmdp",
             path.display()
         )),
     }
@@ -477,6 +477,6 @@ fn display_sql_value(value: &SqlValue) -> String {
 fn format_display(format: Format) -> &'static str {
     match format {
         Format::Tmd => ".tmd",
-        Format::Tmdz => ".tmdz",
+        Format::Tmdp => ".tmdp",
     }
 }

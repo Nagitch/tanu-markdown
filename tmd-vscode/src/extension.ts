@@ -3,7 +3,7 @@ import { Buffer } from "node:buffer";
 
 export function activate(context: vscode.ExtensionContext) {
   const newDoc = vscode.commands.registerCommand("tmd.newDocument", async () => {
-    const uri = await vscode.window.showSaveDialog({ filters: { "Tanu Markdown": ["tmd"] } });
+    const uri = await vscode.window.showSaveDialog({ filters: { "Tanu Markdown Polyglot": ["tmdp"] } });
     if (!uri) return;
     const boilerplate = `---
 tmd: 1
@@ -42,8 +42,8 @@ Hello!
     vscode.window.showInformationMessage("Export HTML (self-contained): (MVP stub)");
   });
 
-  const convertToTmdz = vscode.commands.registerCommand("tmd.convertToTmdz", async () => {
-    vscode.window.showInformationMessage("Convert to .tmdz: (MVP stub)");
+  const convertToTmdp = vscode.commands.registerCommand("tmd.convertToTmdp", async () => {
+    vscode.window.showInformationMessage("Convert to .tmdp polyglot: (MVP stub)");
   });
 
   const welcome = vscode.commands.registerCommand("tanuMarkdownEditor.showWelcome", () => {
@@ -51,7 +51,7 @@ Hello!
     vscode.window.showInformationMessage(message);
   });
 
-  context.subscriptions.push(newDoc, insertAttach, validate, exportHtml, convertToTmdz, welcome);
+  context.subscriptions.push(newDoc, insertAttach, validate, exportHtml, convertToTmdp, welcome);
 }
 
 export function deactivate() {}

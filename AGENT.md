@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Tanu Markdown (TMD) is a self-contained Markdown format that embeds images, databases, and structured data inside a single file. A `.tmd` document pairs human-readable Markdown with an internal ZIP section that holds `manifest.json` and binary attachments.
+Tanu Markdown (TMD) is a self-contained Markdown format that embeds images, databases, and structured data inside a single file. A `.tmdp` document pairs human-readable Markdown with an internal ZIP section that holds `manifest.json` and binary attachments.
 
 Project goal:
 
@@ -14,10 +14,10 @@ Project goal:
 
 | Directory | Purpose |
 |-----------|---------|
-| `tmd-core/` | Rust library for `.tmd` parsing, manifest handling, and serialization |
+| `tmd-core/` | Rust library for `.tmdp` parsing, manifest handling, and serialization |
 | `tmd-cli/` | Rust command-line tool built on `tmd-core` |
-| `tmd-vscode/` | VSCode extension for creating and previewing `.tmd` documents |
-| `tmd-sample/` | Reference examples (`.tmd`, `.tmdz`) and structure documentation |
+| `tmd-vscode/` | VSCode extension for creating and previewing `.tmdp` documents |
+| `tmd-sample/` | Reference examples (`.tmdp`, `.tmd`) and structure documentation |
 | `README.md` | Project overview (English) |
 | `README_JP.md` | Project overview (Japanese) |
 
@@ -40,14 +40,14 @@ The agent serves as a technical collaborator and documentation maintainer. It ma
 
 3. **Build and validation**
    - Run or simulate `cargo test`, `cargo fmt`, and `npm run compile` checks.
-   - Verify `.tmd` files can be read and written consistently using test fixtures.
+   - Verify `.tmdp` files can be read and written consistently using test fixtures.
 
 4. **Conversation awareness**
-   - Maintain understanding of `.tmd` file structure and the polyglot format.
+   - Maintain understanding of `.tmdp` file structure and the polyglot format.
    - Respond to contributor prompts with code, examples, or documentation changes.
 
 5. **Future goals**
-   - Design `.tmd` → `.html` / `.pdf` exporters.
+   - Design `.tmdp` → `.html` / `.pdf` exporters.
    - Draft API bindings (FFI/WASM) for multi-language integrations.
 
 ---
@@ -65,8 +65,8 @@ The agent serves as a technical collaborator and documentation maintainer. It ma
 - Generate Markdown-based specifications under `docs/`.
 
 ### Versioning
-- Follow Semantic Versioning (`0.x` for MVP, `1.0` after the `.tmd` spec stabilizes).
-- `.tmd` files must include a `schemaVersion` string (`YYYY.MM`).
+- Follow Semantic Versioning (`0.x` for MVP, `1.0` after the `.tmdp` spec stabilizes).
+- `.tmdp` files must include a `schemaVersion` string (`YYYY.MM`).
 
 ---
 
@@ -77,8 +77,8 @@ Target coverage:
 | Type | Example |
 |------|---------|
 | Unit | Markdown/ZIP boundary detection |
-| Integration | CLI round-trip: `.tmd` → `.tmdz` → `.tmd` |
-| Editor | Validate VSCode extension behavior with `.tmd` mock data |
+| Integration | CLI round-trip: `.tmdp` → `.tmd` → `.tmdp` |
+| Editor | Validate VSCode extension behavior with `.tmdp` mock data |
 | Specification | Ensure `manifest.json` adheres to schema |
 
 Automated tests can be added under:
@@ -116,15 +116,15 @@ Explain the motivation and scope.
 ### Validation
 
 * [ ] Built successfully
-* [ ] Tested with sample.tmd
+* [ ] Tested with sample.tmdp
 ```
 
 ---
 
 ## Example Prompts for the Agent
 
-> Generate Rust code to parse the EOCD comment in `.tmd` files.  
-> Add a new VSCode command to export `.tmd` as HTML.  
+> Generate Rust code to parse the EOCD comment in `.tmdp` files.  
+> Add a new VSCode command to export `.tmdp` as HTML.  
 > Draft the v1 specification for the TMD manifest schema.  
 > Explain how to use `tmd-cli` to validate a document.
 
