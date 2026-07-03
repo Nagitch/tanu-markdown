@@ -9,3 +9,14 @@ generated/
 # Sample data that shouldn't be tracked
 *.large
 *.test
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+.AppleDouble
+ehthumbs.db
+Thumbs.db
+desktop.ini
