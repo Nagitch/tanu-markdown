@@ -3,9 +3,20 @@
   "displayName": "Tanu Markdown Editor",
   "description": "Preview placeholder for editing Tanu Markdown (.tmd) documents in VS Code.",
   "version": "0.0.1",
+  "private": true,
   "publisher": "tanu-markdown",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Nagitch/tanu-markdown.git",
+    "directory": "tmd-vscode"
+  },
+  "bugs": {
+    "url": "https://github.com/Nagitch/tanu-markdown/issues"
+  },
   "engines": {
-    "vscode": "^1.90.0"
+    "vscode": "^1.90.0",
+    "node": ">=24"
   },
   "categories": [
     "Other"
@@ -61,13 +72,19 @@
     ]
   },
   "main": "./dist/extension.js",
+  "files": [
+    "dist/**",
+    "language-configuration.json",
+    "README.md"
+  ],
   "scripts": {
     "compile": "tsc -p .",
-    "watch": "tsc -w -p ."
+    "watch": "tsc -w -p .",
+    "check": "tsc -p . --noEmit"
   },
   "devDependencies": {
-    "typescript": "^5.5.0",
     "@types/vscode": "^1.90.0",
-    "@types/node": "^22.0.0"
+    "@types/node": "^26.1.2",
+    "typescript": "^7.0.2"
   }
 }

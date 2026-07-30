@@ -1,7 +1,18 @@
 [package]
 name = "tmd-core-ffi"
-version = "0.0.1"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
+description = "C-compatible dynamic library wrapper for tmd-core"
+readme = "README.md"
+keywords = ["markdown", "ffi", "document"]
+categories = ["api-bindings"]
+include = ["src/**", "Cargo.toml", "README.md"]
 
 [lib]
 crate-type = ["cdylib"]

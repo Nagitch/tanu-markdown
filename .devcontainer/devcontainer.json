@@ -26,5 +26,5 @@
       }
     }
   },
-  "postCreateCommand": "cargo --version && node --version && npm --version && cd tmd-vscode && npm install"
+  "postCreateCommand": "rustup show && cargo --version && node --version && npm --version && npm ci --prefix tmd-vscode"
 }

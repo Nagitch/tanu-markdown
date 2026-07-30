@@ -1,150 +1,57 @@
-# Tanu Markdown — Project Status
+# Project Status
 
-_Last updated: 2025-10-09 (rev.1: SQLite moved to MVP)_
+Last reviewed: 2026-07-31
 
----
+Tanu Markdown is an early-stage, pre-1.0 project. The core Rust implementation
+supports document creation, `.tmd` and `.tmdp` round trips, attachment metadata
+and hash validation, and embedded SQLite operations. The CLI exposes the
+implemented core workflows. The VS Code extension remains a command scaffold
+and is not a full editor.
 
-## 概要
+## Component status
 
-**Tanu Markdown (TMD)** は、Markdown本文・埋め込みアセット・メタデータを  
-**単一ファイルに統合する拡張Markdownフォーマット**です。
+| Component | Current state |
+| --- | --- |
+| `tmd-core` | Implements the document model, manifest and attachment handling, SQLite import/export/migration, ZIP I/O, polyglot boundary handling, and optional C ABI functions |
+| `tmd-cli` | Implements `new`, `convert`, `validate`, `export-html`, and embedded database subcommands |
+| `tmd-core-ffi` | Builds a `cdylib` wrapper and retains the exported `tmd-core` FFI symbols |
+| `tmd-vscode` | Registers document, attachment, validation, export, conversion, and welcome commands; most feature commands are placeholders |
+| `tmd-sample` | Contains one `.tmd` and one `.tmdp` reference sample |
 
-目的：
+## Verified behavior
 
-- Markdownと添付リソースを1つのファイルで持ち運び・配布できる  
-- 添付ファイルおよび埋め込みDBの**整合性・再現性・検証可能性**を保証する  
-- CLI / VSCode / Rustライブラリとして統一的に扱えるフォーマット基盤を提供する  
+The `tmd-core` test suite covers:
 
----
+- logical attachment path validation;
+- attachment add, rename, remove, mutation, and SHA-256 refresh;
+- `.tmd` and `.tmdp` round trips;
+- embedded SQLite export, import, reset, and migration;
+- path-based read/write helpers;
+- optional FFI null-pointer behavior.
 
-## フォーマット概要
+Repository CI additionally checks formatting, Clippy, rustdoc, and VS Code
+extension type compilation.
 
-| 形式 | 内容 | 用途 |
-|------|------|------|
-| `.tmdp` | MarkdownとZIPを連結したポリグロット形式（ZIPコメントにMarkdown長を格納） | 配布・共有向け |
-| `.tmd` | 通常のZIP形式（`index.md`, `manifest.json`, `images/`, `data/`, `db/`） | 編集・構築向け |
+## Known limitations
 
-### `.tmdp` ファイル構造（簡略）
+- The file-format contract is not yet frozen or published as a versioned formal
+  specification.
+- `ReadMode::lazy_attachments` and several `WriteMode` options are represented
+  in the API but are not fully realized as streaming/deduplication behavior.
+- The VS Code extension does not yet call the Rust CLI or library for validation
+  and conversion.
+- The C ABI does not ship generated headers or a stable ABI compatibility
+  policy.
+- The sample set does not yet cover corrupted containers or large documents.
 
-```
+## Next milestones
 
-+----------------------+ 0
-| Markdown text        |
-+----------------------+
-| ZIP archive          |
-| ├── index.md         |
-| ├── manifest.json    |
-| ├── images/...       |
-| ├── data/...         |
-| └── db/main.sqlite   |
-+----------------------+
-| EOCD + "TMD1\0" + 8-byte length |
-+----------------------+
+Future work should be tracked as GitHub Issues. Likely milestones are:
 
-```
+1. Freeze and test a versioned TMD container specification.
+2. Make all read/write mode options either functional or explicitly unsupported.
+3. Add malformed-container and compatibility fixtures.
+4. Connect the VS Code extension to real validation and conversion workflows.
+5. Define crate, ABI, and extension release policies before publishing.
 
----
-
-## リポジトリ構成
-
-| ディレクトリ | 内容 |
-|---------------|------|
-| `tmd-core/` | Rustライブラリコア：読み書き・検証・SQLite埋め込み対応 |
-| `tmd-cli/` | CLIツール：`pack`, `unpack`, `validate`, `export-html`, `query` など |
-| `tmd-vscode/` | VSCode拡張：作成・添付・SQLiteクエリプレビュー |
-| `tmd-sample/` | フォーマット例・テスト用サンプル |
-| `AGENT.md` | 自動補助エージェント向けの運用指針 |
-
----
-
-## 現在の進行状況
-
-### 実装済み
-- `.tmdp` 読み取り（MarkdownとZIPの分離）
-  - EOCD検出・コメント解析 (`find_eocd_offset`)
-  - Markdownサイズ取得・分離 (`split_tmd_bytes`)
-  - manifestのサイズ／SHA256検証
-  - ZIPコメント再設定ユーティリティ (`set_tmd_comment`)
-
-### 進行中
-- `.tmdp` 書き出しロジック (`to_bytes()`, `to_tmd_bytes()`)
-- CLI MVP構築（`pack/unpack/validate/export-html`）
-- SQLite埋め込み基盤（読み取り専用）
-- VSCode拡張スタブ（コマンドスケルトン）
-
-### 未着手
-- formal spec ドキュメント
-- CIによる往復テスト
-- SQL安全モード評価（後期フェーズ）
-
----
-
-## 今後のタスク（優先度順）
-
-### 1. コア書き出し (`.tmdp` 生成)
-- Markdown + ZIP + EOCDコメント統合
-- `.tmd` と `.tmdp` 相互変換
-- SQLiteファイル (`db/main.sqlite`) 埋め込み対応
-- 大容量ファイル対応（ストリーミングZipWriter）
-
-### 2. CLI MVP
-- `tmd new` — プロジェクト雛形生成  
-- `tmd pack/unpack` — フォーマット相互変換  
-- `tmd validate` — manifest・SQLite整合性検証  
-- `tmd export-html` — 自己完結HTML出力  
-- `tmd query` — `.tmdp` 内 SQLite に対する読み取りクエリ実行（read-only）  
-
-### 3. VSCode拡張
-- `.tmdp` 新規作成ウィザード  
-- `attach:` リンクのドラッグ&ドロップ  
-- SQLiteテーブルのプレビュー／クエリ実行UI  
-- 検証結果・エラーのUI表示  
-- CLI機能呼び出し統合  
-
-### 4. フォーマル仕様 (`docs/spec.md`)
-- EOCDコメント形式・エンディアン定義  
-- manifestスキーマとキー制約  
-- SQLite埋め込み時の安全仕様（読み取り専用・サイズ上限）  
-- 将来の拡張ポリシー（バージョニング）
-
-### 5. テスト・サンプル
-- `tmd-sample/hello-world`（最小構成）  
-- `tmd-sample/sqlite-demo`（SQLite内データ付き）  
-- 壊れたZIPや不正manifestのテストケース  
-- CIでの往復テスト（read→write→read）
-
-### 6. 将来拡張
-- SQL評価の安全モード（式評価や変数展開対応）  
-- 暗号署名ブロックによる整合性保証  
-- 完全自己完結型HTML/PDFエクスポート  
-
----
-
-## 直近スプリント（短期目標）
-
-| スプリント | 内容 | 目的 |
-|-------------|------|------|
-| **A. Writeパス実装** | `.tmdp` 書き出しロジック追加 | 読み書き往復を可能に |
-| **B. SQLite統合** | `.tmdp` 内に SQLite を安全に埋め込み、`tmd query` で参照可能に | データ再現性・柔軟性の基礎構築 |
-| **C. CLI MVP実装** | `pack/unpack/validate` + `query` 機能を提供 | ファイル検証とDB参照を一体化 |
-| **D. サンプル整備** | `tmd-sample/hello-world`, `tmd-sample/sqlite-demo` | 実例・回帰テスト両用データの作成 |
-
----
-
-## 将来的なユースケース
-
-- 技術文書・ノート・研究ログを**自己完結型で保存・共有**  
-- `.tmdp` 内に実験データやAI生成ログをSQLiteで埋め込み管理  
-- `.tmdp` + クエリで「再現可能なレポート」を構築  
-- Webやクラウド環境を介さない**安全なドキュメント流通形式**
-
----
-
-## ライセンスと著作権
-
-このリポジトリの内容は、プロジェクトルートの `LICENSE` に従います。  
-貢献者は同ライセンスに基づき、コード・ドキュメントを追加できます。
-
----
-
-_Authored and maintained by the **Tanu Markdown Project** community._
+See [publish readiness](docs/publish-readiness.md) for the gates that remain.

@@ -5,7 +5,7 @@ pub use db::{
     export_db, import_db, migrate, reset_db, with_conn, with_conn_mut, DbHandle, DbOptions,
 };
 pub use format::{
-    read_from_path, read_tmdp, read_tmd, sniff_format, write_tmdp, write_tmd, write_to_path,
+    read_from_path, read_tmd, read_tmdp, sniff_format, write_tmd, write_tmdp, write_to_path,
     Format, ReadMode, Reader, WriteMode, Writer,
 };
 pub use manifest::{AttachmentMeta, AttachmentRef, LinkRef, Manifest, Semver};
@@ -342,7 +342,6 @@ mod manifest {
 mod attach {
     use super::{AttachmentId, AttachmentMeta, LogicalPath, TmdError, TmdResult};
     use mime::Mime;
-    use serde_json;
     use sha2::{Digest, Sha256};
     use std::collections::{hash_map::Values, HashMap};
     use std::ops::{Deref, DerefMut};
@@ -700,11 +699,10 @@ mod format {
     use super::manifest::{AttachmentMeta, Manifest};
     use super::{TmdDoc, TmdError, TmdResult};
     use serde::{Deserialize, Serialize};
-    use serde_json;
     use std::fs::File;
     use std::io::{Read, Seek, SeekFrom, Write};
     use std::path::Path;
-    use zip::write::FileOptions;
+    use zip::write::SimpleFileOptions;
     use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
     const EOCD_SIGNATURE: [u8; 4] = [0x50, 0x4b, 0x05, 0x06];
@@ -842,7 +840,7 @@ mod format {
         };
 
         for idx in (search_start..=data.len() - min_len).rev() {
-            if &data[idx..idx + 4] == EOCD_SIGNATURE {
+            if data[idx..idx + 4] == EOCD_SIGNATURE {
                 return Ok(idx);
             }
         }
@@ -1016,7 +1014,7 @@ mod format {
     fn build_zip(doc: &TmdDoc, _mode: WriteMode) -> TmdResult<Vec<u8>> {
         let cursor = std::io::Cursor::new(Vec::new());
         let mut writer = ZipWriter::new(cursor);
-        let stored = FileOptions::default()
+        let stored = SimpleFileOptions::default()
             .compression_method(CompressionMethod::Stored)
             .large_file(true);
 
@@ -1110,7 +1108,7 @@ pub mod ffi {
     use std::ptr;
 
     thread_local! {
-        static LAST_ERROR: RefCell<Option<CString>> = RefCell::new(None);
+        static LAST_ERROR: RefCell<Option<CString>> = const { RefCell::new(None) };
     }
 
     const NULL_PTR_MESSAGE: &str = "null pointer provided";

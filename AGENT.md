@@ -1,141 +1,108 @@
-# AGENT.md — Tanu Markdown Project
+# AGENT.md — Tanu Markdown
 
-## Project Overview
+This document defines repository-specific guidance for human and AI
+contributors.
 
-Tanu Markdown (TMD) is a self-contained Markdown format that embeds images, databases, and structured data inside a single file. A `.tmdp` document pairs human-readable Markdown with an internal ZIP section that holds `manifest.json` and binary attachments.
+## Project role
 
-Project goal:
+Tanu Markdown provides a self-contained document format and its supporting
+tools. The implementation must keep the two container representations aligned:
 
-> Deliver a file-based, versionable format that matches the expressiveness of tools like Notion or Excel.
+- `.tmd` is the primary ZIP container.
+- `.tmdp` is the polyglot representation: UTF-8 Markdown followed by the same
+  ZIP payload, with a `TMD1\0` end-of-central-directory comment.
 
----
+The current format is pre-1.0. Preserve existing behavior unless an issue
+explicitly changes the contract, and document compatibility effects when it
+does.
 
-## Repository Structure
+## Repository boundaries
 
-| Directory | Purpose |
-|-----------|---------|
-| `tmd-core/` | Rust library for `.tmdp` parsing, manifest handling, and serialization |
-| `tmd-cli/` | Rust command-line tool built on `tmd-core` |
-| `tmd-vscode/` | VSCode extension for creating and previewing `.tmdp` documents |
-| `tmd-sample/` | Reference examples (`.tmdp`, `.tmd`) and structure documentation |
-| `README.md` | Project overview (English) |
-| `README_JP.md` | Project overview (Japanese) |
+- `tmd-core/` owns the document model, serialization, validation, attachments,
+  embedded SQLite lifecycle, and optional FFI definitions.
+- `tmd-cli/` owns command parsing and user-facing terminal behavior.
+- `tmd-core-ffi/` owns the dynamic-library wrapper that retains exported C ABI
+  symbols.
+- `tmd-vscode/` owns VS Code integration.
+- `tmd-sample/` owns checked-in reference files.
+- `docs/` owns architecture, format, workflow, and readiness documentation.
 
----
+Do not move behavior across these boundaries without documenting the reason.
 
-## Agent’s Role
+## Authoritative development environment
 
-The agent serves as a technical collaborator and documentation maintainer. It may also assist with code generation, continuous integration validation, and format testing.
+Use the Dev Container in `.devcontainer/` as the authoritative environment.
+The repository pins Rust in `rust-toolchain.toml` and Node in `Dockerfile`.
 
-### Primary Responsibilities
+Do not assume Rust, Cargo, Node.js, or npm are installed on the host. Prefer:
 
-1. **Documentation support**
-   - Keep `README.md` and `README_EN.md` synchronized.
-   - Generate or update developer documentation and examples.
-   - Maintain format specification drafts (`docs/spec_tmd_v1.md`).
-
-2. **Code scaffolding**
-   - Generate or update boilerplate code for Rust (`tmd-core`, `tmd-cli`) or TypeScript (`tmd-vscode`).
-   - Suggest consistent module structures and naming conventions.
-
-3. **Build and validation**
-   - Run or simulate `cargo test`, `cargo fmt`, and `npm run compile` checks.
-   - Verify `.tmdp` files can be read and written consistently using test fixtures.
-
-4. **Conversation awareness**
-   - Maintain understanding of `.tmdp` file structure and the polyglot format.
-   - Respond to contributor prompts with code, examples, or documentation changes.
-
-5. **Future goals**
-   - Design `.tmdp` → `.html` / `.pdf` exporters.
-   - Draft API bindings (FFI/WASM) for multi-language integrations.
-
----
-
-## Guidelines
-
-### Code Style
-- Rust: `cargo fmt --all` and `clippy::pedantic` compliance.
-- TypeScript: `eslint --fix`; avoid implicit `any`.
-- Use explicit types for manifest structures.
-
-### Documentation
-- Use `///` doc comments in Rust.
-- Each crate and module must include an introductory `//!` comment.
-- Generate Markdown-based specifications under `docs/`.
-
-### Versioning
-- Follow Semantic Versioning (`0.x` for MVP, `1.0` after the `.tmdp` spec stabilizes).
-- `.tmdp` files must include a `schemaVersion` string (`YYYY.MM`).
-
----
-
-## Tests and Validation
-
-Target coverage:
-
-| Type | Example |
-|------|---------|
-| Unit | Markdown/ZIP boundary detection |
-| Integration | CLI round-trip: `.tmdp` → `.tmd` → `.tmdp` |
-| Editor | Validate VSCode extension behavior with `.tmdp` mock data |
-| Specification | Ensure `manifest.json` adheres to schema |
-
-Automated tests can be added under:
-
-```
-tmd-core/tests/
-tmd-cli/tests/
+```bash
+devcontainer exec --workspace-folder . just check-all
 ```
 
----
+If the Dev Container CLI is unavailable, use the `dev` Docker Compose service.
+If neither route is available, report the validation gap explicitly.
 
-## Communication
+## Required validation
 
-Preferred commit message format:
+Before committing:
 
-```
-[tmd-core] Implement manifest writer
-[tmd-cli] Add --validate command
-[tmd-vscode] Add attach: link inserter
-[docs] Update format diagram
-```
-
-Preferred PR description format:
-
-```
-### Summary
-
-Explain the motivation and scope.
-
-### Changes
-
-* Added/Updated files
-* Implementation notes
-
-### Validation
-
-* [ ] Built successfully
-* [ ] Tested with sample.tmdp
+```bash
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-features
+cargo run --locked -p tmd-cli -- validate tmd-sample/sample.tmd
+cargo run --locked -p tmd-cli -- validate tmd-sample/sample.tmdp
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps
+npm ci --prefix tmd-vscode
+npm run check --prefix tmd-vscode
 ```
 
----
+`just check-all` runs the complete set.
 
-## Example Prompts for the Agent
+## Rust and TypeScript conventions
 
-> Generate Rust code to parse the EOCD comment in `.tmdp` files.  
-> Add a new VSCode command to export `.tmdp` as HTML.  
-> Draft the v1 specification for the TMD manifest schema.  
-> Explain how to use `tmd-cli` to validate a document.
+- Rust formatting is controlled by `rustfmt`.
+- Treat all Clippy warnings as errors.
+- Prefer `thiserror` for library errors and `anyhow` at CLI boundaries.
+- Public Rust APIs require `///` documentation and tests.
+- Crates require `//!` crate-level documentation.
+- TypeScript must compile with `strict` mode and must not introduce implicit
+  `any`.
+- Keep generated Rust, npm, and editor outputs out of Git. Commit the root
+  `Cargo.lock` and `tmd-vscode/package-lock.json`.
 
----
+## Documentation rules
 
-## License
+- English documentation is the source of truth.
+- Keep `README.md`, `PROJECT_STATUS.md`, component READMEs, and `docs/`
+  consistent with implementation.
+- Update `docs/format-overview.md` whenever the container contract changes.
+- Update `docs/architecture.md` whenever component responsibility changes.
+- Do not describe planned work as implemented behavior.
 
-MIT License  
-(c) 2025 Tanu Markdown Project  
-All contributions should follow the [Contributor Covenant](https://www.contributor-covenant.org/).
+## Work tracking
 
----
+GitHub Issues are the source of truth for planned work.
 
-This agent helps Tanu Markdown evolve into a reproducible document format that remains file-based and versionable.
+- Use `.github/ISSUE_TEMPLATE/work-item.md`.
+- Ensure an issue exists before implementation work opens a PR.
+- Create branches from `origin/main`.
+- Prefer issue-linked names such as
+  `codex/issue-25-modernize-repository`.
+- Link the issue from the PR and record exact validation evidence.
+- Do not add standalone TODO/task-tracking files in the repository.
+
+## Dependency and publishing policy
+
+- Keep dependencies on supported, non-pre-release releases and commit refreshed
+  lockfiles.
+- Dependabot covers Cargo, npm, GitHub Actions, Docker, and Dev Containers.
+- Publishing is disabled until an explicit stabilization issue changes the
+  policy.
+- Do not run `cargo publish`, publish the VS Code extension, create releases, or
+  create release tags without explicit user authorization.
+- `cargo publish --dry-run` is allowed only when a publication-readiness issue
+  calls for it.
+
+See `docs/publish-readiness.md` for the current checklist.

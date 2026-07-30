@@ -2,6 +2,7 @@
 FROM rust:1.96.0-bookworm
 
 ARG NODE_VERSION=24.17.0
+ARG JUST_VERSION=1.57.0
 ARG TARGETARCH
 
 ENV CARGO_HOME=/usr/local/cargo \
@@ -46,7 +47,8 @@ RUN set -eux; \
 
 # Keep formatting and lint components available without requiring post-create
 # network access.
-RUN rustup component add rustfmt clippy
+RUN rustup component add rustfmt clippy \
+    && cargo install --locked --version "${JUST_VERSION}" just
 
 # Expose Rust tools through the default system PATH as well as CARGO_HOME/PATH.
 RUN ln -s /usr/local/cargo/bin/cargo /usr/local/bin/cargo \

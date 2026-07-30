@@ -5,10 +5,10 @@
 ## Build
 
 ```bash
-cargo build --release --manifest-path tmd-core-ffi/Cargo.toml
+cargo build --release -p tmd-core-ffi
 ```
 
-The compiled library will be placed in `tmd-core-ffi/target/release/`:
+The compiled library will be placed in the workspace `target/release/`:
 
 - Linux: `libtmd_core_ffi.so`
 - macOS: `libtmd_core_ffi.dylib`
@@ -28,4 +28,5 @@ Refer to `tmd-core` for the full FFI contract and error semantics.
 ## Notes
 
 - This crate only exposes a stable C ABI; it does not generate headers.
+- The project has not yet committed to ABI compatibility across versions.
 - If you need C headers, generate them from the `tmd-core` FFI definitions using a tool like `cbindgen`.
