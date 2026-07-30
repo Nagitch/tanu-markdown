@@ -18,5 +18,26 @@ Thumbs.db
 .env.local
 
 # Project specific temporary files
-*.tmdz.tmp
+*.tmd.tmp
+*.tmdp.tmp
 *.tmd.backup
+
+# Rust
+**/target/
+**/*.rs.bk
+*.pdb
+*.profraw
+**/Cargo.lock
+!/Cargo.lock
+
+# Node.js / VS Code extension
+**/node_modules/
+**/dist/
+**/out/
+*.vsix
+*.tsbuildinfo
+npm-debug.log*
+
+# Generated documentation and coverage
+/doc/
+coverage/

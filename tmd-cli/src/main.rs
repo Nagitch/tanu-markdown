@@ -331,7 +331,6 @@ fn cmd_db_exec(doc_path: &Path, sql: &str) -> Result<()> {
 
 fn leading_sql_keyword(sql: &str) -> Option<String> {
     let token = sql
-        .trim_start()
         .split_whitespace()
         .next()
         .map(|candidate| {

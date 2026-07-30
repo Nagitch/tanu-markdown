@@ -1,113 +1,98 @@
-**this is very AI generated bare scaffolding. make sure this is not guaranteed to work normally.**
+# Tanu Markdown
 
-# Tanu Markdown (TMD)
+Tanu Markdown (TMD) is a self-contained document format that keeps Markdown,
+metadata, attachments, and a SQLite database in one portable file.
 
-**Tanu Markdown (TMD)** is a *self-contained Markdown format* that lets you embed **images, databases, and binary data** directly into Markdown.
+This repository contains the Rust document library, command-line interface,
+C-compatible dynamic library, VS Code extension scaffold, and sample documents.
+The project is pre-1.0: the implementation is usable for development and
+experimentation, but the file-format contract is not yet frozen.
 
-Each `.tmd` file combines **Markdown text + embedded assets + metadata (manifest)** into a single portable document.
+## Formats
 
----
+Tanu Markdown supports two representations of the same logical document:
 
-## Repository Structure
+| Extension | Representation | Intended use |
+| --- | --- | --- |
+| `.tmd` | ZIP container | Primary editable and machine-oriented format |
+| `.tmdp` | UTF-8 Markdown followed by a ZIP container | Polyglot format for readable previews and portable sharing |
 
-| Directory | Description |
-|------------|-------------|
-| `tmd-sample/` | `.tmd` / `.tmdp` samples and format reference |
-| `tmd-vscode/` | VSCode extension placeholder "Tanu Markdown Editor" (TypeScript) |
-| `tmd-core/` | Rust library core (data structures, manifest handling) |
-| `tmd-cli/` | Rust CLI tool for TMD document operations |
+Both variants contain `manifest.json`, `index.md`, `attachments.json`,
+`db/main.sqlite3`, and attachment entries. A `.tmdp` file also stores the
+Markdown length in the ZIP end-of-central-directory comment.
 
----
+See [the format overview](docs/format-overview.md) for the current contract.
 
-## Development Environment
+## Repository layout
 
-### Run everything in Docker
+| Path | Responsibility |
+| --- | --- |
+| `tmd-core/` | Rust document model, attachment handling, SQLite lifecycle, and `.tmd`/`.tmdp` I/O |
+| `tmd-cli/` | CLI for creating, converting, validating, exporting, and editing documents |
+| `tmd-core-ffi/` | C ABI dynamic-library wrapper around the optional `tmd-core` FFI surface |
+| `tmd-vscode/` | VS Code extension scaffold and command registration |
+| `tmd-sample/` | Reference `.tmd` and `.tmdp` files |
+| `docs/` | Architecture, format, workflow, and release-readiness documentation |
 
-The repository ships with a ready-to-use development image. Build it once and start an interactive shell:
+The Rust packages form one Cargo workspace and share the root `Cargo.lock`.
+
+## Quick start
+
+The supported development environment is the Dev Container. In VS Code, open
+the repository with the Dev Containers extension. From a terminal with Docker:
 
 ```bash
 docker compose build
 docker compose run --rm dev bash
 ```
 
-Rust, Cargo, Node.js and the TypeScript toolchain are available in the container. Workspace volumes are mounted so edits on the host are reflected instantly.
+Inside the container:
 
-### VS Code Dev Container
-
-When using VS Code, install the **Dev Containers** extension and choose **“Open Folder in Container…”**. The `.devcontainer` configuration provisions the same image, installs `rustfmt`/`clippy`, and runs `npm install` for the VSCode extension automatically.
-
-### Install the VS Code extension (developer build)
-
-You can side-load the placeholder extension package into VS Code to verify activation before editor features ship:
-
-1. `cd tmd-vscode`
-2. `npm install`
-3. `npm run compile`
-4. `npm exec vsce package`
-5. `code --install-extension tanu-markdown-editor-0.0.1.vsix`
-
-The packaged extension only exposes a welcome command (`Tanu Markdown Editor: Show Welcome`) that confirms successful installation.
-
----
-
-## File Format Overview
-
-### `.tmdp` — Polyglot Format (Markdown + ZIP)
-
-```
-+------------------------+
-| Markdown (UTF-8 text)  |
-+------------------------+
-| ZIP archive (manifest, |
-| images/, data/, etc.)  |
-+------------------------+
-| EOCD comment           |
-|  TMD1\0<md_len_le64>   |
-+------------------------+
-```
-
-### `.tmd` — ZIP format
-
-- Same as `.tmdp` but stored as a regular ZIP file  
-- Contains `index.md`, `manifest.json`, `images/`, and `data/`
-
----
-
-## Components
-
-### `tmd-vscode/`
-**Tanu Markdown Editor**, a VS Code extension placeholder written in TypeScript. The current build only registers a welcome command so that the package can be installed and tested before real editing features arrive.
-
-### `tmd-core/`
-Rust library defining the TMD document model:
-- `TmdDoc` structure for Markdown, manifest, and attachments
-- `to_bytes()` / `open_bytes()` (stubs for polyglot serialization)
-
-### `tmd-cli/`
-Rust CLI utility for working with `.tmdp` files.
 ```bash
-cargo run -- new mydoc.tmd --title "My Document"
-cargo run -- validate mydoc.tmd
-cargo run -- export-html mydoc.tmd out.html --self-contained
+cargo test --workspace --all-features
+npm ci --prefix tmd-vscode
+npm run check --prefix tmd-vscode
 ```
 
----
+Create and inspect a document with the CLI:
 
-## Roadmap
+```bash
+cargo run -p tmd-cli -- new notes.tmd --title "Project Notes"
+cargo run -p tmd-cli -- validate notes.tmd
+cargo run -p tmd-cli -- convert notes.tmd notes.tmdp
+cargo run -p tmd-cli -- export-html notes.tmd notes.html --self-contained
+```
 
-- [ ] Implement `.tmdp` read/write logic (EOCD parsing, ZIP build)
-- [ ] Attachment management UI in VSCode extension
-- [ ] `.tmdp` → HTML / PDF export
-- [ ] SQLite embedding and SQL evaluation
-- [ ] Draft formal file specification
+## Validation
 
----
+Run the same checks used by CI:
+
+```bash
+just check-all
+```
+
+The underlying commands are documented in
+[the development workflow](docs/dev-workflow.md). CI checks Rust formatting,
+Clippy, tests, rustdoc, and the VS Code extension type build.
+
+## Documentation
+
+- [Architecture](docs/architecture.md)
+- [Format overview](docs/format-overview.md)
+- [Development workflow](docs/dev-workflow.md)
+- [Publish readiness](docs/publish-readiness.md)
+- [Current project status](PROJECT_STATUS.md)
+- [Contributing](CONTRIBUTING.md)
+
+Component-specific usage is documented in each component's README.
+
+## Compatibility and releases
+
+Tanu Markdown follows Semantic Versioning for packages, but the project remains
+at version `0.0.x`. No crate, extension, release, or file-format compatibility
+guarantee should be assumed until an explicit stabilization milestone is
+completed. Publishing is disabled in the Cargo workspace.
 
 ## License
 
-MIT License  
-(c) 2025 Tanu Markdown Project
-
----
-
-*Tanu Markdown — Markdown that packs everything inside.*
+MIT. See [LICENCE](LICENCE).

@@ -1,0 +1,45 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: monthly
+    target-branch: main
+    open-pull-requests-limit: 5
+    groups:
+      cargo-dependencies:
+        patterns:
+          - "*"
+
+  - package-ecosystem: npm
+    directory: /tmd-vscode
+    schedule:
+      interval: monthly
+    target-branch: main
+    open-pull-requests-limit: 5
+    groups:
+      vscode-extension-dependencies:
+        patterns:
+          - "*"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    target-branch: main
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: monthly
+    target-branch: main
+
+  - package-ecosystem: devcontainers
+    directory: /.devcontainer
+    schedule:
+      interval: monthly
+    target-branch: main
