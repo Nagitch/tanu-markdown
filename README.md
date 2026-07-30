@@ -3,10 +3,10 @@
 Tanu Markdown (TMD) is a self-contained document format that keeps Markdown,
 metadata, attachments, and a SQLite database in one portable file.
 
-This repository contains the Rust document library, command-line interface,
-C-compatible dynamic library, VS Code extension scaffold, and sample documents.
-The project is pre-1.0: the implementation is usable for development and
-experimentation, but the file-format contract is not yet frozen.
+This repository contains the Rust document library, the installed `tmd`
+command-line interface, a C-compatible dynamic library, a VS Code custom
+editor, and executable sample documents. The project is pre-1.0: the
+implementation is usable, but its compatibility contract is not yet frozen.
 
 ## Formats
 
@@ -21,7 +21,9 @@ Both variants contain `manifest.json`, `index.md`, `attachments.json`,
 `db/main.sqlite3`, and attachment entries. A `.tmdp` file also stores the
 Markdown length in the ZIP end-of-central-directory comment.
 
-See [the format overview](docs/format-overview.md) for the current contract.
+See the [TMD 1.0 draft specification](docs/spec-tmd-1.0-draft.md) for the
+normative implemented contract and the
+[format overview](docs/format-overview.md) for a shorter introduction.
 
 ## Repository layout
 
@@ -30,7 +32,7 @@ See [the format overview](docs/format-overview.md) for the current contract.
 | `tmd-core/` | Rust document model, attachment handling, SQLite lifecycle, and `.tmd`/`.tmdp` I/O |
 | `tmd-cli/` | CLI for creating, converting, validating, exporting, and editing documents |
 | `tmd-core-ffi/` | C ABI dynamic-library wrapper around the optional `tmd-core` FFI surface |
-| `tmd-vscode/` | VS Code extension scaffold and command registration |
+| `tmd-vscode/` | VS Code custom editor using the `tmd` JSON bridge |
 | `tmd-sample/` | Reference `.tmd` and `.tmdp` files |
 | `docs/` | Architecture, format, workflow, and release-readiness documentation |
 
@@ -51,17 +53,25 @@ Inside the container:
 ```bash
 cargo test --workspace --all-features
 npm ci --prefix tmd-vscode
-npm run check --prefix tmd-vscode
+npm test --prefix tmd-vscode
 ```
 
-Create and inspect a document with the CLI:
+Install the CLI locally, then create and inspect a document:
 
 ```bash
-cargo run -p tmd-cli -- new notes.tmd --title "Project Notes"
-cargo run -p tmd-cli -- validate notes.tmd
-cargo run -p tmd-cli -- convert notes.tmd notes.tmdp
-cargo run -p tmd-cli -- export-html notes.tmd notes.html --self-contained
+cargo install --path tmd-cli
+tmd new notes.tmd --title "Project Notes"
+tmd inspect notes.tmd --json
+tmd validate notes.tmd
+tmd convert notes.tmd notes.tmdp
+tmd export-html notes.tmd notes.html --self-contained
 ```
+
+The CLI also exposes schema-versioned JSON updates, complete attachment
+lifecycle commands, read-only JSON database queries, migrations, and database
+import/export. The VS Code extension calls those commands instead of parsing
+the container in TypeScript. Configure `tanuMarkdown.cliPath` if `tmd` is not
+on the VS Code process `PATH`.
 
 ## Validation
 
@@ -73,11 +83,12 @@ just check-all
 
 The underlying commands are documented in
 [the development workflow](docs/dev-workflow.md). CI checks Rust formatting,
-Clippy, tests, rustdoc, and the VS Code extension type build.
+Clippy, tests, rustdoc, reference samples, extension tests, and VSIX packaging.
 
 ## Documentation
 
 - [Architecture](docs/architecture.md)
+- [TMD 1.0 draft specification](docs/spec-tmd-1.0-draft.md)
 - [Format overview](docs/format-overview.md)
 - [Development workflow](docs/dev-workflow.md)
 - [Publish readiness](docs/publish-readiness.md)

@@ -22,5 +22,7 @@ doc:
 extension:
     npm ci --prefix tmd-vscode
     npm run check --prefix tmd-vscode
+    npm test --prefix tmd-vscode
+    npm run pack --prefix tmd-vscode
 
 check-all: fmt-check lint test samples doc extension

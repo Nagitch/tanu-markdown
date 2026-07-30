@@ -40,6 +40,8 @@ just check-all
 | Rust documentation | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps` |
 | Extension install | `npm ci --prefix tmd-vscode` |
 | Extension type check | `npm run check --prefix tmd-vscode` |
+| Extension tests | `npm test --prefix tmd-vscode` |
+| Extension package | `npm run pack --prefix tmd-vscode` |
 
 `just check-all` runs all checks. CI uses `--locked` for Cargo to ensure the
 committed dependency graph is reproducible.
@@ -58,6 +60,9 @@ and Dev Containers. For manual updates:
 6. Record compatibility fixes and validation in the PR.
 
 Avoid per-crate Cargo lockfiles; the root workspace lockfile is authoritative.
+The extension pins `@types/vscode` to its minimum supported VS Code engine
+version; bump those two versions together rather than accepting newer APIs by
+accident.
 
 ## Documentation and tests
 

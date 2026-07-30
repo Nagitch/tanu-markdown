@@ -10,6 +10,12 @@ pub use format::{
 };
 pub use manifest::{AttachmentMeta, AttachmentRef, LinkRef, Manifest, Semver};
 pub use util::{normalize_logical_path, now_utc};
+pub use validation::{
+    attachment_references, validate_document, AttachmentReference, ValidationIssue,
+    ValidationReport, ValidationSeverity,
+};
+
+mod validation;
 
 use mime::Mime;
 use rusqlite::Connection;
@@ -145,6 +151,16 @@ impl TmdDoc {
         self.attachments.rename(id, path)
     }
 
+    /// Replace the optional display metadata for an attachment.
+    pub fn update_attachment_metadata(
+        &mut self,
+        id: AttachmentId,
+        title: Option<String>,
+        alt: Option<String>,
+    ) -> TmdResult<()> {
+        self.attachments.update_details(id, title, alt)
+    }
+
     /// Get attachment metadata by ID.
     pub fn attachment_meta(&self, id: AttachmentId) -> Option<&AttachmentMeta> {
         self.attachments.meta(id)
@@ -199,13 +215,13 @@ mod util {
             ));
         }
 
-        if input.starts_with('/') {
+        let normalized = input.replace('\\', "/");
+        if normalized.starts_with('/') {
             return Err(TmdError::Attachment(
                 "logical path must not start with '/'".into(),
             ));
         }
 
-        let normalized = input.replace('\\', "/");
         let mut components = Vec::new();
         for part in normalized.split('/') {
             if part.is_empty() || part == "." {
@@ -214,6 +230,16 @@ mod util {
             if part == ".." {
                 return Err(TmdError::Attachment(
                     "logical path must not contain '..'".into(),
+                ));
+            }
+            if part.chars().any(char::is_control) {
+                return Err(TmdError::Attachment(
+                    "logical path must not contain control characters".into(),
+                ));
+            }
+            if part.contains(':') {
+                return Err(TmdError::Attachment(
+                    "logical path must not contain ':'".into(),
                 ));
             }
             components.push(part);
@@ -225,7 +251,17 @@ mod util {
             ));
         }
 
-        Ok(components.join("/"))
+        let path = components.join("/");
+        if matches!(
+            path.as_str(),
+            "manifest.json" | "index.md" | "attachments.json" | "db/main.sqlite3"
+        ) {
+            return Err(TmdError::Attachment(format!(
+                "logical path `{path}` is reserved by the TMD container"
+            )));
+        }
+
+        Ok(path)
     }
 }
 mod manifest {
@@ -340,7 +376,9 @@ mod manifest {
     }
 }
 mod attach {
-    use super::{AttachmentId, AttachmentMeta, LogicalPath, TmdError, TmdResult};
+    use super::{
+        normalize_logical_path, AttachmentId, AttachmentMeta, LogicalPath, TmdError, TmdResult,
+    };
     use mime::Mime;
     use sha2::{Digest, Sha256};
     use std::collections::{hash_map::Values, HashMap};
@@ -370,6 +408,12 @@ mod attach {
             mime: Mime,
             data: Vec<u8>,
         ) -> TmdResult<AttachmentId> {
+            let normalized = normalize_logical_path(&logical_path)?;
+            if normalized != logical_path {
+                return Err(TmdError::Attachment(format!(
+                    "logical path `{logical_path}` is not canonical; use `{normalized}`"
+                )));
+            }
             if self.entries.contains_key(&id) {
                 return Err(TmdError::Attachment(format!(
                     "attachment id {} already exists",
@@ -412,6 +456,12 @@ mod attach {
         }
 
         pub fn rename(&mut self, id: AttachmentId, new_path: LogicalPath) -> TmdResult<()> {
+            let normalized = normalize_logical_path(&new_path)?;
+            if normalized != new_path {
+                return Err(TmdError::Attachment(format!(
+                    "logical path `{new_path}` is not canonical; use `{normalized}`"
+                )));
+            }
             if self.by_path.contains_key(&new_path) {
                 return Err(TmdError::Attachment(format!(
                     "attachment `{}` already exists",
@@ -425,6 +475,21 @@ mod attach {
             self.by_path.remove(&entry.meta.logical_path);
             self.by_path.insert(new_path.clone(), id);
             entry.meta.logical_path = new_path;
+            Ok(())
+        }
+
+        pub fn update_details(
+            &mut self,
+            id: AttachmentId,
+            title: Option<String>,
+            alt: Option<String>,
+        ) -> TmdResult<()> {
+            let entry = self
+                .entries
+                .get_mut(&id)
+                .ok_or_else(|| TmdError::Attachment(format!("attachment id {id} not found")))?;
+            entry.meta.title = title;
+            entry.meta.alt = alt;
             Ok(())
         }
 
@@ -471,6 +536,13 @@ mod attach {
             data: Vec<u8>,
             verify_hashes: bool,
         ) -> TmdResult<()> {
+            let normalized = normalize_logical_path(&meta.logical_path)?;
+            if normalized != meta.logical_path {
+                return Err(TmdError::Attachment(format!(
+                    "logical path `{}` is not canonical; use `{normalized}`",
+                    meta.logical_path
+                )));
+            }
             if self.entries.contains_key(&meta.id) {
                 return Err(TmdError::Attachment(format!(
                     "attachment id {} already exists",
@@ -656,40 +728,45 @@ mod db {
 
     pub fn import_db(doc: &mut TmdDoc, in_path: impl AsRef<Path>) -> TmdResult<()> {
         let bytes = fs::read(in_path)?;
-        fs::write(doc.db.as_path(), bytes)?;
+        if bytes.len() < 16 || &bytes[..16] != b"SQLite format 3\0" {
+            return Err(TmdError::InvalidFormat(
+                "import source is not a SQLite 3 database".into(),
+            ));
+        }
+        let mut replacement = DbHandle::from_bytes(&bytes)?;
+        replacement.ensure_initialized(None)?;
+        doc.db = replacement;
         Ok(())
     }
 
     pub fn reset_db(doc: &mut TmdDoc, schema_sql: &str, version: u32) -> TmdResult<()> {
-        doc.db
-            .with_conn_mut(|conn| -> rusqlite::Result<()> {
-                conn.execute_batch("VACUUM;")?;
-                conn.execute_batch(schema_sql)?;
-                conn.pragma_update(None, "user_version", version as i64)?;
-                Ok(())
-            })?
-            .map_err(TmdError::from)?;
+        let mut replacement = DbHandle::new_empty()?;
+        replacement.with_conn_mut(|conn| -> TmdResult<()> {
+            let transaction = conn.transaction()?;
+            transaction.execute_batch(schema_sql)?;
+            transaction.pragma_update(None, "user_version", version as i64)?;
+            transaction.commit()?;
+            Ok(())
+        })??;
+        doc.db = replacement;
         Ok(())
     }
 
     pub fn migrate(doc: &mut TmdDoc, up_sql: &str, from: u32, to: u32) -> TmdResult<()> {
-        let current: u32 = doc
-            .db
-            .with_conn(|conn| conn.query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0)))
-            .and_then(|res| res.map_err(super::TmdError::from))?;
-        if current != from {
-            return Err(super::TmdError::Db(format!(
-                "expected user_version {} but found {}",
-                from, current
-            )));
-        }
-        doc.db
-            .with_conn_mut(|conn| -> rusqlite::Result<()> {
-                conn.execute_batch(up_sql)?;
-                conn.pragma_update(None, "user_version", to as i64)?;
-                Ok(())
-            })?
-            .map_err(TmdError::from)?;
+        doc.db.with_conn_mut(|conn| -> TmdResult<()> {
+            let transaction = conn.transaction()?;
+            let current: u32 =
+                transaction.pragma_query_value(None, "user_version", |row| row.get(0))?;
+            if current != from {
+                return Err(TmdError::Db(format!(
+                    "expected user_version {from} but found {current}"
+                )));
+            }
+            transaction.execute_batch(up_sql)?;
+            transaction.pragma_update(None, "user_version", to as i64)?;
+            transaction.commit()?;
+            Ok(())
+        })??;
         Ok(())
     }
 }
@@ -699,9 +776,12 @@ mod format {
     use super::manifest::{AttachmentMeta, Manifest};
     use super::{TmdDoc, TmdError, TmdResult};
     use serde::{Deserialize, Serialize};
-    use std::fs::File;
+    use sha2::{Digest, Sha256};
+    use std::collections::HashSet;
+    use std::fs::{self, File};
     use std::io::{Read, Seek, SeekFrom, Write};
     use std::path::Path;
+    use tempfile::NamedTempFile;
     use zip::write::SimpleFileOptions;
     use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
@@ -728,14 +808,12 @@ mod format {
     #[derive(Clone, Copy, Debug)]
     pub struct ReadMode {
         pub verify_hashes: bool,
-        pub lazy_attachments: bool,
     }
 
     impl Default for ReadMode {
         fn default() -> Self {
             Self {
                 verify_hashes: true,
-                lazy_attachments: false,
             }
         }
     }
@@ -743,16 +821,12 @@ mod format {
     #[derive(Clone, Copy, Debug)]
     pub struct WriteMode {
         pub compute_hashes: bool,
-        pub solid_zip: bool,
-        pub dedup_by_hash: bool,
     }
 
     impl Default for WriteMode {
         fn default() -> Self {
             Self {
                 compute_hashes: true,
-                solid_zip: false,
-                dedup_by_hash: false,
             }
         }
     }
@@ -816,7 +890,8 @@ mod format {
             }
         }
 
-        pub fn finish(self) -> TmdResult<()> {
+        pub fn finish(mut self) -> TmdResult<()> {
+            self.inner.flush()?;
             Ok(())
         }
     }
@@ -885,6 +960,11 @@ mod format {
                 "EOCD comment length exceeds buffer".into(),
             ));
         }
+        if comment_start + comment_len != bytes.len() {
+            return Err(TmdError::InvalidFormat(
+                "unexpected data follows the ZIP EOCD comment".into(),
+            ));
+        }
         let comment = &bytes[comment_start..comment_start + comment_len];
         let markdown_len = extract_markdown_len_from_comment(comment)? as usize;
         if markdown_len > bytes.len() {
@@ -937,6 +1017,23 @@ mod format {
         zip: &mut ZipArchive<R>,
         mode: ReadMode,
     ) -> TmdResult<TmdDoc> {
+        let mut names = HashSet::new();
+        for index in 0..zip.len() {
+            let file = zip.by_index(index)?;
+            if file.enclosed_name().is_none() {
+                return Err(TmdError::InvalidFormat(format!(
+                    "unsafe ZIP entry path `{}`",
+                    file.name()
+                )));
+            }
+            if !names.insert(file.name().to_owned()) {
+                return Err(TmdError::InvalidFormat(format!(
+                    "duplicate ZIP entry `{}`",
+                    file.name()
+                )));
+            }
+        }
+
         let markdown = read_markdown_from_zip(zip)?;
         let manifest = read_manifest_from_zip(zip)?;
         let attachment_metas = read_attachment_manifest(zip)?;
@@ -1011,7 +1108,7 @@ mod format {
         Ok(())
     }
 
-    fn build_zip(doc: &TmdDoc, _mode: WriteMode) -> TmdResult<Vec<u8>> {
+    fn build_zip(doc: &TmdDoc, mode: WriteMode) -> TmdResult<Vec<u8>> {
         let cursor = std::io::Cursor::new(Vec::new());
         let mut writer = ZipWriter::new(cursor);
         let stored = SimpleFileOptions::default()
@@ -1025,6 +1122,18 @@ mod format {
 
         // attachments manifest
         let mut attachment_metas: Vec<AttachmentMeta> = doc.attachments.iter().cloned().collect();
+        for meta in &mut attachment_metas {
+            let data = doc.attachments.data(meta.id).ok_or_else(|| {
+                TmdError::Attachment(format!("missing data for attachment {}", meta.id))
+            })?;
+            if mode.compute_hashes {
+                meta.length = data.len() as u64;
+                let digest = Sha256::digest(data);
+                let mut sha256 = [0_u8; 32];
+                sha256.copy_from_slice(&digest);
+                meta.sha256 = Some(sha256);
+            }
+        }
         attachment_metas.sort_by(|a, b| a.logical_path.cmp(&b.logical_path));
         let attachments_json = serde_json::to_vec_pretty(&AttachmentManifest {
             attachments: attachment_metas.clone(),
@@ -1087,10 +1196,28 @@ mod format {
     }
 
     pub fn write_to_path(path: impl AsRef<Path>, doc: &TmdDoc, format: Format) -> TmdResult<()> {
-        let file = File::create(path.as_ref())?;
-        let mut writer = Writer::new(std::io::BufWriter::new(file), format, WriteMode::default())?;
-        writer.write_doc(doc)?;
-        writer.finish()
+        let path = path.as_ref();
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        let mut temporary = NamedTempFile::new_in(parent)?;
+        match fs::metadata(path) {
+            Ok(metadata) => temporary
+                .as_file_mut()
+                .set_permissions(metadata.permissions())?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        {
+            let file = temporary.as_file_mut();
+            let mut writer =
+                Writer::new(std::io::BufWriter::new(file), format, WriteMode::default())?;
+            writer.write_doc(doc)?;
+            writer.finish()?;
+        }
+        temporary.as_file_mut().sync_all()?;
+        temporary
+            .persist(path)
+            .map_err(|error| TmdError::Io(error.error))?;
+        Ok(())
     }
 
     // No additional helpers
@@ -1402,8 +1529,10 @@ mod tests {
     use super::*;
     use mime::TEXT_PLAIN;
     use sha2::{Digest, Sha256};
-    use std::io::{Cursor, Seek, SeekFrom};
+    use std::io::{Cursor, Seek, SeekFrom, Write};
     use tempfile::tempdir;
+    use zip::write::SimpleFileOptions;
+    use zip::ZipWriter;
 
     fn sample_doc() -> TmdDoc {
         TmdDoc::new("# Sample\n".to_string()).expect("doc creation")
@@ -1413,10 +1542,94 @@ mod tests {
     fn normalize_logical_path_rejects_invalid_segments() {
         assert!(normalize_logical_path("foo/../bar").is_err());
         assert!(normalize_logical_path("/absolute").is_err());
+        assert!(normalize_logical_path("\\absolute").is_err());
+        assert!(normalize_logical_path("C:/drive.txt").is_err());
+        assert!(normalize_logical_path("manifest.json").is_err());
         assert_eq!(
             normalize_logical_path("images/figure.png").unwrap(),
             "images/figure.png"
         );
+    }
+
+    #[test]
+    fn reader_rejects_duplicate_and_unsafe_zip_entries() {
+        fn replace_all(bytes: &mut [u8], from: &[u8], to: &[u8]) {
+            assert_eq!(from.len(), to.len());
+            for offset in 0..=bytes.len() - from.len() {
+                if &bytes[offset..offset + from.len()] == from {
+                    bytes[offset..offset + to.len()].copy_from_slice(to);
+                }
+            }
+        }
+
+        for (names, from, to) in [
+            (
+                vec!["manifest.json", "duplicate.txt"],
+                b"duplicate.txt".as_slice(),
+                b"manifest.json".as_slice(),
+            ),
+            (
+                vec!["xx/escape.txt"],
+                b"xx/escape.txt".as_slice(),
+                b"../escape.txt".as_slice(),
+            ),
+        ] {
+            let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+            for name in names {
+                writer
+                    .start_file(name, SimpleFileOptions::default())
+                    .expect("start ZIP entry");
+                writer.write_all(b"{}").expect("write ZIP entry");
+            }
+            let mut archive = writer.finish().expect("finish ZIP");
+            replace_all(archive.get_mut(), from, to);
+            archive.set_position(0);
+            read_tmd(&mut archive, ReadMode::default()).expect_err("archive must be rejected");
+        }
+    }
+
+    #[test]
+    fn write_mode_recomputes_attachment_hashes_when_requested() {
+        let mut doc = sample_doc();
+        let id = Uuid::new_v4();
+        let data = b"content".to_vec();
+        let meta = AttachmentMeta {
+            id,
+            logical_path: "files/content.txt".to_owned(),
+            mime: TEXT_PLAIN,
+            length: data.len() as u64,
+            sha256: Some([0_u8; 32]),
+            title: None,
+            alt: None,
+            extras: serde_json::Value::Null,
+        };
+        doc.attachments
+            .insert_entry(meta, data, false)
+            .expect("unchecked fixture");
+
+        let mut recomputed = Cursor::new(Vec::new());
+        write_tmd(
+            &mut recomputed,
+            &doc,
+            WriteMode {
+                compute_hashes: true,
+            },
+        )
+        .expect("write with recomputed hashes");
+        recomputed.set_position(0);
+        read_tmd(&mut recomputed, ReadMode::default()).expect("recomputed archive is valid");
+
+        let mut preserved = Cursor::new(Vec::new());
+        write_tmd(
+            &mut preserved,
+            &doc,
+            WriteMode {
+                compute_hashes: false,
+            },
+        )
+        .expect("write with preserved hashes");
+        preserved.set_position(0);
+        assert!(read_tmd(&mut preserved, ReadMode::default()).is_err());
     }
 
     #[test]
@@ -1661,6 +1874,27 @@ mod tests {
     }
 
     #[test]
+    fn reset_database_replaces_existing_schema() {
+        let mut doc = sample_doc();
+        reset_db(&mut doc, "CREATE TABLE old_table(id INTEGER);", 1).expect("first reset");
+        reset_db(&mut doc, "CREATE TABLE new_table(id INTEGER);", 2).expect("second reset");
+
+        let tables: Vec<String> = doc
+            .db_with_conn(|conn| {
+                let mut statement = conn
+                    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+                    .unwrap();
+                statement
+                    .query_map([], |row| row.get(0))
+                    .unwrap()
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap()
+            })
+            .expect("list tables");
+        assert_eq!(tables, vec!["new_table"]);
+    }
+
+    #[test]
     fn reset_db_propagates_sql_errors() {
         let mut doc = sample_doc();
         let err = reset_db(&mut doc, "CREATE TABLE ???", 1).expect_err("reset should fail");
@@ -1732,6 +1966,21 @@ mod tests {
         let loaded = read_from_path(&path, Some(Format::Tmd)).expect("read path");
         assert_eq!(loaded.markdown, doc.markdown);
         assert_eq!(loaded.list_attachments().count(), 1);
+    }
+
+    #[test]
+    fn failed_atomic_write_preserves_existing_document() {
+        let doc = sample_doc();
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("existing.tmd");
+        std::fs::write(&path, b"original bytes").expect("write original");
+        std::fs::remove_file(doc.db.as_path()).expect("invalidate source database");
+
+        write_to_path(&path, &doc, Format::Tmd).expect_err("write must fail");
+        assert_eq!(
+            std::fs::read(&path).expect("read original"),
+            b"original bytes"
+        );
     }
 
     #[cfg(feature = "ffi")]

@@ -6,15 +6,16 @@ so that the Rust core remains the single source of truth.
 ## Component relationships
 
 ```text
-                         +------------------+
-                         | tmd-vscode       |
-                         | editor scaffold  |
-                         +------------------+
-
 +------------------+     +------------------+     +------------------+
-| tmd-cli          | --> | tmd-core         | <-- | tmd-core-ffi     |
-| terminal UX      |     | model and I/O    |     | C ABI cdylib     |
+| tmd-vscode       | --> | tmd CLI/JSON     | --> | tmd-core         |
+| custom editor    |     | terminal UX      |     | model and I/O    |
 +------------------+     +------------------+     +------------------+
+                                                      ^
+                                                      |
+                                              +------------------+
+                                              | tmd-core-ffi     |
+                                              | C ABI cdylib     |
+                                              +------------------+
                                |
                                v
                        .tmd / .tmdp files
@@ -23,9 +24,9 @@ so that the Rust core remains the single source of truth.
                          tmd-sample fixtures
 ```
 
-`tmd-cli` and `tmd-core-ffi` depend on `tmd-core`. The VS Code extension is
-currently independent and must not duplicate format parsing as it matures; it
-should call a stable CLI, native binding, or future WebAssembly boundary.
+`tmd-cli` and `tmd-core-ffi` depend on `tmd-core`. The VS Code extension calls
+the installed `tmd` binary through its schema-versioned JSON bridge and never
+parses `.tmd`/`.tmdp` containers in TypeScript.
 
 ## `tmd-core`
 
@@ -39,9 +40,8 @@ The core crate owns:
 - optional C ABI functions behind the `ffi` feature.
 
 The crate currently keeps attachment and complete-container data in memory
-during I/O. Public mode flags that imply lazy, solid, or deduplicated behavior
-are future extension points and should not be documented as complete until
-implemented.
+during I/O. Public read/write modes expose only implemented hash-verification
+and hash-recomputation choices.
 
 ## `tmd-cli`
 
@@ -49,8 +49,9 @@ The CLI translates terminal inputs into `tmd-core` operations. It owns:
 
 - argument parsing and exit errors;
 - format selection from output extensions;
-- human-readable validation and database output;
-- Markdown-to-HTML rendering.
+- human-readable and schema-versioned JSON inspection/updates;
+- attachment and SQLite lifecycle UX;
+- Markdown-to-HTML rendering with real `attach:` URL rewriting.
 
 File-format validation belongs in `tmd-core`, not in CLI-only code.
 
@@ -62,9 +63,11 @@ ABI version negotiation, or cross-language packaging policy.
 
 ## `tmd-vscode`
 
-The extension owns editor activation, commands, and VS Code user experience.
-Most commands remain placeholders. Format operations should eventually cross a
-documented integration boundary rather than reimplement the container.
+The extension owns custom-document state, undo/redo, save/revert/backup,
+commands, safe live preview, and VS Code user experience. It invokes the CLI
+with argument arrays and no shell. The webview uses a restrictive content
+security policy, nonce-bound scripts/styles, DOM text APIs, and escaped preview
+HTML. The current editor supports local files only.
 
 ## Repository-level contracts
 
@@ -72,5 +75,5 @@ documented integration boundary rather than reimplement the container.
 - `rust-toolchain.toml` and `Dockerfile` define supported toolchains.
 - `justfile` and `.github/workflows/ci.yml` define equivalent local and CI
   checks.
-- `docs/format-overview.md` records the implemented file structure.
+- `docs/spec-tmd-1.0-draft.md` defines the versioned implemented format.
 - GitHub Issues are the source of truth for future work.

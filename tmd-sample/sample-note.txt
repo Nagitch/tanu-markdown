@@ -1,0 +1,4 @@
+This attachment is embedded in both reference Tanu Markdown containers.
+
+It exists so validation, extraction, HTML export, and editor attachment views
+can be exercised against a small deterministic fixture.
