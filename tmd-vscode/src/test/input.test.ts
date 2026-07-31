@@ -163,6 +163,46 @@ test("authoritative model state replaces focused control values", () => {
   assert.equal(markdown.disabled, false);
 });
 
+test("authoritative model state locks and unlocks editor inputs", () => {
+  const title = { value: "", disabled: false };
+  const markdown = { value: "", disabled: false };
+  const states: boolean[] = [];
+
+  runInNewContext(
+    `let editorInitialized = false;
+     let clientRevision = 0;
+     let acknowledgedContentRevision = -1;
+     ${authoritativeStateScript()}
+     applyAuthoritativeState(lockedModel);
+     states.push(title.disabled, markdown.disabled);
+     applyAuthoritativeState(unlockedModel);
+     states.push(title.disabled, markdown.disabled);`,
+    {
+      lockedModel: {
+        acknowledgedClientRevision: 0,
+        contentRevision: 0,
+        editingLocked: true,
+        title: "locked",
+        markdown: "locked",
+      },
+      markdown,
+      states,
+      title,
+      unlockedModel: {
+        acknowledgedClientRevision: 0,
+        contentRevision: 0,
+        editingLocked: false,
+        title: "unlocked",
+        markdown: "unlocked",
+      },
+    },
+  );
+
+  assert.deepEqual(states, [true, true, false, false]);
+  assert.equal(title.value, "unlocked");
+  assert.equal(markdown.value, "unlocked");
+});
+
 test("stale models cannot overwrite pending or acknowledged local edits", () => {
   const title = inputControl("");
   const markdown = inputControl("");

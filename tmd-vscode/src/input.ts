@@ -78,8 +78,8 @@ export function authoritativeStateScript(): string {
       markdown.value = model.markdown;
       acknowledgedContentRevision = model.contentRevision;
       editorInitialized = true;
-      title.disabled = false;
-      markdown.disabled = false;
+      title.disabled = model.editingLocked === true;
+      markdown.disabled = model.editingLocked === true;
       return true;
     };
   `;

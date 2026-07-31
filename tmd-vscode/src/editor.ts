@@ -104,6 +104,7 @@ export class TanuMarkdownEditorProvider
   private readonly panelClientRevisions =
     new ClientRevisionTracker<vscode.WebviewPanel>();
   private readonly documentOperations = new SerialTaskQueue<TanuMarkdownDocument>();
+  private readonly editLocks = new Set<TanuMarkdownDocument>();
   private activeDocumentValue: TanuMarkdownDocument | undefined;
 
   constructor(private readonly clientFactory: () => TmdCliClient) {}
@@ -334,10 +335,17 @@ export class TanuMarkdownEditorProvider
     logicalPath: string,
   ): Promise<void> {
     await this.documentOperations.run(document, async () => {
-      requirePersistedRevision(document, "remove the attachment");
-      const persistedRevision = document.contentRevision;
-      await this.clientFactory().removeAttachment(filePath(document.uri), logicalPath);
-      await this.reloadAfterExternalChange(document, persistedRevision);
+      this.editLocks.add(document);
+      try {
+        await this.postModel(document);
+        requirePersistedRevision(document, "remove the attachment");
+        const persistedRevision = document.contentRevision;
+        await this.clientFactory().removeAttachment(filePath(document.uri), logicalPath);
+        await this.reloadAfterExternalChange(document, persistedRevision);
+      } finally {
+        this.editLocks.delete(document);
+        await this.postModel(document);
+      }
     });
   }
 
@@ -437,6 +445,11 @@ export class TanuMarkdownEditorProvider
           return;
         }
         const clientRevision = message.clientRevision;
+        if (this.editLocks.has(document)) {
+          this.panelClientRevisions.accept(panel, clientRevision);
+          await this.postModel(document);
+          return;
+        }
         if (!this.panelClientRevisions.accept(panel, clientRevision)) {
           await panel.webview.postMessage({
             type: "editAck",
@@ -519,6 +532,7 @@ export class TanuMarkdownEditorProvider
       markdown: state.markdown,
       title: state.title,
       previewHtml: renderSafeMarkdown(state.markdown),
+      editingLocked: this.editLocks.has(document),
     };
     const panels = this.panels.get(document);
     if (!panels) {
