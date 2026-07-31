@@ -625,6 +625,7 @@ mod attach {
     }
 }
 mod db {
+    use super::format::copy_file_to_path;
     use super::{TmdDoc, TmdError, TmdResult, SQLITE_MAX_USER_VERSION};
     use rusqlite::Connection;
     use std::fs;
@@ -724,9 +725,7 @@ mod db {
     }
 
     pub fn export_db(doc: &TmdDoc, out_path: impl AsRef<Path>) -> TmdResult<()> {
-        let out = out_path.as_ref();
-        fs::copy(doc.db.as_path(), out)?;
-        Ok(())
+        copy_file_to_path(doc.db.as_path(), out_path.as_ref())
     }
 
     pub fn import_db(doc: &mut TmdDoc, in_path: impl AsRef<Path>) -> TmdResult<()> {
@@ -1269,6 +1268,14 @@ mod format {
     pub fn write_bytes_to_path(path: impl AsRef<Path>, bytes: &[u8]) -> TmdResult<()> {
         replace_path_atomically(path.as_ref(), |file| {
             file.write_all(bytes)?;
+            Ok(())
+        })
+    }
+
+    pub(crate) fn copy_file_to_path(source: &Path, path: &Path) -> TmdResult<()> {
+        replace_path_atomically(path, |file| {
+            let mut source = File::open(source)?;
+            std::io::copy(&mut source, file)?;
             Ok(())
         })
     }
@@ -2162,6 +2169,22 @@ mod tests {
             })
             .expect("query");
         assert_eq!(value, 42);
+    }
+
+    #[test]
+    fn failed_database_export_preserves_existing_output() {
+        let doc = sample_doc();
+        let dir = tempdir().unwrap();
+        let export_path = dir.path().join("db.sqlite3");
+        std::fs::write(&export_path, b"existing database").expect("write existing output");
+        std::fs::remove_file(doc.db.as_path()).expect("invalidate source database");
+
+        export_db(&doc, &export_path).expect_err("export must fail");
+
+        assert_eq!(
+            std::fs::read(&export_path).expect("read preserved output"),
+            b"existing database"
+        );
     }
 
     #[test]

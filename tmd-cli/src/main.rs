@@ -289,10 +289,14 @@ fn cmd_convert(
     expected_output_state: Option<&ExpectedOutputState>,
 ) -> Result<()> {
     ensure_distinct_existing_paths(input, output, "converted document")?;
-    let (doc, _) = read_document(input)?;
-    let format = detect_format(output)?;
+    let (doc, input_format, input_bytes) = read_document_snapshot(input)?;
+    let output_format = detect_format(output)?;
     ensure_parent_directory(output)?;
-    write_document_if_expected(output, &doc, format, expected_output_state)?;
+    if input_format == output_format {
+        write_bytes_if_expected(output, &input_bytes, expected_output_state)?;
+    } else {
+        write_document_if_expected(output, &doc, output_format, expected_output_state)?;
+    }
     println!(
         "Converted `{}` into `{}`",
         input.display(),
@@ -934,11 +938,11 @@ fn database_inspection(doc: &TmdDoc) -> Result<JsonValue> {
 }
 
 fn read_document(path: &Path) -> Result<(TmdDoc, Format)> {
-    let (doc, format, _) = read_document_for_update(path)?;
+    let (doc, format, _) = read_document_snapshot(path)?;
     Ok((doc, format))
 }
 
-fn read_document_for_update(path: &Path) -> Result<(TmdDoc, Format, ExpectedOutputState)> {
+fn read_document_snapshot(path: &Path) -> Result<(TmdDoc, Format, Vec<u8>)> {
     let format = detect_format(path)?;
     let bytes = fs::read(path).with_context(|| format!("failed to read `{}`", path.display()))?;
     let mut cursor = Cursor::new(bytes.as_slice());
@@ -947,6 +951,11 @@ fn read_document_for_update(path: &Path) -> Result<(TmdDoc, Format, ExpectedOutp
         Format::Tmdp => read_tmdp(&mut cursor, ReadMode::default()),
     }
     .with_context(|| format!("failed to parse `{}`", path.display()))?;
+    Ok((doc, format, bytes))
+}
+
+fn read_document_for_update(path: &Path) -> Result<(TmdDoc, Format, ExpectedOutputState)> {
+    let (doc, format, bytes) = read_document_snapshot(path)?;
     let digest = Sha256::digest(&bytes).into();
     Ok((doc, format, ExpectedOutputState::Sha256(digest)))
 }
@@ -957,11 +966,32 @@ fn write_document_if_expected(
     format: Format,
     expected: Option<&ExpectedOutputState>,
 ) -> Result<()> {
+    write_output_if_expected(path, expected, || {
+        write_to_path(path, doc, format)
+            .with_context(|| format!("failed to atomically write `{}`", path.display()))
+    })
+}
+
+fn write_bytes_if_expected(
+    path: &Path,
+    bytes: &[u8],
+    expected: Option<&ExpectedOutputState>,
+) -> Result<()> {
+    write_output_if_expected(path, expected, || {
+        write_bytes_to_path(path, bytes)
+            .with_context(|| format!("failed to atomically write `{}`", path.display()))
+    })
+}
+
+fn write_output_if_expected(
+    path: &Path,
+    expected: Option<&ExpectedOutputState>,
+    write: impl FnOnce() -> Result<()>,
+) -> Result<()> {
     let mut locked = lock_document_output(path, expected)?;
     let write_result = (|| {
         verify_expected_output(&mut locked, path, expected)?;
-        write_to_path(path, doc, format)
-            .with_context(|| format!("failed to atomically write `{}`", path.display()))
+        write()
     })();
     let cleanup_result = if write_result.is_err() {
         locked.remove_placeholder_if_current(path)
