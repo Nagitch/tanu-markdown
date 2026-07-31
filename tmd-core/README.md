@@ -6,8 +6,10 @@ container I/O.
 It provides:
 
 - `.tmd` ZIP and `.tmdp` polyglot reading and writing;
-- manifests, attachment metadata, path validation, and SHA-256 checks;
+- manifests, safe/unique attachment paths, SHA-256 checks, and Markdown
+  `attach:` reference validation;
 - an embedded SQLite handle with import, export, reset, and migration helpers;
+- structured version/database validation reports and atomic path writes;
 - optional C ABI entry points behind the `ffi` feature.
 
 It does not provide terminal or editor user interfaces. Those belong to
@@ -38,13 +40,21 @@ fn main() -> tmd_core::TmdResult<()> {
 
 - `TmdDoc` and `Manifest` model the document.
 - `AttachmentStore` owns attachment metadata and bytes.
-- `Reader`, `Writer`, `ReadMode`, and `WriteMode` control container I/O.
+- `Reader`, `Writer`, `ReadMode`, and `WriteMode` control implemented hash
+  verification/recomputation behavior.
 - `DbHandle`, `import_db`, `export_db`, `reset_db`, and `migrate` manage the
-  embedded database.
-- `read_from_path` and `write_to_path` provide the common path-based API.
+  embedded database. Reset and migration SQL may own a transaction; schema
+  versions are constrained to SQLite's nonnegative 31-bit range.
+- `validate_document` returns machine-readable issues, references, and the
+  embedded database version.
+- `read_from_path` and `write_to_path` provide the common path-based API;
+  writers reject unsupported TMD major versions rather than risk stripping
+  unknown manifest data, and reject destinations with multiple hard links
+  because atomic replacement cannot update every alias safely. Existing files
+  are also rejected when ownership, ACLs, or extended attributes would change.
 
 See the
-[repository format overview](https://github.com/Nagitch/tanu-markdown/blob/main/docs/format-overview.md)
+[TMD 1.0 draft specification](https://github.com/Nagitch/tanu-markdown/blob/main/docs/spec-tmd-1.0-draft.md)
 and generated Rust documentation for details.
 
 ## Validation

@@ -1,77 +1,116 @@
-# tmd-cli
+# tmd CLI
 
-`tmd-cli` is the command-line interface for working with Tanu Markdown (`.tmd` / `.tmdp`) documents. It creates new documents, converts formats, validates embedded database metadata, exports Markdown to HTML, and manages the embedded SQLite database.
+`tmd-cli` installs the `tmd` command for complete Tanu Markdown (`.tmd` /
+`.tmdp`) document workflows. It is also the schema-versioned JSON boundary used
+by the VS Code editor.
 
-## Build & Run
-
-```bash
-cargo run -p tmd-cli -- --help
-```
-
-If you prefer a release build:
+## Build and install
 
 ```bash
-cargo build --release -p tmd-cli
+cargo run -p tmd-cli --bin tmd -- --help
+cargo install --path tmd-cli
 ```
 
-## Commands
-
-### Create a New Document
+## Document lifecycle
 
 ```bash
-cargo run -p tmd-cli -- new ./notes.tmd --title "Project Notes"
+tmd new notes.tmd --title "Project Notes"
+tmd inspect notes.tmd --json
+tmd validate notes.tmd
+tmd convert notes.tmd notes.tmdp
 ```
 
-Creates a `.tmdp` or `.tmd` document (based on the extension) with a ready-to-use embedded SQLite database.
+Validation checks container structure and hashes while loading, then reports
+TMD version support, `attach:` references, cover-image identity, and embedded
+database schema consistency. Add `--json` for machine-readable output. JSON
+mode still emits a structured invalid report when container reading or
+validation execution fails, even though the command exits nonzero.
 
-### Convert Between `.tmdp` and `.tmd`
+### Schema-versioned updates
 
 ```bash
-cargo run -p tmd-cli -- convert ./notes.tmd ./notes.tmdp
+printf '%s' '{"schema_version":1,"title":"Renamed","markdown":"# Renamed"}' \
+  | tmd update notes.tmd --json-stdin
 ```
 
-### Validate a Document
+`update` preserves attachments, database content, manifest identity, and
+creation time. It writes atomically.
+
+### Attachments
 
 ```bash
-cargo run -p tmd-cli -- validate ./notes.tmd
+tmd attachment add notes.tmd diagram.png --path images/diagram.png
+tmd attachment list notes.tmd --json
+tmd attachment rename notes.tmd --from images/diagram.png --to images/final.png
+tmd attachment extract notes.tmd --path images/final.png final.png
+tmd attachment remove notes.tmd --path images/final.png
 ```
 
-Validation checks the embedded database schema version in `manifest.db_schema_version` against `PRAGMA user_version`.
+Logical paths are normalized and checked against traversal, reserved-name, and
+duplicate-path rules. Extraction creates the destination with no-clobber
+semantics and refuses existing files and symbolic links.
 
-### Export HTML
+### HTML
 
 ```bash
-cargo run -p tmd-cli -- export-html ./notes.tmd ./notes.html
+tmd export-html notes.tmd notes.html
+tmd export-html notes.tmd standalone.html --self-contained
 ```
 
-To inline attachments as base64 data URIs:
+Without `--self-contained`, attachments are extracted into a safe sibling
+asset directory and actual `attach:` links/images are rewritten. With the flag,
+the URLs become data URIs. Raw HTML in Markdown is emitted as text, external
+destinations are limited to relative URLs plus `http`, `https`, `mailto`, and
+`tel`, and executable data-URI MIME types are exported as
+`application/octet-stream`. Linked exports use collision-free UUID-based asset
+names, render Markdown attachment links as downloads, and permit only passive
+attachment types as inline image sources. Export refuses an output path that
+resolves to the source document.
+
+## Embedded database
+
+Initialize a schema:
 
 ```bash
-cargo run -p tmd-cli -- export-html ./notes.tmd ./notes.html --self-contained
+tmd db init notes.tmd --schema schema.sql --version 1
 ```
 
-### Embedded Database Commands
+Schema files may contain their own `BEGIN TRANSACTION`/`COMMIT` wrapper.
+Schema versions must be between `0` and SQLite's `2147483647` limit.
 
-#### Initialize / Reset the DB Schema
+Execute mutations and query with machine-readable rows:
 
 ```bash
-cargo run -p tmd-cli -- db init ./notes.tmd --schema ./schema.sql --version 1
+tmd db exec notes.tmd --sql "INSERT INTO notes(body) VALUES ('hello')"
+tmd db query notes.tmd --sql "SELECT * FROM notes" --json
 ```
 
-#### Execute SQL
+`db query` accepts exactly one read-only SQLite statement. Mutations use
+`db exec`. JSON output represents non-finite SQLite `REAL` values as
+`{"real":"Infinity"}`, `{"real":"-Infinity"}`, or `{"real":"NaN"}` so they
+remain distinct from SQL `NULL`. Human-readable table output escapes backslashes,
+column delimiters, and line breaks as `\\`, `\|`, `\r`, and `\n`. Query rows are
+streamed to stdout rather than retained as a complete in-memory result set.
+
+Migrate and update both `PRAGMA user_version` and the manifest:
 
 ```bash
-cargo run -p tmd-cli -- db exec ./notes.tmd --sql "SELECT name FROM sqlite_master"
+tmd db migrate notes.tmd --from 1 --to 2 \
+  --sql "ALTER TABLE notes ADD COLUMN archived INTEGER NOT NULL DEFAULT 0"
 ```
 
-#### Import / Export the Database
+Import or export a standalone SQLite database:
 
 ```bash
-cargo run -p tmd-cli -- db import ./notes.tmd ./db.sqlite
-cargo run -p tmd-cli -- db export ./notes.tmd ./db.sqlite
+tmd db import notes.tmd database.sqlite3
+tmd db export notes.tmd database.sqlite3
 ```
 
-## Notes
+Database export refuses output paths that resolve to the source container.
 
-- The output format is inferred from the file extension (`.tmdp` or `.tmd`).
-- When the embedded database is updated, the document manifest `modified_utc` timestamp is refreshed automatically.
+## Contracts
+
+- Input/output format is inferred from `.tmd` or `.tmdp`.
+- Mutating commands refresh `modified_utc` and replace containers atomically.
+- JSON bridge payloads currently use `schema_version: 1`.
+- Format semantics and validation live in `tmd-core`, not this crate.

@@ -14,11 +14,23 @@ keywords = ["markdown", "cli", "document", "sqlite"]
 categories = ["command-line-utilities"]
 include = ["src/**", "Cargo.toml", "README.md"]
 
+[[bin]]
+name = "tmd"
+path = "src/main.rs"
+
 [dependencies]
 anyhow.workspace = true
 base64.workspace = true
 clap.workspace = true
 html-escape.workspace = true
+hex.workspace = true
+mime_guess.workspace = true
+percent-encoding.workspace = true
 pulldown-cmark.workspace = true
 rusqlite.workspace = true
+same-file.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
 tmd-core = { path = "../tmd-core" }

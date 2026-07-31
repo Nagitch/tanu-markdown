@@ -5,11 +5,17 @@ pub use db::{
     export_db, import_db, migrate, reset_db, with_conn, with_conn_mut, DbHandle, DbOptions,
 };
 pub use format::{
-    read_from_path, read_tmd, read_tmdp, sniff_format, write_tmd, write_tmdp, write_to_path,
-    Format, ReadMode, Reader, WriteMode, Writer,
+    read_from_path, read_tmd, read_tmdp, sniff_format, write_bytes_to_path, write_tmd, write_tmdp,
+    write_to_path, Format, ReadMode, Reader, WriteMode, Writer,
 };
 pub use manifest::{AttachmentMeta, AttachmentRef, LinkRef, Manifest, Semver};
 pub use util::{normalize_logical_path, now_utc};
+pub use validation::{
+    attachment_references, validate_document, AttachmentReference, ValidationIssue,
+    ValidationReport, ValidationSeverity,
+};
+
+mod validation;
 
 use mime::Mime;
 use rusqlite::Connection;
@@ -18,6 +24,9 @@ use uuid::Uuid;
 
 pub type AttachmentId = Uuid;
 pub type LogicalPath = String;
+
+/// Largest nonnegative value preserved by SQLite `PRAGMA user_version`.
+pub const SQLITE_MAX_USER_VERSION: u32 = i32::MAX as u32;
 
 /// Result type specialised for `tmd-core` operations.
 pub type TmdResult<T> = Result<T, TmdError>;
@@ -145,6 +154,16 @@ impl TmdDoc {
         self.attachments.rename(id, path)
     }
 
+    /// Replace the optional display metadata for an attachment.
+    pub fn update_attachment_metadata(
+        &mut self,
+        id: AttachmentId,
+        title: Option<String>,
+        alt: Option<String>,
+    ) -> TmdResult<()> {
+        self.attachments.update_details(id, title, alt)
+    }
+
     /// Get attachment metadata by ID.
     pub fn attachment_meta(&self, id: AttachmentId) -> Option<&AttachmentMeta> {
         self.attachments.meta(id)
@@ -199,13 +218,13 @@ mod util {
             ));
         }
 
-        if input.starts_with('/') {
+        let normalized = input.replace('\\', "/");
+        if normalized.starts_with('/') {
             return Err(TmdError::Attachment(
                 "logical path must not start with '/'".into(),
             ));
         }
 
-        let normalized = input.replace('\\', "/");
         let mut components = Vec::new();
         for part in normalized.split('/') {
             if part.is_empty() || part == "." {
@@ -214,6 +233,16 @@ mod util {
             if part == ".." {
                 return Err(TmdError::Attachment(
                     "logical path must not contain '..'".into(),
+                ));
+            }
+            if part.chars().any(char::is_control) {
+                return Err(TmdError::Attachment(
+                    "logical path must not contain control characters".into(),
+                ));
+            }
+            if part.contains(':') {
+                return Err(TmdError::Attachment(
+                    "logical path must not contain ':'".into(),
                 ));
             }
             components.push(part);
@@ -225,7 +254,17 @@ mod util {
             ));
         }
 
-        Ok(components.join("/"))
+        let path = components.join("/");
+        if matches!(
+            path.as_str(),
+            "manifest.json" | "index.md" | "attachments.json" | "db/main.sqlite3"
+        ) {
+            return Err(TmdError::Attachment(format!(
+                "logical path `{path}` is reserved by the TMD container"
+            )));
+        }
+
+        Ok(path)
     }
 }
 mod manifest {
@@ -340,7 +379,9 @@ mod manifest {
     }
 }
 mod attach {
-    use super::{AttachmentId, AttachmentMeta, LogicalPath, TmdError, TmdResult};
+    use super::{
+        normalize_logical_path, AttachmentId, AttachmentMeta, LogicalPath, TmdError, TmdResult,
+    };
     use mime::Mime;
     use sha2::{Digest, Sha256};
     use std::collections::{hash_map::Values, HashMap};
@@ -370,6 +411,12 @@ mod attach {
             mime: Mime,
             data: Vec<u8>,
         ) -> TmdResult<AttachmentId> {
+            let normalized = normalize_logical_path(&logical_path)?;
+            if normalized != logical_path {
+                return Err(TmdError::Attachment(format!(
+                    "logical path `{logical_path}` is not canonical; use `{normalized}`"
+                )));
+            }
             if self.entries.contains_key(&id) {
                 return Err(TmdError::Attachment(format!(
                     "attachment id {} already exists",
@@ -412,6 +459,12 @@ mod attach {
         }
 
         pub fn rename(&mut self, id: AttachmentId, new_path: LogicalPath) -> TmdResult<()> {
+            let normalized = normalize_logical_path(&new_path)?;
+            if normalized != new_path {
+                return Err(TmdError::Attachment(format!(
+                    "logical path `{new_path}` is not canonical; use `{normalized}`"
+                )));
+            }
             if self.by_path.contains_key(&new_path) {
                 return Err(TmdError::Attachment(format!(
                     "attachment `{}` already exists",
@@ -425,6 +478,21 @@ mod attach {
             self.by_path.remove(&entry.meta.logical_path);
             self.by_path.insert(new_path.clone(), id);
             entry.meta.logical_path = new_path;
+            Ok(())
+        }
+
+        pub fn update_details(
+            &mut self,
+            id: AttachmentId,
+            title: Option<String>,
+            alt: Option<String>,
+        ) -> TmdResult<()> {
+            let entry = self
+                .entries
+                .get_mut(&id)
+                .ok_or_else(|| TmdError::Attachment(format!("attachment id {id} not found")))?;
+            entry.meta.title = title;
+            entry.meta.alt = alt;
             Ok(())
         }
 
@@ -471,6 +539,13 @@ mod attach {
             data: Vec<u8>,
             verify_hashes: bool,
         ) -> TmdResult<()> {
+            let normalized = normalize_logical_path(&meta.logical_path)?;
+            if normalized != meta.logical_path {
+                return Err(TmdError::Attachment(format!(
+                    "logical path `{}` is not canonical; use `{normalized}`",
+                    meta.logical_path
+                )));
+            }
             if self.entries.contains_key(&meta.id) {
                 return Err(TmdError::Attachment(format!(
                     "attachment id {} already exists",
@@ -550,7 +625,8 @@ mod attach {
     }
 }
 mod db {
-    use super::{TmdDoc, TmdError, TmdResult};
+    use super::format::copy_file_to_path;
+    use super::{TmdDoc, TmdError, TmdResult, SQLITE_MAX_USER_VERSION};
     use rusqlite::Connection;
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -649,47 +725,76 @@ mod db {
     }
 
     pub fn export_db(doc: &TmdDoc, out_path: impl AsRef<Path>) -> TmdResult<()> {
-        let out = out_path.as_ref();
-        fs::copy(doc.db.as_path(), out)?;
-        Ok(())
+        copy_file_to_path(doc.db.as_path(), out_path.as_ref())
     }
 
     pub fn import_db(doc: &mut TmdDoc, in_path: impl AsRef<Path>) -> TmdResult<()> {
         let bytes = fs::read(in_path)?;
-        fs::write(doc.db.as_path(), bytes)?;
+        if bytes.len() < 16 || &bytes[..16] != b"SQLite format 3\0" {
+            return Err(TmdError::InvalidFormat(
+                "import source is not a SQLite 3 database".into(),
+            ));
+        }
+        let mut replacement = DbHandle::from_bytes(&bytes)?;
+        replacement.ensure_initialized(None)?;
+        doc.db = replacement;
         Ok(())
     }
 
     pub fn reset_db(doc: &mut TmdDoc, schema_sql: &str, version: u32) -> TmdResult<()> {
-        doc.db
-            .with_conn_mut(|conn| -> rusqlite::Result<()> {
-                conn.execute_batch("VACUUM;")?;
-                conn.execute_batch(schema_sql)?;
-                conn.pragma_update(None, "user_version", version as i64)?;
-                Ok(())
-            })?
-            .map_err(TmdError::from)?;
+        ensure_supported_user_version(version)?;
+        let mut replacement = DbHandle::new_empty()?;
+        replacement.with_conn_mut(|conn| -> TmdResult<()> {
+            // The replacement database is not installed until the complete
+            // script succeeds, so scripts may manage their own transaction.
+            conn.execute_batch(schema_sql)?;
+            if !conn.is_autocommit() {
+                conn.execute_batch("ROLLBACK")?;
+                return Err(TmdError::Db(
+                    "schema script left a transaction open".to_owned(),
+                ));
+            }
+            conn.pragma_update(None, "user_version", version as i64)?;
+            Ok(())
+        })??;
+        doc.db = replacement;
         Ok(())
     }
 
     pub fn migrate(doc: &mut TmdDoc, up_sql: &str, from: u32, to: u32) -> TmdResult<()> {
-        let current: u32 = doc
-            .db
-            .with_conn(|conn| conn.query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0)))
-            .and_then(|res| res.map_err(super::TmdError::from))?;
-        if current != from {
-            return Err(super::TmdError::Db(format!(
-                "expected user_version {} but found {}",
-                from, current
+        ensure_supported_user_version(from)?;
+        ensure_supported_user_version(to)?;
+        let bytes = fs::read(doc.db.as_path())?;
+        let mut replacement = DbHandle::from_bytes(&bytes)?;
+        replacement.with_conn_mut(|conn| -> TmdResult<()> {
+            let current: u32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+            if current != from {
+                return Err(TmdError::Db(format!(
+                    "expected user_version {from} but found {current}"
+                )));
+            }
+            // Run against a replacement copy so plain and transaction-wrapped
+            // scripts are both supported without risking partial mutation.
+            conn.execute_batch(up_sql)?;
+            if !conn.is_autocommit() {
+                conn.execute_batch("ROLLBACK")?;
+                return Err(TmdError::Db(
+                    "migration script left a transaction open".to_owned(),
+                ));
+            }
+            conn.pragma_update(None, "user_version", to as i64)?;
+            Ok(())
+        })??;
+        doc.db = replacement;
+        Ok(())
+    }
+
+    fn ensure_supported_user_version(version: u32) -> TmdResult<()> {
+        if version > SQLITE_MAX_USER_VERSION {
+            return Err(TmdError::Db(format!(
+                "database schema version {version} exceeds SQLite user_version maximum {SQLITE_MAX_USER_VERSION}"
             )));
         }
-        doc.db
-            .with_conn_mut(|conn| -> rusqlite::Result<()> {
-                conn.execute_batch(up_sql)?;
-                conn.pragma_update(None, "user_version", to as i64)?;
-                Ok(())
-            })?
-            .map_err(TmdError::from)?;
         Ok(())
     }
 }
@@ -699,15 +804,24 @@ mod format {
     use super::manifest::{AttachmentMeta, Manifest};
     use super::{TmdDoc, TmdError, TmdResult};
     use serde::{Deserialize, Serialize};
-    use std::fs::File;
+    use sha2::{Digest, Sha256};
+    use std::collections::HashSet;
+    use std::fs::{self, File};
     use std::io::{Read, Seek, SeekFrom, Write};
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
+    use tempfile::NamedTempFile;
     use zip::write::SimpleFileOptions;
     use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
     const EOCD_SIGNATURE: [u8; 4] = [0x50, 0x4b, 0x05, 0x06];
     const MAX_COMMENT_SEARCH: usize = 0xFFFF + 22;
     const TMD_COMMENT_PREFIX: &[u8] = b"TMD1\0";
+    const REQUIRED_ENTRY_NAMES: [&str; 4] = [
+        "manifest.json",
+        "index.md",
+        "attachments.json",
+        "db/main.sqlite3",
+    ];
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum Format {
@@ -728,14 +842,12 @@ mod format {
     #[derive(Clone, Copy, Debug)]
     pub struct ReadMode {
         pub verify_hashes: bool,
-        pub lazy_attachments: bool,
     }
 
     impl Default for ReadMode {
         fn default() -> Self {
             Self {
                 verify_hashes: true,
-                lazy_attachments: false,
             }
         }
     }
@@ -743,16 +855,12 @@ mod format {
     #[derive(Clone, Copy, Debug)]
     pub struct WriteMode {
         pub compute_hashes: bool,
-        pub solid_zip: bool,
-        pub dedup_by_hash: bool,
     }
 
     impl Default for WriteMode {
         fn default() -> Self {
             Self {
                 compute_hashes: true,
-                solid_zip: false,
-                dedup_by_hash: false,
             }
         }
     }
@@ -816,7 +924,8 @@ mod format {
             }
         }
 
-        pub fn finish(self) -> TmdResult<()> {
+        pub fn finish(mut self) -> TmdResult<()> {
+            self.inner.flush()?;
             Ok(())
         }
     }
@@ -885,6 +994,11 @@ mod format {
                 "EOCD comment length exceeds buffer".into(),
             ));
         }
+        if comment_start + comment_len != bytes.len() {
+            return Err(TmdError::InvalidFormat(
+                "unexpected data follows the ZIP EOCD comment".into(),
+            ));
+        }
         let comment = &bytes[comment_start..comment_start + comment_len];
         let markdown_len = extract_markdown_len_from_comment(comment)? as usize;
         if markdown_len > bytes.len() {
@@ -937,9 +1051,45 @@ mod format {
         zip: &mut ZipArchive<R>,
         mode: ReadMode,
     ) -> TmdResult<TmdDoc> {
+        let mut names = HashSet::new();
+        for index in 0..zip.len() {
+            let file = zip.by_index(index)?;
+            if file.enclosed_name().is_none() {
+                return Err(TmdError::InvalidFormat(format!(
+                    "unsafe ZIP entry path `{}`",
+                    file.name()
+                )));
+            }
+            if !names.insert(file.name().to_owned()) {
+                return Err(TmdError::InvalidFormat(format!(
+                    "duplicate ZIP entry `{}`",
+                    file.name()
+                )));
+            }
+        }
+
         let markdown = read_markdown_from_zip(zip)?;
         let manifest = read_manifest_from_zip(zip)?;
         let attachment_metas = read_attachment_manifest(zip)?;
+        let expected_names: HashSet<String> = REQUIRED_ENTRY_NAMES
+            .into_iter()
+            .map(str::to_owned)
+            .chain(
+                attachment_metas
+                    .iter()
+                    .map(|meta| meta.logical_path.clone()),
+            )
+            .collect();
+        if let Some(name) = names.difference(&expected_names).next() {
+            return Err(TmdError::InvalidFormat(format!(
+                "undeclared ZIP entry `{name}`"
+            )));
+        }
+        if let Some(name) = expected_names.difference(&names).next() {
+            return Err(TmdError::InvalidFormat(format!(
+                "missing declared ZIP entry `{name}`"
+            )));
+        }
 
         let mut attachments = AttachmentStore::new();
         for meta in attachment_metas {
@@ -1011,7 +1161,13 @@ mod format {
         Ok(())
     }
 
-    fn build_zip(doc: &TmdDoc, _mode: WriteMode) -> TmdResult<Vec<u8>> {
+    fn build_zip(doc: &TmdDoc, mode: WriteMode) -> TmdResult<Vec<u8>> {
+        if doc.manifest.tmd_version.major != 1 {
+            return Err(TmdError::InvalidFormat(format!(
+                "refusing to write unsupported TMD major version {}",
+                doc.manifest.tmd_version.major
+            )));
+        }
         let cursor = std::io::Cursor::new(Vec::new());
         let mut writer = ZipWriter::new(cursor);
         let stored = SimpleFileOptions::default()
@@ -1025,6 +1181,18 @@ mod format {
 
         // attachments manifest
         let mut attachment_metas: Vec<AttachmentMeta> = doc.attachments.iter().cloned().collect();
+        for meta in &mut attachment_metas {
+            let data = doc.attachments.data(meta.id).ok_or_else(|| {
+                TmdError::Attachment(format!("missing data for attachment {}", meta.id))
+            })?;
+            if mode.compute_hashes {
+                meta.length = data.len() as u64;
+                let digest = Sha256::digest(data);
+                let mut sha256 = [0_u8; 32];
+                sha256.copy_from_slice(&digest);
+                meta.sha256 = Some(sha256);
+            }
+        }
         attachment_metas.sort_by(|a, b| a.logical_path.cmp(&b.logical_path));
         let attachments_json = serde_json::to_vec_pretty(&AttachmentManifest {
             attachments: attachment_metas.clone(),
@@ -1087,13 +1255,259 @@ mod format {
     }
 
     pub fn write_to_path(path: impl AsRef<Path>, doc: &TmdDoc, format: Format) -> TmdResult<()> {
-        let file = File::create(path.as_ref())?;
-        let mut writer = Writer::new(std::io::BufWriter::new(file), format, WriteMode::default())?;
-        writer.write_doc(doc)?;
-        writer.finish()
+        replace_path_atomically(path.as_ref(), |file| {
+            let mut writer =
+                Writer::new(std::io::BufWriter::new(file), format, WriteMode::default())?;
+            writer.write_doc(doc)?;
+            writer.finish()
+        })
     }
 
-    // No additional helpers
+    /// Atomically write arbitrary bytes with the same destination safety and metadata checks
+    /// used for TMD containers.
+    pub fn write_bytes_to_path(path: impl AsRef<Path>, bytes: &[u8]) -> TmdResult<()> {
+        replace_path_atomically(path.as_ref(), |file| {
+            file.write_all(bytes)?;
+            Ok(())
+        })
+    }
+
+    pub(crate) fn copy_file_to_path(source: &Path, path: &Path) -> TmdResult<()> {
+        replace_path_atomically(path, |file| {
+            let mut source = File::open(source)?;
+            std::io::copy(&mut source, file)?;
+            Ok(())
+        })
+    }
+
+    fn replace_path_atomically(
+        path: &Path,
+        write: impl FnOnce(&mut File) -> TmdResult<()>,
+    ) -> TmdResult<()> {
+        let path = resolve_write_target(path)?;
+        let existing_metadata = match fs::metadata(&path) {
+            Ok(metadata) => {
+                ensure_single_hard_link(&path, &metadata)?;
+                Some(metadata)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        };
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        let mut temporary = new_atomic_tempfile(parent)?;
+        if let Some(metadata) = existing_metadata {
+            temporary
+                .as_file_mut()
+                .set_permissions(metadata.permissions())?;
+            ensure_replacement_metadata_compatible(&path, temporary.path(), &metadata)?;
+        }
+        write(temporary.as_file_mut())?;
+        temporary.as_file_mut().sync_all()?;
+        temporary
+            .persist(&path)
+            .map_err(|error| TmdError::Io(error.error))?;
+        Ok(())
+    }
+
+    fn resolve_write_target(path: &Path) -> std::io::Result<PathBuf> {
+        match fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => fs::canonicalize(path),
+            Ok(_) => Ok(path.to_path_buf()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(path.to_path_buf()),
+            Err(error) => Err(error),
+        }
+    }
+
+    #[cfg(unix)]
+    fn ensure_replacement_metadata_compatible(
+        existing: &Path,
+        replacement: &Path,
+        existing_metadata: &fs::Metadata,
+    ) -> std::io::Result<()> {
+        use std::os::unix::fs::MetadataExt;
+
+        let replacement_metadata = fs::metadata(replacement)?;
+        if existing_metadata.uid() != replacement_metadata.uid()
+            || existing_metadata.gid() != replacement_metadata.gid()
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!(
+                    "refusing to replace `{}` because its owner or group cannot be preserved",
+                    existing.display()
+                ),
+            ));
+        }
+        if extended_attributes(existing)? != extended_attributes(replacement)? {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!(
+                    "refusing to replace `{}` because its extended attributes or ACL cannot be preserved",
+                    existing.display()
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    fn extended_attributes(path: &Path) -> std::io::Result<Vec<(std::ffi::OsString, Vec<u8>)>> {
+        let mut attributes = Vec::new();
+        for name in xattr::list(path)? {
+            let value = xattr::get(path, &name)?.ok_or_else(|| {
+                std::io::Error::other(format!(
+                    "extended attribute `{}` disappeared while inspecting `{}`",
+                    name.to_string_lossy(),
+                    path.display()
+                ))
+            })?;
+            attributes.push((name, value));
+        }
+        attributes.sort();
+        Ok(attributes)
+    }
+
+    #[cfg(windows)]
+    fn ensure_replacement_metadata_compatible(
+        existing: &Path,
+        replacement: &Path,
+        _existing_metadata: &fs::Metadata,
+    ) -> std::io::Result<()> {
+        if windows_security_descriptor(existing)? != windows_security_descriptor(replacement)? {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!(
+                    "refusing to replace `{}` because its owner or ACL cannot be preserved",
+                    existing.display()
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    fn windows_security_descriptor(path: &Path) -> std::io::Result<Vec<u8>> {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Security::{
+            GetFileSecurityW, DACL_SECURITY_INFORMATION, GROUP_SECURITY_INFORMATION,
+            OWNER_SECURITY_INFORMATION,
+        };
+
+        let wide_path: Vec<u16> = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let requested =
+            OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
+        let mut required = 0_u32;
+        // SAFETY: `wide_path` is NUL-terminated and `required` is writable.
+        unsafe {
+            GetFileSecurityW(
+                wide_path.as_ptr(),
+                requested,
+                std::ptr::null_mut(),
+                0,
+                &mut required,
+            );
+        }
+        if required == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+
+        let mut descriptor = vec![0_u8; required as usize];
+        // SAFETY: `descriptor` has the size requested by the preceding call,
+        // and all pointers remain valid for the duration of this call.
+        let succeeded = unsafe {
+            GetFileSecurityW(
+                wide_path.as_ptr(),
+                requested,
+                descriptor.as_mut_ptr().cast(),
+                required,
+                &mut required,
+            )
+        };
+        if succeeded == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(descriptor)
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    fn ensure_replacement_metadata_compatible(
+        _existing: &Path,
+        _replacement: &Path,
+        _existing_metadata: &fs::Metadata,
+    ) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn ensure_single_hard_link(path: &Path, metadata: &fs::Metadata) -> std::io::Result<()> {
+        if metadata.is_file() {
+            let links = hard_link_count(path, metadata)?;
+            if links > 1 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!(
+                        "refusing to atomically replace `{}` because it has {links} hard links",
+                        path.display()
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    fn hard_link_count(_path: &Path, metadata: &fs::Metadata) -> std::io::Result<u64> {
+        use std::os::unix::fs::MetadataExt;
+
+        Ok(metadata.nlink())
+    }
+
+    #[cfg(windows)]
+    fn hard_link_count(path: &Path, _metadata: &fs::Metadata) -> std::io::Result<u64> {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FileStandardInfo, GetFileInformationByHandleEx, FILE_STANDARD_INFO,
+        };
+
+        let file = File::open(path)?;
+        // SAFETY: `file` owns a valid handle for the duration of the call, and
+        // `information` points to a correctly sized writable buffer.
+        let mut information = FILE_STANDARD_INFO::default();
+        let succeeded = unsafe {
+            GetFileInformationByHandleEx(
+                file.as_raw_handle(),
+                FileStandardInfo,
+                std::ptr::addr_of_mut!(information).cast(),
+                std::mem::size_of::<FILE_STANDARD_INFO>() as u32,
+            )
+        };
+        if succeeded == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(u64::from(information.NumberOfLinks))
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    fn hard_link_count(_path: &Path, _metadata: &fs::Metadata) -> std::io::Result<u64> {
+        Ok(1)
+    }
+
+    #[cfg(unix)]
+    fn new_atomic_tempfile(parent: &Path) -> std::io::Result<NamedTempFile> {
+        use std::os::unix::fs::PermissionsExt;
+
+        tempfile::Builder::new()
+            .permissions(fs::Permissions::from_mode(0o666))
+            .tempfile_in(parent)
+    }
+
+    #[cfg(not(unix))]
+    fn new_atomic_tempfile(parent: &Path) -> std::io::Result<NamedTempFile> {
+        NamedTempFile::new_in(parent)
+    }
 }
 
 #[cfg(feature = "ffi")]
@@ -1402,8 +1816,10 @@ mod tests {
     use super::*;
     use mime::TEXT_PLAIN;
     use sha2::{Digest, Sha256};
-    use std::io::{Cursor, Seek, SeekFrom};
+    use std::io::{Cursor, Seek, SeekFrom, Write};
     use tempfile::tempdir;
+    use zip::write::SimpleFileOptions;
+    use zip::ZipWriter;
 
     fn sample_doc() -> TmdDoc {
         TmdDoc::new("# Sample\n".to_string()).expect("doc creation")
@@ -1413,10 +1829,118 @@ mod tests {
     fn normalize_logical_path_rejects_invalid_segments() {
         assert!(normalize_logical_path("foo/../bar").is_err());
         assert!(normalize_logical_path("/absolute").is_err());
+        assert!(normalize_logical_path("\\absolute").is_err());
+        assert!(normalize_logical_path("C:/drive.txt").is_err());
+        assert!(normalize_logical_path("manifest.json").is_err());
         assert_eq!(
             normalize_logical_path("images/figure.png").unwrap(),
             "images/figure.png"
         );
+    }
+
+    #[test]
+    fn reader_rejects_duplicate_and_unsafe_zip_entries() {
+        fn replace_all(bytes: &mut [u8], from: &[u8], to: &[u8]) {
+            assert_eq!(from.len(), to.len());
+            for offset in 0..=bytes.len() - from.len() {
+                if &bytes[offset..offset + from.len()] == from {
+                    bytes[offset..offset + to.len()].copy_from_slice(to);
+                }
+            }
+        }
+
+        for (names, from, to) in [
+            (
+                vec!["manifest.json", "duplicate.txt"],
+                b"duplicate.txt".as_slice(),
+                b"manifest.json".as_slice(),
+            ),
+            (
+                vec!["xx/escape.txt"],
+                b"xx/escape.txt".as_slice(),
+                b"../escape.txt".as_slice(),
+            ),
+        ] {
+            let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+            for name in names {
+                writer
+                    .start_file(name, SimpleFileOptions::default())
+                    .expect("start ZIP entry");
+                writer.write_all(b"{}").expect("write ZIP entry");
+            }
+            let mut archive = writer.finish().expect("finish ZIP");
+            replace_all(archive.get_mut(), from, to);
+            archive.set_position(0);
+            read_tmd(&mut archive, ReadMode::default()).expect_err("archive must be rejected");
+        }
+    }
+
+    #[test]
+    fn reader_rejects_undeclared_zip_entries() {
+        let doc = sample_doc();
+        let mut archive = Cursor::new(Vec::new());
+        write_tmd(&mut archive, &doc, WriteMode::default()).expect("write valid archive");
+        archive.set_position(0);
+
+        let mut writer = ZipWriter::new_append(archive).expect("append ZIP entry");
+        writer
+            .start_file("payload.bin", SimpleFileOptions::default())
+            .expect("start undeclared entry");
+        writer
+            .write_all(b"undeclared")
+            .expect("write undeclared entry");
+        let mut archive = writer.finish().expect("finish archive");
+        archive.set_position(0);
+
+        let error = read_tmd(&mut archive, ReadMode::default())
+            .expect_err("undeclared entry must be rejected");
+        assert!(error
+            .to_string()
+            .contains("undeclared ZIP entry `payload.bin`"));
+    }
+
+    #[test]
+    fn write_mode_recomputes_attachment_hashes_when_requested() {
+        let mut doc = sample_doc();
+        let id = Uuid::new_v4();
+        let data = b"content".to_vec();
+        let meta = AttachmentMeta {
+            id,
+            logical_path: "files/content.txt".to_owned(),
+            mime: TEXT_PLAIN,
+            length: data.len() as u64,
+            sha256: Some([0_u8; 32]),
+            title: None,
+            alt: None,
+            extras: serde_json::Value::Null,
+        };
+        doc.attachments
+            .insert_entry(meta, data, false)
+            .expect("unchecked fixture");
+
+        let mut recomputed = Cursor::new(Vec::new());
+        write_tmd(
+            &mut recomputed,
+            &doc,
+            WriteMode {
+                compute_hashes: true,
+            },
+        )
+        .expect("write with recomputed hashes");
+        recomputed.set_position(0);
+        read_tmd(&mut recomputed, ReadMode::default()).expect("recomputed archive is valid");
+
+        let mut preserved = Cursor::new(Vec::new());
+        write_tmd(
+            &mut preserved,
+            &doc,
+            WriteMode {
+                compute_hashes: false,
+            },
+        )
+        .expect("write with preserved hashes");
+        preserved.set_position(0);
+        assert!(read_tmd(&mut preserved, ReadMode::default()).is_err());
     }
 
     #[test]
@@ -1591,6 +2115,24 @@ mod tests {
     }
 
     #[test]
+    fn writer_rejects_unsupported_major_version() {
+        let mut doc = sample_doc();
+        doc.manifest.tmd_version.major = 2;
+        let mut buffer = Cursor::new(Vec::new());
+
+        let error = write_tmd(&mut buffer, &doc, WriteMode::default())
+            .expect_err("future major version must not be rewritten");
+
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported TMD major version 2"),
+            "unexpected error: {error}"
+        );
+        assert!(buffer.into_inner().is_empty());
+    }
+
+    #[test]
     fn sniff_format_detects_variants() {
         assert_eq!(sniff_format(b"PK\x03\x04"), Some(Format::Tmd));
         assert_eq!(sniff_format(b"#"), Some(Format::Tmdp));
@@ -1630,6 +2172,22 @@ mod tests {
     }
 
     #[test]
+    fn failed_database_export_preserves_existing_output() {
+        let doc = sample_doc();
+        let dir = tempdir().unwrap();
+        let export_path = dir.path().join("db.sqlite3");
+        std::fs::write(&export_path, b"existing database").expect("write existing output");
+        std::fs::remove_file(doc.db.as_path()).expect("invalidate source database");
+
+        export_db(&doc, &export_path).expect_err("export must fail");
+
+        assert_eq!(
+            std::fs::read(&export_path).expect("read preserved output"),
+            b"existing database"
+        );
+    }
+
+    #[test]
     fn reset_and_migrate_database() {
         let mut doc = sample_doc();
         reset_db(
@@ -1658,6 +2216,161 @@ mod tests {
             })
             .expect("user_version");
         assert_eq!(version, 2);
+    }
+
+    #[test]
+    fn reset_db_accepts_transaction_wrapped_schema() {
+        let mut doc = sample_doc();
+        reset_db(
+            &mut doc,
+            "BEGIN TRANSACTION;
+             CREATE TABLE wrapped(id INTEGER PRIMARY KEY);
+             COMMIT;",
+            7,
+        )
+        .expect("reset with transaction-wrapped schema");
+
+        let (table_count, version): (u32, u32) = doc
+            .db_with_conn(|conn| {
+                let table_count = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM sqlite_master
+                         WHERE type = 'table' AND name = 'wrapped'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                let version = conn
+                    .query_row("PRAGMA user_version", [], |row| row.get(0))
+                    .unwrap();
+                (table_count, version)
+            })
+            .expect("inspect reset database");
+        assert_eq!(table_count, 1);
+        assert_eq!(version, 7);
+    }
+
+    #[test]
+    fn reset_db_rejects_schema_with_open_transaction() {
+        let mut doc = sample_doc();
+        let error = reset_db(
+            &mut doc,
+            "BEGIN TRANSACTION; CREATE TABLE incomplete(id INTEGER);",
+            1,
+        )
+        .expect_err("open transaction must be rejected");
+
+        assert!(
+            error.to_string().contains("left a transaction open"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn migrate_accepts_transaction_wrapped_script() {
+        let mut doc = sample_doc();
+        reset_db(&mut doc, "CREATE TABLE base(id INTEGER PRIMARY KEY);", 1).expect("reset");
+
+        migrate(
+            &mut doc,
+            "BEGIN TRANSACTION;
+             ALTER TABLE base ADD COLUMN value TEXT;
+             COMMIT;",
+            1,
+            2,
+        )
+        .expect("transaction-wrapped migration");
+
+        let columns: Vec<String> = doc
+            .db_with_conn(|conn| {
+                let mut statement = conn.prepare("PRAGMA table_info(base)").unwrap();
+                statement
+                    .query_map([], |row| row.get(1))
+                    .unwrap()
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap()
+            })
+            .expect("inspect migrated table");
+        assert_eq!(columns, vec!["id", "value"]);
+        let version: u32 = doc
+            .db_with_conn(|conn| {
+                conn.query_row("PRAGMA user_version", [], |row| row.get(0))
+                    .unwrap()
+            })
+            .expect("migration version");
+        assert_eq!(version, 2);
+    }
+
+    #[test]
+    fn migrate_rejects_script_with_open_transaction() {
+        let mut doc = sample_doc();
+        reset_db(&mut doc, "CREATE TABLE base(id INTEGER PRIMARY KEY);", 1).expect("reset");
+
+        let error = migrate(
+            &mut doc,
+            "BEGIN TRANSACTION; ALTER TABLE base ADD COLUMN incomplete TEXT;",
+            1,
+            2,
+        )
+        .expect_err("open transaction must be rejected");
+
+        assert!(
+            error.to_string().contains("left a transaction open"),
+            "unexpected error: {error}"
+        );
+        let version: u32 = doc
+            .db_with_conn(|conn| {
+                conn.query_row("PRAGMA user_version", [], |row| row.get(0))
+                    .unwrap()
+            })
+            .expect("unchanged version");
+        assert_eq!(version, 1);
+    }
+
+    #[test]
+    fn database_schema_helpers_reject_versions_above_sqlite_limit() {
+        let mut doc = sample_doc();
+
+        let reset_error = reset_db(&mut doc, "CREATE TABLE rejected(id INTEGER);", u32::MAX)
+            .expect_err("oversized reset version");
+        assert!(
+            reset_error.to_string().contains("exceeds SQLite"),
+            "unexpected error: {reset_error}"
+        );
+
+        reset_db(&mut doc, "CREATE TABLE base(id INTEGER);", 1).expect("valid reset");
+        let migrate_error = migrate(
+            &mut doc,
+            "ALTER TABLE base ADD COLUMN rejected TEXT;",
+            1,
+            u32::MAX,
+        )
+        .expect_err("oversized migration version");
+        assert!(
+            migrate_error.to_string().contains("exceeds SQLite"),
+            "unexpected error: {migrate_error}"
+        );
+    }
+
+    #[test]
+    fn reset_database_replaces_existing_schema() {
+        let mut doc = sample_doc();
+        reset_db(&mut doc, "CREATE TABLE old_table(id INTEGER);", 1).expect("first reset");
+        reset_db(&mut doc, "CREATE TABLE new_table(id INTEGER);", 2).expect("second reset");
+
+        let tables: Vec<String> = doc
+            .db_with_conn(|conn| {
+                let mut statement = conn
+                    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+                    .unwrap();
+                statement
+                    .query_map([], |row| row.get(0))
+                    .unwrap()
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap()
+            })
+            .expect("list tables");
+        assert_eq!(tables, vec!["new_table"]);
     }
 
     #[test]
@@ -1732,6 +2445,158 @@ mod tests {
         let loaded = read_from_path(&path, Some(Format::Tmd)).expect("read path");
         assert_eq!(loaded.markdown, doc.markdown);
         assert_eq!(loaded.list_attachments().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn new_atomic_write_honors_ordinary_creation_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let doc = sample_doc();
+        let dir = tempdir().unwrap();
+        let control = dir.path().join("control");
+        let path = dir.path().join("new.tmd");
+        std::fs::File::create(&control).expect("create control");
+        let expected = std::fs::metadata(control)
+            .expect("control metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+
+        write_to_path(&path, &doc, Format::Tmd).expect("write path");
+
+        let actual = std::fs::metadata(path)
+            .expect("document metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(actual, expected);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_replacement_preserves_existing_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let doc = sample_doc();
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("existing.tmd");
+        std::fs::write(&path, b"old").expect("write existing");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640))
+            .expect("set permissions");
+
+        write_to_path(&path, &doc, Format::Tmd).expect("replace path");
+
+        let actual = std::fs::metadata(path)
+            .expect("document metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(actual, 0o640);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_through_symlink_preserves_link_and_updates_target() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().unwrap();
+        let target = dir.path().join("target.tmd");
+        let link = dir.path().join("linked.tmd");
+        let mut original = sample_doc();
+        original.markdown = "# Original".to_owned();
+        write_to_path(&target, &original, Format::Tmd).expect("write target");
+        symlink(&target, &link).expect("create symlink");
+
+        let mut replacement = sample_doc();
+        replacement.markdown = "# Replacement".to_owned();
+        write_to_path(&link, &replacement, Format::Tmd).expect("write through symlink");
+
+        assert!(std::fs::symlink_metadata(&link)
+            .expect("symlink metadata")
+            .file_type()
+            .is_symlink());
+        let loaded = read_from_path(&target, Some(Format::Tmd)).expect("read target");
+        assert_eq!(loaded.markdown, "# Replacement");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_rejects_multiply_linked_destination() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("document.tmd");
+        let alias = dir.path().join("alias.tmd");
+        write_to_path(&path, &sample_doc(), Format::Tmd).expect("write original");
+        std::fs::hard_link(&path, &alias).expect("create hard link");
+        let original_bytes = std::fs::read(&path).expect("read original");
+
+        let error = write_to_path(&path, &sample_doc(), Format::Tmd)
+            .expect_err("reject multiply linked destination");
+
+        assert!(error.to_string().contains("has 2 hard links"));
+        assert_eq!(
+            std::fs::read(&path).expect("preserved path"),
+            original_bytes
+        );
+        assert_eq!(
+            std::fs::read(&alias).expect("preserved alias"),
+            original_bytes
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_rejects_acl_metadata_loss() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("acl.tmd");
+        write_to_path(&path, &sample_doc(), Format::Tmd).expect("write original");
+        xattr::set(&path, "user.tanu-test-acl", b"preserve").expect("set security metadata");
+        let original_bytes = std::fs::read(&path).expect("read original");
+
+        let error =
+            write_to_path(&path, &sample_doc(), Format::Tmd).expect_err("reject ACL metadata loss");
+
+        assert!(error
+            .to_string()
+            .contains("extended attributes or ACL cannot be preserved"));
+        assert_eq!(
+            std::fs::read(&path).expect("preserved document"),
+            original_bytes
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_rejects_dangling_symlink_without_replacing_it() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().unwrap();
+        let target = dir.path().join("missing.tmd");
+        let link = dir.path().join("dangling.tmd");
+        symlink(&target, &link).expect("create dangling symlink");
+
+        write_to_path(&link, &sample_doc(), Format::Tmd).expect_err("reject dangling symlink");
+
+        assert!(std::fs::symlink_metadata(&link)
+            .expect("symlink metadata")
+            .file_type()
+            .is_symlink());
+        assert!(!target.exists());
+    }
+
+    #[test]
+    fn failed_atomic_write_preserves_existing_document() {
+        let doc = sample_doc();
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("existing.tmd");
+        std::fs::write(&path, b"original bytes").expect("write original");
+        std::fs::remove_file(doc.db.as_path()).expect("invalidate source database");
+
+        write_to_path(&path, &doc, Format::Tmd).expect_err("write must fail");
+        assert_eq!(
+            std::fs::read(&path).expect("read original"),
+            b"original bytes"
+        );
     }
 
     #[cfg(feature = "ffi")]

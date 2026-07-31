@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
   pull_request:
-    branches: [main]
+    branches: [main, develop]
 
 permissions:
   contents: read
@@ -136,3 +136,9 @@ jobs:
 
       - name: Type-check
         run: npm run check
+
+      - name: Test
+        run: npm test
+
+      - name: Package VSIX
+        run: npm run pack

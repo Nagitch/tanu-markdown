@@ -1,7 +1,7 @@
 {
   "name": "tanu-markdown-editor",
   "displayName": "Tanu Markdown Editor",
-  "description": "Preview placeholder for editing Tanu Markdown (.tmd) documents in VS Code.",
+  "description": "Secure custom editor for Tanu Markdown .tmd and .tmdp documents.",
   "version": "0.0.1",
   "private": true,
   "publisher": "tanu-markdown",
@@ -22,23 +22,42 @@
     "Other"
   ],
   "activationEvents": [
-    "onLanguage:markdown",
+    "onCustomEditor:tanuMarkdown.editor",
     "onCommand:tmd.newDocument",
-    "onCommand:tmd.insertAttachmentLink",
     "onCommand:tmd.validate",
+    "onCommand:tmd.addAttachment",
+    "onCommand:tmd.removeAttachment",
     "onCommand:tmd.exportHtml",
-    "onCommand:tmd.convertToTmdp",
-    "onCommand:tanuMarkdownEditor.showWelcome"
+    "onCommand:tmd.convert"
   ],
   "contributes": {
+    "customEditors": [
+      {
+        "viewType": "tanuMarkdown.editor",
+        "displayName": "Tanu Markdown Editor",
+        "selector": [
+          {
+            "filenamePattern": "*.tmd"
+          },
+          {
+            "filenamePattern": "*.tmdp"
+          }
+        ],
+        "priority": "default"
+      }
+    ],
     "commands": [
       {
         "command": "tmd.newDocument",
         "title": "TMD: New Document"
       },
       {
-        "command": "tmd.insertAttachmentLink",
-        "title": "TMD: Insert Attachment Link"
+        "command": "tmd.addAttachment",
+        "title": "TMD: Add Attachment"
+      },
+      {
+        "command": "tmd.removeAttachment",
+        "title": "TMD: Remove Attachment"
       },
       {
         "command": "tmd.validate",
@@ -49,42 +68,45 @@
         "title": "TMD: Export HTML (self-contained)"
       },
       {
-        "command": "tmd.convertToTmdp",
-        "title": "TMD: Convert to .tmdp"
-      },
-      {
-        "command": "tanuMarkdownEditor.showWelcome",
-        "title": "Tanu Markdown Editor: Show Welcome"
+        "command": "tmd.convert",
+        "title": "TMD: Convert Container Format"
       }
     ],
-    "languages": [
-      {
-        "id": "tmd",
-        "aliases": [
-          "TMD",
-          "Tanu Markdown"
-        ],
-        "extensions": [
-          ".tmdp"
-        ],
-        "configuration": "./language-configuration.json"
+    "configuration": {
+      "title": "Tanu Markdown",
+      "properties": {
+        "tanuMarkdown.cliPath": {
+          "type": "string",
+          "default": "tmd",
+          "description": "Path to the installed Tanu Markdown CLI executable."
+        },
+        "tanuMarkdown.timeoutMs": {
+          "type": "number",
+          "default": 15000,
+          "minimum": 1000,
+          "maximum": 300000,
+          "description": "Maximum time in milliseconds for each CLI operation."
+        }
       }
-    ]
+    }
   },
   "main": "./dist/extension.js",
   "files": [
-    "dist/**",
-    "language-configuration.json",
-    "README.md"
+    "dist/*.js",
+    "README.md",
+    "LICENCE"
   ],
   "scripts": {
     "compile": "tsc -p .",
     "watch": "tsc -w -p .",
-    "check": "tsc -p . --noEmit"
+    "check": "tsc -p . --noEmit",
+    "test": "npm run compile && node --test dist/test/*.test.js",
+    "pack": "npm run compile && vsce package --no-dependencies"
   },
   "devDependencies": {
-    "@types/vscode": "^1.90.0",
+    "@types/vscode": "1.90.0",
     "@types/node": "^26.1.2",
+    "@vscode/vsce": "^3.9.2",
     "typescript": "^7.0.2"
   }
 }
