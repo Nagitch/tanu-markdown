@@ -53,7 +53,10 @@ The CLI translates terminal inputs into `tmd-core` operations. It owns:
 - attachment and SQLite lifecycle UX;
 - Markdown-to-HTML rendering with real `attach:` URL rewriting.
 
-File-format validation belongs in `tmd-core`, not in CLI-only code.
+HTML rendering neutralizes raw markup and executable URL schemes. Self-contained
+exports retain passive raster-image and plain-text MIME types and downgrade
+other attachment data URIs to `application/octet-stream`. File-format
+validation belongs in `tmd-core`, not in CLI-only code.
 
 ## `tmd-core-ffi`
 

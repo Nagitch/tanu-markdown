@@ -376,10 +376,39 @@ fn machine_interfaces_reject_unsafe_inputs() {
 
     let safe_html_doc = directory.path().join("safe-html.tmd");
     let safe_html_output = directory.path().join("safe.html");
+    let active_html = directory.path().join("active.html");
+    fs::write(&active_html, "<script>alert('attachment')</script>")
+        .expect("active HTML attachment");
     run(vec![text("new"), argument(&safe_html_doc)], None);
+    run(
+        vec![
+            text("attachment"),
+            text("add"),
+            argument(&safe_html_doc),
+            argument(&active_html),
+            text("--path"),
+            text("active.html"),
+            text("--mime"),
+            text("text/html"),
+        ],
+        None,
+    );
+    let safe_markdown = [
+        "# Safe",
+        "",
+        "<script>alert('unsafe')</script>",
+        "",
+        "[script](javascript:alert(1))",
+        "[mixed case](JaVaScRiPt:alert(2))",
+        "[data](data:text/html,<script>alert(3)</script>)",
+        "[attachment](attach:active.html)",
+        "[safe](https://example.com/path)",
+        "",
+    ]
+    .join("\n");
     let html_update = json!({
         "schema_version": 1,
-        "markdown": "# Safe\n\n<script>alert('unsafe')</script>\n",
+        "markdown": safe_markdown,
     });
     run(
         vec![
@@ -401,4 +430,9 @@ fn machine_interfaces_reject_unsafe_inputs() {
     let html = fs::read_to_string(safe_html_output).expect("safe HTML output");
     assert!(!html.contains("<script>"));
     assert!(html.contains("&lt;script&gt;"));
+    assert!(!html.to_ascii_lowercase().contains("href=\"javascript:"));
+    assert!(html.matches("href=\"#\"").count() >= 3);
+    assert!(html.contains("href=\"https://example.com/path\""));
+    assert!(!html.to_ascii_lowercase().contains("href=\"data:text/html"));
+    assert!(html.contains("data:application/octet-stream;base64,"));
 }

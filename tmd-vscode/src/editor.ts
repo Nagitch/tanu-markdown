@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import * as path from "node:path";
 import * as vscode from "vscode";
+import { findActiveDocument } from "./activity.js";
 import { TmdCliClient } from "./cli.js";
 import { renderSafeMarkdown } from "./markdown.js";
 import type { DocumentInspection, DocumentUpdate, ValidationReport } from "./types.js";
@@ -47,14 +48,11 @@ export class TanuMarkdownDocument implements vscode.CustomDocument {
   }
 }
 
-type DocumentChange =
-  | vscode.CustomDocumentEditEvent<TanuMarkdownDocument>
-  | vscode.CustomDocumentContentChangeEvent<TanuMarkdownDocument>;
-
 export class TanuMarkdownEditorProvider
   implements vscode.CustomEditorProvider<TanuMarkdownDocument>
 {
-  private readonly changeEmitter = new vscode.EventEmitter<DocumentChange>();
+  private readonly changeEmitter =
+    new vscode.EventEmitter<vscode.CustomDocumentEditEvent<TanuMarkdownDocument>>();
   readonly onDidChangeCustomDocument = this.changeEmitter.event;
   private readonly panels = new Map<TanuMarkdownDocument, Set<vscode.WebviewPanel>>();
   private activeDocumentValue: TanuMarkdownDocument | undefined;
@@ -83,23 +81,17 @@ export class TanuMarkdownEditorProvider
     const documentPanels = this.panels.get(document) ?? new Set<vscode.WebviewPanel>();
     documentPanels.add(panel);
     this.panels.set(document, documentPanels);
-    if (panel.active) {
-      this.activeDocumentValue = document;
-    }
+    this.recomputeActiveDocument();
 
     panel.onDidChangeViewState(() => {
-      if (panel.active) {
-        this.activeDocumentValue = document;
-      }
+      this.recomputeActiveDocument();
     });
     panel.onDidDispose(() => {
       documentPanels.delete(panel);
       if (documentPanels.size === 0) {
         this.panels.delete(document);
       }
-      if (this.activeDocumentValue === document) {
-        this.activeDocumentValue = undefined;
-      }
+      this.recomputeActiveDocument();
     });
     panel.webview.onDidReceiveMessage(async (message: unknown) => {
       try {
@@ -207,8 +199,13 @@ export class TanuMarkdownEditorProvider
 
   private async reloadAfterExternalChange(document: TanuMarkdownDocument): Promise<void> {
     document.replaceInspection(await this.clientFactory().inspect(filePath(document.uri)));
-    this.changeEmitter.fire({ document });
+    // Attachment operations have already persisted the container. Emitting a
+    // content-change event here would incorrectly make the document dirty.
     await this.postModel(document);
+  }
+
+  private recomputeActiveDocument(): void {
+    this.activeDocumentValue = findActiveDocument(this.panels);
   }
 
   private async handleMessage(

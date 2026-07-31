@@ -815,10 +815,34 @@ fn embedded_attachment_urls(doc: &TmdDoc) -> HashMap<String, String> {
         .map(|(meta, data)| {
             (
                 meta.logical_path.clone(),
-                format!("data:{};base64,{}", meta.mime, BASE64_STANDARD.encode(data)),
+                format!(
+                    "data:{};base64,{}",
+                    safe_embedded_mime(meta.mime.as_ref()),
+                    BASE64_STANDARD.encode(data)
+                ),
             )
         })
         .collect()
+}
+
+fn safe_embedded_mime(mime: &str) -> &'static str {
+    match mime
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "image/avif" => "image/avif",
+        "image/bmp" => "image/bmp",
+        "image/gif" => "image/gif",
+        "image/jpeg" => "image/jpeg",
+        "image/png" => "image/png",
+        "image/webp" => "image/webp",
+        "text/plain" => "text/plain",
+        _ => "application/octet-stream",
+    }
 }
 
 fn extracted_attachment_urls(doc: &TmdDoc, output: &Path) -> Result<HashMap<String, String>> {
@@ -901,12 +925,40 @@ fn rewritten_destination<'a>(
     destination: CowStr<'a>,
     attachment_urls: &HashMap<String, String>,
 ) -> CowStr<'a> {
-    destination
-        .strip_prefix("attach:")
-        .and_then(|path| attachment_urls.get(path))
-        .cloned()
-        .map(CowStr::from)
-        .unwrap_or(destination)
+    if let Some(path) = destination.strip_prefix("attach:") {
+        return attachment_urls
+            .get(path)
+            .cloned()
+            .map(CowStr::from)
+            .unwrap_or_else(|| CowStr::from("#"));
+    }
+    if is_safe_export_destination(destination.as_ref()) {
+        destination
+    } else {
+        CowStr::from("#")
+    }
+}
+
+fn is_safe_export_destination(destination: &str) -> bool {
+    let destination = destination.trim();
+    if destination
+        .bytes()
+        .any(|byte| byte.is_ascii_control() || byte == b' ')
+    {
+        return false;
+    }
+
+    let scheme_end = destination
+        .bytes()
+        .position(|byte| matches!(byte, b':' | b'/' | b'?' | b'#'));
+    match scheme_end.and_then(|index| destination.as_bytes().get(index).map(|byte| (index, *byte)))
+    {
+        Some((index, b':')) => matches!(
+            destination[..index].to_ascii_lowercase().as_str(),
+            "http" | "https" | "mailto" | "tel"
+        ),
+        _ => true,
+    }
 }
 
 fn render_attachment_listing(doc: &TmdDoc, attachment_urls: &HashMap<String, String>) -> String {

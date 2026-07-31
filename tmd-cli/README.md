@@ -56,8 +56,10 @@ tmd export-html notes.tmd standalone.html --self-contained
 
 Without `--self-contained`, attachments are extracted into a safe sibling
 asset directory and actual `attach:` links/images are rewritten. With the flag,
-the URLs become data URIs. Raw HTML in Markdown is emitted as text rather than
-as executable markup.
+the URLs become data URIs. Raw HTML in Markdown is emitted as text, external
+destinations are limited to relative URLs plus `http`, `https`, `mailto`, and
+`tel`, and executable data-URI MIME types are exported as
+`application/octet-stream`.
 
 ## Embedded database
 
