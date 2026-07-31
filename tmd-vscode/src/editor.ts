@@ -434,10 +434,6 @@ export class TanuMarkdownEditorProvider
           clientRevision,
           contentRevision: document.contentRevision,
         });
-        await panel.webview.postMessage({
-          type: "validationState",
-          validationCurrent: document.isValidationCurrent,
-        });
         break;
       }
       case "preview": {
@@ -639,10 +635,6 @@ function editorHtml(_webview: vscode.Webview): string {
       if (!model) return;
       if (model.type === "preview") {
         applyPreview(model);
-        return;
-      }
-      if (model.type === "validationState") {
-        renderValidation(undefined, model.validationCurrent);
         return;
       }
       if (model.type === "editAck") {

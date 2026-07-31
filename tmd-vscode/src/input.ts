@@ -17,6 +17,7 @@ export function editInputScript(): string {
         title: title.value,
         markdown: markdown.value,
       });
+      renderValidation(undefined, false);
     };
     const queuePreview = () => {
       if (!editorInitialized) return;

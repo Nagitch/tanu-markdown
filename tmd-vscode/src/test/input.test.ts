@@ -39,6 +39,7 @@ test("editor sends state immediately and debounces only preview rendering", () =
   const markdown = inputControl("First");
   const messages: unknown[] = [];
   const timers: Array<{ callback: () => void; delay: number }> = [];
+  const validationStates: boolean[] = [];
 
   runInNewContext(
     `${editInputScript()}
@@ -53,6 +54,9 @@ test("editor sends state immediately and debounces only preview rendering", () =
         markdown: "First",
       },
       markdown: markdown.control,
+      renderValidation(_report: unknown, current: boolean) {
+        validationStates.push(current);
+      },
       setTimeout(callback: () => void, delay: number) {
         timers.push({ callback, delay });
         return timers.length;
@@ -79,6 +83,7 @@ test("editor sends state immediately and debounces only preview rendering", () =
       markdown: "First",
     },
   ]);
+  assert.deepEqual(validationStates, [false]);
   assert.equal(timers.length, 0);
 
   markdown.control.value = "Second";
@@ -90,6 +95,7 @@ test("editor sends state immediately and debounces only preview rendering", () =
     markdown: "Second",
   });
   assert.equal(timers.length, 1);
+  assert.deepEqual(validationStates, [false, false]);
   assert.equal(timers[0]?.delay, PREVIEW_DEBOUNCE_MS);
 
   timers[0]?.callback();
@@ -193,6 +199,7 @@ test("stale models cannot overwrite pending or acknowledged local edits", () => 
         markdown: "initial markdown",
       },
       markdown: markdown.control,
+      renderValidation() {},
       results,
       setTimeout() {
         return 1;
