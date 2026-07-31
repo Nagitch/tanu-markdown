@@ -171,17 +171,40 @@ export class TanuMarkdownEditorProvider
   ): Promise<void> {
     await this.documentOperations.run(document, async () => {
       const client = this.clientFactory();
-      await persistRetainedDocument(
-        document,
-        async (bytes) => this.seedDestination(document, destination, client, bytes),
-        async (state) => {
-          await client.update(filePath(destination), {
-            schema_version: 1,
-            markdown: state.markdown,
-            title: state.title,
-          });
-        },
+      const destinationExtension = path.extname(destination.fsPath).toLowerCase();
+      if (![".tmd", ".tmdp"].includes(destinationExtension)) {
+        throw new Error("Save As destination must use the .tmd or .tmdp extension.");
+      }
+      const sourceExtension = document.inspection.format === "tmdp" ? ".tmdp" : ".tmd";
+      const stagingDirectory = await fs.mkdtemp(
+        path.join(path.dirname(destination.fsPath), ".tmd-save-"),
       );
+      const sourcePath = path.join(stagingDirectory, `source${sourceExtension}`);
+      const stagedPath =
+        sourceExtension === destinationExtension
+          ? sourcePath
+          : path.join(stagingDirectory, `destination${destinationExtension}`);
+      try {
+        await persistRetainedDocument(
+          document,
+          async (bytes) => {
+            await fs.writeFile(sourcePath, bytes, { flag: "wx" });
+            if (sourcePath !== stagedPath) {
+              await client.convert(sourcePath, stagedPath);
+            }
+          },
+          async (state) => {
+            await client.update(stagedPath, {
+              schema_version: 1,
+              markdown: state.markdown,
+              title: state.title,
+            });
+          },
+        );
+        await client.convert(stagedPath, filePath(destination));
+      } finally {
+        await fs.rm(stagingDirectory, { force: true, recursive: true });
+      }
     });
   }
 
@@ -210,6 +233,7 @@ export class TanuMarkdownEditorProvider
     const destination = vscode.Uri.file(`${context.destination.fsPath}${extension}`);
     await this.documentOperations.run(document, async () => {
       try {
+        await fs.mkdir(path.dirname(destination.fsPath), { recursive: true });
         const client = this.clientFactory();
         await persistRetainedDocument(
           document,
@@ -325,34 +349,6 @@ export class TanuMarkdownEditorProvider
     // Attachment operations have already persisted the container. Emitting a
     // content-change event here would incorrectly make the document dirty.
     await this.postModel(document);
-  }
-
-  private async seedDestination(
-    document: TanuMarkdownDocument,
-    destination: vscode.Uri,
-    client: TmdCliClient,
-    bytes: Uint8Array,
-  ): Promise<void> {
-    const sourceExtension = document.inspection.format === "tmdp" ? ".tmdp" : ".tmd";
-    if (path.extname(destination.fsPath).toLowerCase() === sourceExtension) {
-      await vscode.workspace.fs.writeFile(destination, bytes);
-      return;
-    }
-
-    const stagingPath = path.join(
-      path.dirname(destination.fsPath),
-      `.tmd-save-${randomBytes(16).toString("hex")}${sourceExtension}`,
-    );
-    let stagingCreated = false;
-    try {
-      await fs.writeFile(stagingPath, bytes, { flag: "wx" });
-      stagingCreated = true;
-      await client.convert(stagingPath, filePath(destination));
-    } finally {
-      if (stagingCreated) {
-        await fs.rm(stagingPath, { force: true });
-      }
-    }
   }
 
   private async saveRetainedState(
