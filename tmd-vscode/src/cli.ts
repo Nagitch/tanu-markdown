@@ -152,6 +152,8 @@ export class TmdCliClient {
       let stdout = "";
       let stderr = "";
       let settled = false;
+      let terminationError: Error | undefined;
+      let forceKillTimer: NodeJS.Timeout | undefined;
 
       const rejectOnce = (error: Error) => {
         if (!settled) {
@@ -159,9 +161,16 @@ export class TmdCliClient {
           reject(error);
         }
       };
-      const timer = setTimeout(() => {
+      const terminateAfterClose = (error: Error) => {
+        if (terminationError || settled) {
+          return;
+        }
+        terminationError = error;
         child.kill();
-        rejectOnce(
+        forceKillTimer = setTimeout(() => child.kill("SIGKILL"), 1_000);
+      };
+      const timer = setTimeout(() => {
+        terminateAfterClose(
           new CliError(
             `TMD CLI timed out after ${this.timeoutMs} ms. Increase tanuMarkdown.timeoutMs if the document is unusually large.`,
             null,
@@ -173,17 +182,18 @@ export class TmdCliClient {
 
       child.on("error", (error: NodeJS.ErrnoException) => {
         clearTimeout(timer);
+        if (terminationError) {
+          return;
+        }
         const hint =
           error.code === "ENOENT"
             ? ` Configure tanuMarkdown.cliPath with the installed \`tmd\` executable.`
             : "";
-        rejectOnce(
-          new CliError(
-            `Could not start TMD CLI \`${this.executable}\`: ${error.message}.${hint}`,
-            null,
-            stdout,
-            stderr,
-          ),
+        terminationError = new CliError(
+          `Could not start TMD CLI \`${this.executable}\`: ${error.message}.${hint}`,
+          null,
+          stdout,
+          stderr,
         );
       });
       child.stdout.setEncoding("utf8");
@@ -191,8 +201,7 @@ export class TmdCliClient {
       child.stdout.on("data", (chunk: string) => {
         stdout += chunk;
         if (stdout.length > MAX_OUTPUT_BYTES) {
-          child.kill();
-          rejectOnce(
+          terminateAfterClose(
             new CliError("TMD CLI output exceeded the 16 MiB safety limit.", null, stdout, stderr),
           );
         }
@@ -200,15 +209,21 @@ export class TmdCliClient {
       child.stderr.on("data", (chunk: string) => {
         stderr += chunk;
         if (stderr.length > MAX_OUTPUT_BYTES) {
-          child.kill();
-          rejectOnce(
+          terminateAfterClose(
             new CliError("TMD CLI error output exceeded the 16 MiB safety limit.", null, stdout, stderr),
           );
         }
       });
       child.on("close", (exitCode) => {
         clearTimeout(timer);
+        if (forceKillTimer) {
+          clearTimeout(forceKillTimer);
+        }
         if (settled) {
+          return;
+        }
+        if (terminationError) {
+          rejectOnce(terminationError);
           return;
         }
         settled = true;

@@ -405,11 +405,18 @@ export class TanuMarkdownEditorProvider
       stagingCreated = true;
       await client.update(stagingPath, update);
       const publishedBytes = await fs.readFile(stagingPath);
-      await client.convert(
-        stagingPath,
-        filePath(document.uri),
-        document.expectedDiskState,
-      );
+      try {
+        await client.convert(
+          stagingPath,
+          filePath(document.uri),
+          document.expectedDiskState,
+        );
+      } catch (error) {
+        const currentBytes = await readOptionalFile(document.uri);
+        if (diskState(currentBytes) !== diskState(publishedBytes)) {
+          throw error;
+        }
+      }
       document.replacePersistedBytes(publishedBytes);
     } finally {
       if (stagingCreated) {
