@@ -35,5 +35,6 @@ sha2 = "0.11.0"
 tempfile = "3.27.0"
 thiserror = "2.0.19"
 uuid = { version = "1.24.0", features = ["serde", "v4"] }
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem"] }
+xattr = "1.6.1"
 zip = { version = "8.6.0", default-features = false, features = ["aes-crypto", "deflate", "time"] }

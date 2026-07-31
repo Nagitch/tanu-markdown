@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, ensure, Context, Result};
@@ -486,11 +486,6 @@ fn cmd_attachment_rename(doc_path: &Path, from: &str, to: &str) -> Result<()> {
 }
 
 fn cmd_attachment_extract(doc_path: &Path, logical_path: &str, output: &Path) -> Result<()> {
-    ensure!(
-        !output.exists(),
-        "target `{}` already exists",
-        output.display()
-    );
     let (doc, _) = read_document(doc_path)?;
     let id = attachment_id_by_path(&doc, logical_path)?;
     let data = doc
@@ -498,7 +493,19 @@ fn cmd_attachment_extract(doc_path: &Path, logical_path: &str, output: &Path) ->
         .data(id)
         .ok_or_else(|| anyhow!("attachment `{logical_path}` has no data"))?;
     ensure_parent_directory(output)?;
-    fs::write(output, data).with_context(|| format!("failed to write `{}`", output.display()))?;
+    let mut destination = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(output)
+        .with_context(|| {
+            format!(
+                "failed to create new extraction target `{}`",
+                output.display()
+            )
+        })?;
+    destination
+        .write_all(data)
+        .with_context(|| format!("failed to write `{}`", output.display()))?;
     println!("Extracted `{logical_path}` to `{}`", output.display());
     Ok(())
 }
@@ -617,65 +624,87 @@ fn cmd_db_exec(doc_path: &Path, sql: &str) -> Result<()> {
 fn cmd_db_query(doc_path: &Path, sql: &str, json_output: bool) -> Result<()> {
     ensure!(!sql.trim().is_empty(), "SQL must not be empty");
     let (doc, _) = read_document(doc_path)?;
-    let result = doc
-        .db_with_conn(|conn| -> rusqlite::Result<JsonValue> {
-            let mut statement = conn.prepare(sql)?;
-            if !statement.readonly() {
-                return Err(rusqlite::Error::InvalidQuery);
-            }
-            let columns: Vec<String> = statement
-                .column_names()
-                .iter()
-                .map(ToString::to_string)
-                .collect();
-            let mut rows_json = Vec::new();
-            let mut rows = statement.query([])?;
-            while let Some(row) = rows.next()? {
-                let mut values = Vec::with_capacity(columns.len());
-                for index in 0..columns.len() {
-                    let value: SqlValue = row.get(index)?;
-                    values.push(sql_value_json(&value));
-                }
-                rows_json.push(JsonValue::Array(values));
-            }
-            Ok(json!({
-                "schema_version": JSON_SCHEMA_VERSION,
-                "columns": columns,
-                "rows": rows_json,
-            }))
-        })
+    let stdout = io::stdout();
+    let mut output = io::BufWriter::new(stdout.lock());
+    doc.db_with_conn(|conn| stream_db_query(conn, sql, json_output, &mut output))
         .context("failed to access embedded database")?
         .context("query must contain exactly one read-only SQLite statement")?;
+    output.flush().context("failed to flush query output")?;
+    Ok(())
+}
+
+fn stream_db_query(
+    conn: &rusqlite::Connection,
+    sql: &str,
+    json_output: bool,
+    output: &mut impl Write,
+) -> Result<()> {
+    let mut statement = conn.prepare(sql)?;
+    ensure!(statement.readonly(), "query statement must be read-only");
+    let columns: Vec<String> = statement
+        .column_names()
+        .iter()
+        .map(ToString::to_string)
+        .collect();
 
     if json_output {
-        println!("{}", serde_json::to_string_pretty(&result)?);
+        write!(
+            output,
+            "{{\n  \"schema_version\": {JSON_SCHEMA_VERSION},\n  \"columns\": "
+        )?;
+        serde_json::to_writer(&mut *output, &columns)?;
+        write!(output, ",\n  \"rows\": [")?;
     } else {
-        let columns = result["columns"]
-            .as_array()
-            .expect("query columns are an array");
-        println!(
+        writeln!(
+            output,
             "| {} |",
             columns
                 .iter()
-                .map(|entry| escape_table_cell(entry.as_str().unwrap_or_default()))
+                .map(|column| escape_table_cell(column))
                 .collect::<Vec<_>>()
                 .join(" | ")
-        );
-        println!(
+        )?;
+        writeln!(
+            output,
             "|{}|",
             columns.iter().map(|_| "---").collect::<Vec<_>>().join("|")
-        );
-        for row in result["rows"].as_array().expect("query rows are an array") {
-            println!(
+        )?;
+    }
+
+    let mut first_json_row = true;
+    let mut rows = statement.query([])?;
+    while let Some(row) = rows.next()? {
+        let mut values = Vec::with_capacity(columns.len());
+        for index in 0..columns.len() {
+            let value: SqlValue = row.get(index)?;
+            values.push(sql_value_json(&value));
+        }
+        if json_output {
+            if first_json_row {
+                write!(output, "\n    ")?;
+                first_json_row = false;
+            } else {
+                write!(output, ",\n    ")?;
+            }
+            serde_json::to_writer(&mut *output, &values)?;
+        } else {
+            writeln!(
+                output,
                 "| {} |",
-                row.as_array()
-                    .expect("query row is an array")
+                values
                     .iter()
                     .map(display_table_value)
                     .collect::<Vec<_>>()
                     .join(" | ")
-            );
+            )?;
         }
+    }
+
+    if json_output {
+        if !first_json_row {
+            write!(output, "\n  ")?;
+        }
+        writeln!(output, "]\n}}")?;
     }
     Ok(())
 }

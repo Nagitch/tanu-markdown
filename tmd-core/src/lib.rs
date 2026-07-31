@@ -1271,6 +1271,7 @@ mod format {
             temporary
                 .as_file_mut()
                 .set_permissions(metadata.permissions())?;
+            ensure_replacement_metadata_compatible(&path, temporary.path(), &metadata)?;
         }
         {
             let file = temporary.as_file_mut();
@@ -1293,6 +1294,130 @@ mod format {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(path.to_path_buf()),
             Err(error) => Err(error),
         }
+    }
+
+    #[cfg(unix)]
+    fn ensure_replacement_metadata_compatible(
+        existing: &Path,
+        replacement: &Path,
+        existing_metadata: &fs::Metadata,
+    ) -> std::io::Result<()> {
+        use std::os::unix::fs::MetadataExt;
+
+        let replacement_metadata = fs::metadata(replacement)?;
+        if existing_metadata.uid() != replacement_metadata.uid()
+            || existing_metadata.gid() != replacement_metadata.gid()
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!(
+                    "refusing to replace `{}` because its owner or group cannot be preserved",
+                    existing.display()
+                ),
+            ));
+        }
+        if extended_attributes(existing)? != extended_attributes(replacement)? {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!(
+                    "refusing to replace `{}` because its extended attributes or ACL cannot be preserved",
+                    existing.display()
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    fn extended_attributes(path: &Path) -> std::io::Result<Vec<(std::ffi::OsString, Vec<u8>)>> {
+        let mut attributes = Vec::new();
+        for name in xattr::list(path)? {
+            let value = xattr::get(path, &name)?.ok_or_else(|| {
+                std::io::Error::other(format!(
+                    "extended attribute `{}` disappeared while inspecting `{}`",
+                    name.to_string_lossy(),
+                    path.display()
+                ))
+            })?;
+            attributes.push((name, value));
+        }
+        attributes.sort();
+        Ok(attributes)
+    }
+
+    #[cfg(windows)]
+    fn ensure_replacement_metadata_compatible(
+        existing: &Path,
+        replacement: &Path,
+        _existing_metadata: &fs::Metadata,
+    ) -> std::io::Result<()> {
+        if windows_security_descriptor(existing)? != windows_security_descriptor(replacement)? {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!(
+                    "refusing to replace `{}` because its owner or ACL cannot be preserved",
+                    existing.display()
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    fn windows_security_descriptor(path: &Path) -> std::io::Result<Vec<u8>> {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Security::{
+            GetFileSecurityW, DACL_SECURITY_INFORMATION, GROUP_SECURITY_INFORMATION,
+            OWNER_SECURITY_INFORMATION,
+        };
+
+        let wide_path: Vec<u16> = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let requested =
+            OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
+        let mut required = 0_u32;
+        // SAFETY: `wide_path` is NUL-terminated and `required` is writable.
+        unsafe {
+            GetFileSecurityW(
+                wide_path.as_ptr(),
+                requested,
+                std::ptr::null_mut(),
+                0,
+                &mut required,
+            );
+        }
+        if required == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+
+        let mut descriptor = vec![0_u8; required as usize];
+        // SAFETY: `descriptor` has the size requested by the preceding call,
+        // and all pointers remain valid for the duration of this call.
+        let succeeded = unsafe {
+            GetFileSecurityW(
+                wide_path.as_ptr(),
+                requested,
+                descriptor.as_mut_ptr().cast(),
+                required,
+                &mut required,
+            )
+        };
+        if succeeded == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(descriptor)
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    fn ensure_replacement_metadata_compatible(
+        _existing: &Path,
+        _replacement: &Path,
+        _existing_metadata: &fs::Metadata,
+    ) -> std::io::Result<()> {
+        Ok(())
     }
 
     fn ensure_single_hard_link(path: &Path, metadata: &fs::Metadata) -> std::io::Result<()> {
@@ -2377,6 +2502,27 @@ mod tests {
         );
         assert_eq!(
             std::fs::read(&alias).expect("preserved alias"),
+            original_bytes
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_rejects_acl_metadata_loss() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("acl.tmd");
+        write_to_path(&path, &sample_doc(), Format::Tmd).expect("write original");
+        xattr::set(&path, "user.tanu-test-acl", b"preserve").expect("set security metadata");
+        let original_bytes = std::fs::read(&path).expect("read original");
+
+        let error =
+            write_to_path(&path, &sample_doc(), Format::Tmd).expect_err("reject ACL metadata loss");
+
+        assert!(error
+            .to_string()
+            .contains("extended attributes or ACL cannot be preserved"));
+        assert_eq!(
+            std::fs::read(&path).expect("preserved document"),
             original_bytes
         );
     }

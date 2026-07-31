@@ -47,7 +47,8 @@ tmd attachment remove notes.tmd --path images/final.png
 ```
 
 Logical paths are normalized and checked against traversal, reserved-name, and
-duplicate-path rules.
+duplicate-path rules. Extraction creates the destination with no-clobber
+semantics and refuses existing files and symbolic links.
 
 ### HTML
 
@@ -88,7 +89,8 @@ tmd db query notes.tmd --sql "SELECT * FROM notes" --json
 `db exec`. JSON output represents non-finite SQLite `REAL` values as
 `{"real":"Infinity"}`, `{"real":"-Infinity"}`, or `{"real":"NaN"}` so they
 remain distinct from SQL `NULL`. Human-readable table output escapes backslashes,
-column delimiters, and line breaks as `\\`, `\|`, `\r`, and `\n`.
+column delimiters, and line breaks as `\\`, `\|`, `\r`, and `\n`. Query rows are
+streamed to stdout rather than retained as a complete in-memory result set.
 
 Migrate and update both `PRAGMA user_version` and the manifest:
 

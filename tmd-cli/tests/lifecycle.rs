@@ -167,6 +167,65 @@ fn update_reports_persisted_attachment_metadata() {
         .all(|issue| issue["code"] != "attachment_sha256_missing"));
 }
 
+#[test]
+fn attachment_extract_never_clobbers_targets() {
+    let directory = tempdir().expect("temporary directory");
+    let doc_path = directory.path().join("attachments.tmd");
+    let existing = directory.path().join("existing.txt");
+    let mut doc = TmdDoc::new("# Attachments\n".to_owned()).expect("document model");
+    doc.add_attachment(
+        "attachments/note.txt",
+        "text/plain".parse().expect("text MIME"),
+        b"attachment".to_vec(),
+    )
+    .expect("add attachment");
+    write_to_path(&doc_path, &doc, Format::Tmd).expect("write document");
+    fs::write(&existing, "preserve me").expect("existing target");
+
+    let extraction = run_raw(
+        vec![
+            text("attachment"),
+            text("extract"),
+            argument(&doc_path),
+            text("--path"),
+            text("attachments/note.txt"),
+            argument(&existing),
+        ],
+        None,
+    );
+    assert!(!extraction.status.success());
+    assert_eq!(
+        fs::read_to_string(&existing).expect("preserved target"),
+        "preserve me"
+    );
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+
+        let dangling_target = directory.path().join("missing.txt");
+        let dangling_link = directory.path().join("dangling.txt");
+        symlink(&dangling_target, &dangling_link).expect("dangling symlink");
+        let extraction = run_raw(
+            vec![
+                text("attachment"),
+                text("extract"),
+                argument(&doc_path),
+                text("--path"),
+                text("attachments/note.txt"),
+                argument(&dangling_link),
+            ],
+            None,
+        );
+        assert!(!extraction.status.success());
+        assert!(!dangling_target.exists());
+        assert!(fs::symlink_metadata(dangling_link)
+            .expect("preserved symlink")
+            .file_type()
+            .is_symlink());
+    }
+}
+
 fn only_file_in(directory: &Path) -> PathBuf {
     let mut entries = fs::read_dir(directory)
         .expect("read asset directory")
