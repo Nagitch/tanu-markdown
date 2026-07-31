@@ -46,7 +46,12 @@ test("editor sends state immediately and debounces only preview rendering", () =
      applyAuthoritativeState(initialModel);`,
     {
       clearTimeout() {},
-      initialModel: { title: "Title", markdown: "First" },
+      initialModel: {
+        acknowledgedClientRevision: 0,
+        contentRevision: 0,
+        title: "Title",
+        markdown: "First",
+      },
       markdown: markdown.control,
       setTimeout(callback: () => void, delay: number) {
         timers.push({ callback, delay });
@@ -67,7 +72,12 @@ test("editor sends state immediately and debounces only preview rendering", () =
   title.control.value = "Updated";
   title.input();
   assert.deepEqual(messages, [
-    { type: "edit", title: "Updated", markdown: "First" },
+    {
+      type: "edit",
+      clientRevision: 1,
+      title: "Updated",
+      markdown: "First",
+    },
   ]);
   assert.equal(timers.length, 0);
 
@@ -75,6 +85,7 @@ test("editor sends state immediately and debounces only preview rendering", () =
   markdown.input();
   assert.deepEqual(messages.at(-1), {
     type: "edit",
+    clientRevision: 2,
     title: "Updated",
     markdown: "Second",
   });
@@ -123,11 +134,15 @@ test("authoritative model state replaces focused control values", () => {
 
   runInNewContext(
     `let editorInitialized = false;
+     let clientRevision = 0;
+     let acknowledgedContentRevision = -1;
      ${authoritativeStateScript()}
      applyAuthoritativeState(model);`,
     {
       markdown,
       model: {
+        acknowledgedClientRevision: 0,
+        contentRevision: 0,
         title: "restored title",
         markdown: "restored markdown",
       },
@@ -139,4 +154,79 @@ test("authoritative model state replaces focused control values", () => {
   assert.equal(markdown.value, "restored markdown");
   assert.equal(title.disabled, false);
   assert.equal(markdown.disabled, false);
+});
+
+test("stale models cannot overwrite pending or acknowledged local edits", () => {
+  const title = inputControl("");
+  const markdown = inputControl("");
+  const messages: unknown[] = [];
+  const results: Record<string, unknown> = {};
+
+  runInNewContext(
+    `${editInputScript()}
+     ${authoritativeStateScript()}
+     results.initial = applyAuthoritativeState(initialModel);
+     title.value = "local title";
+     markdown.value = "local markdown";
+     triggerTitleInput();
+     results.pending = applyAuthoritativeState(staleModel);
+     results.ack = applyEditAck(editAck);
+     results.acknowledged = applyAuthoritativeState(staleModel);
+     results.current = applyAuthoritativeState(currentModel);`,
+    {
+      clearTimeout() {},
+      currentModel: {
+        acknowledgedClientRevision: 1,
+        contentRevision: 2,
+        title: "current title",
+        markdown: "current markdown",
+      },
+      editAck: {
+        clientRevision: 1,
+        contentRevision: 1,
+      },
+      initialModel: {
+        acknowledgedClientRevision: 0,
+        contentRevision: 0,
+        title: "initial title",
+        markdown: "initial markdown",
+      },
+      markdown: markdown.control,
+      results,
+      setTimeout() {
+        return 1;
+      },
+      staleModel: {
+        acknowledgedClientRevision: 0,
+        contentRevision: 0,
+        title: "stale title",
+        markdown: "stale markdown",
+      },
+      title: title.control,
+      triggerTitleInput: title.input,
+      vscode: {
+        postMessage(message: unknown) {
+          messages.push(JSON.parse(JSON.stringify(message)));
+        },
+      },
+    },
+  );
+
+  assert.deepEqual(results, {
+    initial: true,
+    pending: false,
+    ack: true,
+    acknowledged: false,
+    current: true,
+  });
+  assert.deepEqual(messages, [
+    {
+      type: "edit",
+      clientRevision: 1,
+      title: "local title",
+      markdown: "local markdown",
+    },
+  ]);
+  assert.equal(title.control.value, "current title");
+  assert.equal(markdown.control.value, "current markdown");
 });

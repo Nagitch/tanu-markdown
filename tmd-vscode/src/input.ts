@@ -4,11 +4,19 @@ export function editInputScript(): string {
   return `
     let previewTimer;
     let editorInitialized = false;
+    let clientRevision = 0;
+    let acknowledgedContentRevision = -1;
     title.disabled = true;
     markdown.disabled = true;
     const sendEdit = () => {
       if (!editorInitialized) return;
-      vscode.postMessage({ type: "edit", title: title.value, markdown: markdown.value });
+      clientRevision += 1;
+      vscode.postMessage({
+        type: "edit",
+        clientRevision,
+        title: title.value,
+        markdown: markdown.value,
+      });
     };
     const queuePreview = () => {
       if (!editorInitialized) return;
@@ -28,12 +36,34 @@ export function editInputScript(): string {
 
 export function authoritativeStateScript(): string {
   return `
+    const applyEditAck = (ack) => {
+      if (
+        !Number.isSafeInteger(ack.clientRevision) ||
+        !Number.isSafeInteger(ack.contentRevision) ||
+        ack.clientRevision < 0 ||
+        ack.clientRevision > clientRevision ||
+        ack.contentRevision < 0
+      ) return false;
+      acknowledgedContentRevision = Math.max(
+        acknowledgedContentRevision,
+        ack.contentRevision,
+      );
+      return true;
+    };
     const applyAuthoritativeState = (model) => {
+      if (
+        !Number.isSafeInteger(model.acknowledgedClientRevision) ||
+        !Number.isSafeInteger(model.contentRevision) ||
+        model.acknowledgedClientRevision !== clientRevision ||
+        model.contentRevision < acknowledgedContentRevision
+      ) return false;
       title.value = model.title;
       markdown.value = model.markdown;
+      acknowledgedContentRevision = model.contentRevision;
       editorInitialized = true;
       title.disabled = false;
       markdown.disabled = false;
+      return true;
     };
   `;
 }

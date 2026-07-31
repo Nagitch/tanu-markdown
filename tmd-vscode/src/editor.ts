@@ -82,6 +82,7 @@ export class TanuMarkdownEditorProvider
     new vscode.EventEmitter<vscode.CustomDocumentEditEvent<TanuMarkdownDocument>>();
   readonly onDidChangeCustomDocument = this.changeEmitter.event;
   private readonly panels = new Map<TanuMarkdownDocument, Set<vscode.WebviewPanel>>();
+  private readonly panelClientRevisions = new WeakMap<vscode.WebviewPanel, number>();
   private readonly documentOperations = new SerialTaskQueue<TanuMarkdownDocument>();
   private activeDocumentValue: TanuMarkdownDocument | undefined;
 
@@ -293,26 +294,47 @@ export class TanuMarkdownEditorProvider
         await this.postModel(document);
         break;
       case "edit": {
-        if (typeof message.markdown !== "string" || typeof message.title !== "string") {
+        if (
+          typeof message.markdown !== "string" ||
+          typeof message.title !== "string" ||
+          typeof message.clientRevision !== "number" ||
+          !Number.isSafeInteger(message.clientRevision) ||
+          message.clientRevision <= 0
+        ) {
           return;
         }
+        const clientRevision = message.clientRevision;
+        const previousClientRevision = this.panelClientRevisions.get(panel) ?? 0;
+        if (clientRevision <= previousClientRevision) {
+          await panel.webview.postMessage({
+            type: "editAck",
+            clientRevision,
+            contentRevision: document.contentRevision,
+          });
+          return;
+        }
+        this.panelClientRevisions.set(panel, clientRevision);
         const before = document.snapshot();
         const after = { markdown: message.markdown, title: message.title };
-        if (before.markdown === after.markdown && before.title === after.title) {
-          return;
+        if (before.markdown !== after.markdown || before.title !== after.title) {
+          document.applyState(after);
+          this.changeEmitter.fire({
+            document,
+            label: "Edit Tanu Markdown",
+            undo: async () => {
+              document.applyState(before);
+              await this.postModel(document);
+            },
+            redo: async () => {
+              document.applyState(after);
+              await this.postModel(document);
+            },
+          });
         }
-        document.applyState(after);
-        this.changeEmitter.fire({
-          document,
-          label: "Edit Tanu Markdown",
-          undo: async () => {
-            document.applyState(before);
-            await this.postModel(document);
-          },
-          redo: async () => {
-            document.applyState(after);
-            await this.postModel(document);
-          },
+        await panel.webview.postMessage({
+          type: "editAck",
+          clientRevision,
+          contentRevision: document.contentRevision,
         });
         await panel.webview.postMessage({
           type: "validationState",
@@ -355,6 +377,7 @@ export class TanuMarkdownEditorProvider
     const state = document.snapshot();
     const model = {
       type: "model",
+      contentRevision: document.contentRevision,
       inspection: document.inspection,
       validationCurrent: document.isValidationCurrent,
       markdown: state.markdown,
@@ -365,7 +388,14 @@ export class TanuMarkdownEditorProvider
     if (!panels) {
       return;
     }
-    await Promise.all([...panels].map((panel) => panel.webview.postMessage(model)));
+    await Promise.all(
+      [...panels].map((panel) =>
+        panel.webview.postMessage({
+          ...model,
+          acknowledgedClientRevision: this.panelClientRevisions.get(panel) ?? 0,
+        }),
+      ),
+    );
   }
 }
 
@@ -508,9 +538,13 @@ function editorHtml(_webview: vscode.Webview): string {
         renderValidation(undefined, model.validationCurrent);
         return;
       }
+      if (model.type === "editAck") {
+        applyEditAck(model);
+        return;
+      }
       if (model.type !== "model") return;
       clearTimeout(previewTimer);
-      applyAuthoritativeState(model);
+      if (!applyAuthoritativeState(model)) return;
       document.getElementById("format").textContent = model.inspection.format;
       document.getElementById("database-version").textContent = String(model.inspection.database_user_version);
       attachments.replaceChildren();
