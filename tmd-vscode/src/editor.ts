@@ -190,11 +190,15 @@ export class TanuMarkdownEditorProvider
         throw new Error("Save As destination must use the .tmd or .tmdp extension.");
       }
       const sourceExtension = document.inspection.format === "tmdp" ? ".tmdp" : ".tmd";
-      let destinationPublished = false;
       let expectedDestinationState = diskState(
         await readOptionalFile(destination),
       );
-      for (;;) {
+      const maxPublishAttempts = 3;
+      for (
+        let publishAttempt = 0;
+        publishAttempt < maxPublishAttempts;
+        publishAttempt += 1
+      ) {
         const stagingDirectory = await fs.mkdtemp(
           path.join(path.dirname(destination.fsPath), ".tmd-save-"),
         );
@@ -218,7 +222,6 @@ export class TanuMarkdownEditorProvider
                 title: state.title,
               });
             },
-            destinationPublished ? Number.MAX_SAFE_INTEGER : 3,
           );
           stagedRevision = document.contentRevision;
           const publishedState = diskState(await fs.readFile(stagedPath));
@@ -227,7 +230,6 @@ export class TanuMarkdownEditorProvider
             filePath(destination),
             expectedDestinationState,
           );
-          destinationPublished = true;
           expectedDestinationState = publishedState;
         } finally {
           await fs.rm(stagingDirectory, { force: true, recursive: true });
@@ -236,6 +238,9 @@ export class TanuMarkdownEditorProvider
           return;
         }
       }
+      throw new Error(
+        "The document kept changing while it was being saved; pause editing and retry.",
+      );
     });
   }
 
