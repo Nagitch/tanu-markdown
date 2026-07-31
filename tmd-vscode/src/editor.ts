@@ -190,7 +190,9 @@ export class TanuMarkdownEditorProvider
       }
       const sourceExtension = document.inspection.format === "tmdp" ? ".tmdp" : ".tmd";
       let destinationPublished = false;
-      let expectedDestinationState: string | undefined;
+      let expectedDestinationState = diskState(
+        await readOptionalFile(destination),
+      );
       for (;;) {
         const stagingDirectory = await fs.mkdtemp(
           path.join(path.dirname(destination.fsPath), ".tmd-save-"),

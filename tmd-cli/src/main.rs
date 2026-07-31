@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, ensure, Context, Result};
@@ -18,8 +18,8 @@ use serde::Deserialize;
 use serde_json::{json, Value as JsonValue};
 use sha2::{Digest, Sha256};
 use tmd_core::{
-    export_db, import_db, migrate, read_from_path, reset_db, validate_document, write_to_path,
-    AttachmentMeta, Format, TmdDoc, ValidationSeverity, SQLITE_MAX_USER_VERSION,
+    export_db, import_db, migrate, read_tmd, read_tmdp, reset_db, validate_document, write_to_path,
+    AttachmentMeta, Format, ReadMode, TmdDoc, ValidationSeverity, SQLITE_MAX_USER_VERSION,
 };
 
 const JSON_SCHEMA_VERSION: u32 = 1;
@@ -408,7 +408,7 @@ fn cmd_update(input: &Path, json_stdin: bool) -> Result<()> {
         JSON_SCHEMA_VERSION
     );
 
-    let (mut doc, format) = read_document(input)?;
+    let (mut doc, format, expected) = read_document_for_update(input)?;
     if let Some(markdown) = update.markdown {
         doc.markdown = markdown;
     }
@@ -422,7 +422,7 @@ fn cmd_update(input: &Path, json_stdin: bool) -> Result<()> {
         doc.manifest.tags = tags;
     }
     doc.touch();
-    write_document(input, &doc, format)?;
+    write_document_if_expected(input, &doc, format, Some(&expected))?;
     let (persisted_doc, persisted_format) = read_document(input)?;
     println!(
         "{}",
@@ -473,36 +473,36 @@ fn cmd_attachment_add(
             .with_context(|| format!("invalid MIME type `{value}`"))?,
         None => mime_guess::from_path(source).first_or_octet_stream(),
     };
-    let (mut doc, format) = read_document(doc_path)?;
+    let (mut doc, format, expected) = read_document_for_update(doc_path)?;
     let id = doc
         .add_attachment(logical_path, mime, bytes)
         .context("failed to add attachment")?;
     doc.update_attachment_metadata(id, title, alt)
         .context("failed to update attachment metadata")?;
     doc.touch();
-    write_document(doc_path, &doc, format)?;
+    write_document_if_expected(doc_path, &doc, format, Some(&expected))?;
     println!("Added `{logical_path}` to `{}`", doc_path.display());
     Ok(())
 }
 
 fn cmd_attachment_remove(doc_path: &Path, logical_path: &str) -> Result<()> {
-    let (mut doc, format) = read_document(doc_path)?;
+    let (mut doc, format, expected) = read_document_for_update(doc_path)?;
     let id = attachment_id_by_path(&doc, logical_path)?;
     doc.remove_attachment(id)
         .context("failed to remove attachment")?;
     doc.touch();
-    write_document(doc_path, &doc, format)?;
+    write_document_if_expected(doc_path, &doc, format, Some(&expected))?;
     println!("Removed `{logical_path}` from `{}`", doc_path.display());
     Ok(())
 }
 
 fn cmd_attachment_rename(doc_path: &Path, from: &str, to: &str) -> Result<()> {
-    let (mut doc, format) = read_document(doc_path)?;
+    let (mut doc, format, expected) = read_document_for_update(doc_path)?;
     let id = attachment_id_by_path(&doc, from)?;
     doc.rename_attachment(id, to)
         .context("failed to rename attachment")?;
     doc.touch();
-    write_document(doc_path, &doc, format)?;
+    write_document_if_expected(doc_path, &doc, format, Some(&expected))?;
     println!("Renamed `{from}` to `{to}` in `{}`", doc_path.display());
     Ok(())
 }
@@ -632,7 +632,9 @@ fn cmd_export_html(input: &Path, output: &Path, self_contained: bool) -> Result<
         attachments = attachment_section,
     );
     let published_assets = attachment_export.publish()?;
-    if let Err(error) = fs::write(output, output_html) {
+    if let Err(error) = write_atomic_output(output, |destination| {
+        destination.write_all(output_html.as_bytes())
+    }) {
         if let Some(directory) = published_assets {
             if let Err(cleanup_error) = fs::remove_dir_all(&directory) {
                 return Err(anyhow!(
@@ -654,8 +656,79 @@ fn cmd_export_html(input: &Path, output: &Path, self_contained: bool) -> Result<
     Ok(())
 }
 
+fn write_atomic_output(
+    output: &Path,
+    write: impl FnOnce(&mut File) -> io::Result<()>,
+) -> Result<()> {
+    let target = match fs::symlink_metadata(output) {
+        Ok(metadata) if metadata.file_type().is_symlink() => fs::canonicalize(output)
+            .with_context(|| format!("failed to resolve output symlink `{}`", output.display()))?,
+        Ok(_) => output.to_path_buf(),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => output.to_path_buf(),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("failed to inspect output `{}`", output.display()));
+        }
+    };
+    let existing_permissions = match fs::metadata(&target) {
+        Ok(metadata) => Some(metadata.permissions()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("failed to inspect output `{}`", target.display()));
+        }
+    };
+    let parent = target
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let mut temporary = new_atomic_output_tempfile(parent).with_context(|| {
+        format!(
+            "failed to create temporary output in `{}`",
+            parent.display()
+        )
+    })?;
+    if let Some(permissions) = existing_permissions {
+        temporary
+            .as_file_mut()
+            .set_permissions(permissions)
+            .with_context(|| {
+                format!("failed to preserve permissions for `{}`", target.display())
+            })?;
+    }
+    write(temporary.as_file_mut()).with_context(|| {
+        format!(
+            "failed to write temporary output for `{}`",
+            target.display()
+        )
+    })?;
+    temporary
+        .as_file_mut()
+        .sync_all()
+        .with_context(|| format!("failed to sync temporary output for `{}`", target.display()))?;
+    temporary
+        .persist(&target)
+        .map_err(|error| error.error)
+        .with_context(|| format!("failed to publish output `{}`", target.display()))?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn new_atomic_output_tempfile(parent: &Path) -> io::Result<tempfile::NamedTempFile> {
+    use std::os::unix::fs::PermissionsExt;
+
+    tempfile::Builder::new()
+        .permissions(fs::Permissions::from_mode(0o666))
+        .tempfile_in(parent)
+}
+
+#[cfg(not(unix))]
+fn new_atomic_output_tempfile(parent: &Path) -> io::Result<tempfile::NamedTempFile> {
+    tempfile::NamedTempFile::new_in(parent)
+}
+
 fn cmd_db_init(doc_path: &Path, schema_path: Option<&Path>, version: Option<u32>) -> Result<()> {
-    let (mut doc, format) = read_document(doc_path)?;
+    let (mut doc, format, expected) = read_document_for_update(doc_path)?;
     let schema_sql = schema_path
         .map(|path| {
             fs::read_to_string(path)
@@ -677,7 +750,7 @@ fn cmd_db_init(doc_path: &Path, schema_path: Option<&Path>, version: Option<u32>
         doc.manifest.db_schema_version = Some(version);
     }
     doc.touch();
-    write_document(doc_path, &doc, format)?;
+    write_document_if_expected(doc_path, &doc, format, Some(&expected))?;
     println!(
         "Initialised database for `{}` (schema version = {:?})",
         doc_path.display(),
@@ -688,7 +761,7 @@ fn cmd_db_init(doc_path: &Path, schema_path: Option<&Path>, version: Option<u32>
 
 fn cmd_db_exec(doc_path: &Path, sql: &str) -> Result<()> {
     ensure!(!sql.trim().is_empty(), "SQL must not be empty");
-    let (mut doc, format) = read_document(doc_path)?;
+    let (mut doc, format, expected) = read_document_for_update(doc_path)?;
     let user_version = doc
         .db_with_conn_mut(|conn| -> Result<u32> {
             conn.execute_batch(sql)?;
@@ -709,7 +782,7 @@ fn cmd_db_exec(doc_path: &Path, sql: &str) -> Result<()> {
         .context("failed to execute SQL against embedded database")?;
     doc.manifest.db_schema_version = Some(user_version);
     doc.touch();
-    write_document(doc_path, &doc, format)?;
+    write_document_if_expected(doc_path, &doc, format, Some(&expected))?;
     println!("Executed SQL and updated `{}`", doc_path.display());
     Ok(())
 }
@@ -804,11 +877,11 @@ fn stream_db_query(
 
 fn cmd_db_migrate(doc_path: &Path, from: u32, to: u32, sql: &str) -> Result<()> {
     ensure!(to > from, "migration target must be greater than source");
-    let (mut doc, format) = read_document(doc_path)?;
+    let (mut doc, format, expected) = read_document_for_update(doc_path)?;
     migrate(&mut doc, sql, from, to).context("failed to migrate embedded database")?;
     doc.manifest.db_schema_version = Some(to);
     doc.touch();
-    write_document(doc_path, &doc, format)?;
+    write_document_if_expected(doc_path, &doc, format, Some(&expected))?;
     println!(
         "Migrated `{}` from schema version {} to {}",
         doc_path.display(),
@@ -819,12 +892,12 @@ fn cmd_db_migrate(doc_path: &Path, from: u32, to: u32, sql: &str) -> Result<()> 
 }
 
 fn cmd_db_import(doc_path: &Path, source: &Path) -> Result<()> {
-    let (mut doc, format) = read_document(doc_path)?;
+    let (mut doc, format, expected) = read_document_for_update(doc_path)?;
     import_db(&mut doc, source).context("failed to import SQLite database")?;
     let user_version = database_user_version(&doc)?;
     doc.manifest.db_schema_version = Some(user_version);
     doc.touch();
-    write_document(doc_path, &doc, format)?;
+    write_document_if_expected(doc_path, &doc, format, Some(&expected))?;
     println!(
         "Imported database from `{}` into `{}` (user_version = {})",
         source.display(),
@@ -912,14 +985,21 @@ fn database_inspection(doc: &TmdDoc) -> Result<JsonValue> {
 }
 
 fn read_document(path: &Path) -> Result<(TmdDoc, Format)> {
-    let format = detect_format(path)?;
-    let doc = read_from_path(path, Some(format))
-        .with_context(|| format!("failed to read `{}`", path.display()))?;
+    let (doc, format, _) = read_document_for_update(path)?;
     Ok((doc, format))
 }
 
-fn write_document(path: &Path, doc: &TmdDoc, format: Format) -> Result<()> {
-    write_document_if_expected(path, doc, format, None)
+fn read_document_for_update(path: &Path) -> Result<(TmdDoc, Format, ExpectedOutputState)> {
+    let format = detect_format(path)?;
+    let bytes = fs::read(path).with_context(|| format!("failed to read `{}`", path.display()))?;
+    let mut cursor = Cursor::new(bytes.as_slice());
+    let doc = match format {
+        Format::Tmd => read_tmd(&mut cursor, ReadMode::default()),
+        Format::Tmdp => read_tmdp(&mut cursor, ReadMode::default()),
+    }
+    .with_context(|| format!("failed to parse `{}`", path.display()))?;
+    let digest = Sha256::digest(&bytes).into();
+    Ok((doc, format, ExpectedOutputState::Sha256(digest)))
 }
 
 fn write_document_if_expected(
@@ -1557,5 +1637,54 @@ mod tests {
             b"external replacement"
         );
         assert_eq!(fs::read(&displaced).expect("partial output"), b"partial");
+    }
+
+    #[test]
+    fn atomic_output_write_failures_preserve_existing_output() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let output = directory.path().join("existing.html");
+        fs::write(&output, b"complete previous export").expect("existing output");
+
+        let error = write_atomic_output(&output, |destination| {
+            destination.write_all(b"partial replacement")?;
+            Err(io::Error::other("injected write failure"))
+        })
+        .expect_err("injected write failure must be reported");
+
+        assert!(error
+            .to_string()
+            .contains("failed to write temporary output"));
+        assert_eq!(
+            fs::read(&output).expect("preserved output"),
+            b"complete previous export"
+        );
+    }
+
+    #[test]
+    fn stale_document_mutations_cannot_replace_newer_contents() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let output = directory.path().join("document.tmd");
+        let original = TmdDoc::new("original".to_owned()).expect("original document");
+        write_to_path(&output, &original, Format::Tmd).expect("write original");
+        let (mut stale, format, expected) =
+            read_document_for_update(&output).expect("read mutation snapshot");
+
+        let external = TmdDoc::new("external".to_owned()).expect("external document");
+        write_to_path(&output, &external, Format::Tmd).expect("write external replacement");
+        stale.markdown = "stale mutation".to_owned();
+
+        let error = write_document_if_expected(&output, &stale, format, Some(&expected))
+            .expect_err("stale mutation must be rejected");
+
+        assert!(error
+            .to_string()
+            .contains("refusing to overwrite external changes"));
+        assert_eq!(
+            read_document(&output)
+                .expect("preserved document")
+                .0
+                .markdown,
+            "external"
+        );
     }
 }
