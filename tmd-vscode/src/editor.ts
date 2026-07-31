@@ -155,7 +155,8 @@ export class TanuMarkdownEditorProvider
         markdown: state.markdown,
         title: state.title,
       };
-      const inspection = await this.clientFactory().update(filePath(document.uri), update);
+      const client = this.clientFactory();
+      const inspection = await this.saveRetainedState(document, client, update);
       document.replacePersistedBytes(
         await vscode.workspace.fs.readFile(document.uri),
       );
@@ -347,6 +348,30 @@ export class TanuMarkdownEditorProvider
       await fs.writeFile(stagingPath, bytes, { flag: "wx" });
       stagingCreated = true;
       await client.convert(stagingPath, filePath(destination));
+    } finally {
+      if (stagingCreated) {
+        await fs.rm(stagingPath, { force: true });
+      }
+    }
+  }
+
+  private async saveRetainedState(
+    document: TanuMarkdownDocument,
+    client: TmdCliClient,
+    update: DocumentUpdate,
+  ): Promise<DocumentInspection> {
+    const sourceExtension = document.inspection.format === "tmdp" ? ".tmdp" : ".tmd";
+    const stagingPath = path.join(
+      path.dirname(document.uri.fsPath),
+      `.tmd-save-${randomBytes(16).toString("hex")}${sourceExtension}`,
+    );
+    let stagingCreated = false;
+    try {
+      await fs.writeFile(stagingPath, document.persistedBytes, { flag: "wx" });
+      stagingCreated = true;
+      const inspection = await client.update(stagingPath, update);
+      await client.convert(stagingPath, filePath(document.uri));
+      return inspection;
     } finally {
       if (stagingCreated) {
         await fs.rm(stagingPath, { force: true });
