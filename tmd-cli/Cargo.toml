@@ -30,7 +30,5 @@ rusqlite.workspace = true
 same-file.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tmd-core = { path = "../tmd-core" }
-
-[dev-dependencies]
 tempfile.workspace = true
+tmd-core = { path = "../tmd-core" }

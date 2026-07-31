@@ -141,6 +141,47 @@ fn db_exec_rejects_scripts_that_leave_transactions_open() {
 }
 
 #[test]
+fn linked_html_export_cleans_up_assets_after_output_failure() {
+    let directory = tempdir().expect("temporary directory");
+    let doc = directory.path().join("export.tmd");
+    let source = directory.path().join("attachment.txt");
+    let output = directory.path().join("blocked.html");
+    let assets = directory.path().join("blocked_assets");
+    fs::write(&source, "attachment").expect("attachment fixture");
+    run(vec![text("new"), argument(&doc)], None);
+    run(
+        vec![
+            text("attachment"),
+            text("add"),
+            argument(&doc),
+            argument(&source),
+            text("--path"),
+            text("attachment.txt"),
+            text("--mime"),
+            text("text/plain"),
+        ],
+        None,
+    );
+    fs::create_dir(&output).expect("blocking output directory");
+
+    let failed_export = run_raw(
+        vec![text("export-html"), argument(&doc), argument(&output)],
+        None,
+    );
+
+    assert!(!failed_export.status.success());
+    assert!(!assets.exists(), "failed export must clean up assets");
+
+    fs::remove_dir(&output).expect("remove blocking output directory");
+    run(
+        vec![text("export-html"), argument(&doc), argument(&output)],
+        None,
+    );
+    assert!(output.is_file());
+    assert!(assets.is_dir());
+}
+
+#[test]
 fn update_reports_persisted_attachment_metadata() {
     let directory = tempdir().expect("temporary directory");
     let doc_path = directory.path().join("missing-hash.tmd");

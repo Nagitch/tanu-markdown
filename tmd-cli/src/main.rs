@@ -521,18 +521,19 @@ fn cmd_export_html(input: &Path, output: &Path, self_contained: bool) -> Result<
     );
 
     ensure_parent_directory(output)?;
-    let attachment_urls = if self_contained {
-        embedded_attachment_urls(&doc)
+    let attachment_export = if self_contained || doc.attachments.is_empty() {
+        AttachmentExport::Embedded(embedded_attachment_urls(&doc))
     } else {
-        extracted_attachment_urls(&doc, output)?
+        AttachmentExport::Staged(stage_extracted_attachment_urls(&doc, output)?)
     };
+    let attachment_urls = attachment_export.urls();
 
     let mut options = Options::empty();
     options.insert(Options::ENABLE_TABLES);
     options.insert(Options::ENABLE_TASKLISTS);
     let mut attachment_link_open = false;
     let parser = MdParser::new_ext(&doc.markdown, options)
-        .map(|event| rewrite_attachment_event(event, &attachment_urls, &mut attachment_link_open));
+        .map(|event| rewrite_attachment_event(event, attachment_urls, &mut attachment_link_open));
     let mut body_html = String::new();
     html::push_html(&mut body_html, parser);
 
@@ -541,7 +542,7 @@ fn cmd_export_html(input: &Path, output: &Path, self_contained: bool) -> Result<
         .title
         .as_deref()
         .unwrap_or("Tanu Markdown Document");
-    let attachment_section = render_attachment_listing(&doc, &attachment_urls);
+    let attachment_section = render_attachment_listing(&doc, attachment_urls);
     let output_html = format!(
         r#"<!DOCTYPE html>
 <html lang="en">
@@ -567,8 +568,32 @@ fn cmd_export_html(input: &Path, output: &Path, self_contained: bool) -> Result<
         body = body_html,
         attachments = attachment_section,
     );
-    fs::write(output, output_html)
-        .with_context(|| format!("failed to write `{}`", output.display()))?;
+    let parent = output
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let mut staged_html = tempfile::Builder::new()
+        .prefix(".tmd-html-")
+        .tempfile_in(parent)
+        .with_context(|| format!("failed to stage HTML output in `{}`", parent.display()))?;
+    staged_html
+        .write_all(output_html.as_bytes())
+        .with_context(|| format!("failed to stage HTML output for `{}`", output.display()))?;
+    let published_assets = attachment_export.publish()?;
+    if let Err(error) = staged_html.persist(output) {
+        if let Some(directory) = published_assets {
+            if let Err(cleanup_error) = fs::remove_dir_all(&directory) {
+                return Err(anyhow!(
+                    "failed to write `{}`: {}; additionally failed to remove staged assets `{}`: {}",
+                    output.display(),
+                    error.error,
+                    directory.display(),
+                    cleanup_error
+                ));
+            }
+        }
+        return Err(error.error).with_context(|| format!("failed to write `{}`", output.display()));
+    }
     println!(
         "Exported `{}` to HTML at `{}`",
         input.display(),
@@ -906,6 +931,45 @@ struct AttachmentExportUrls {
     download_url: String,
 }
 
+enum AttachmentExport {
+    Embedded(HashMap<String, AttachmentExportUrls>),
+    Staged(StagedAttachmentExport),
+}
+
+impl AttachmentExport {
+    fn urls(&self) -> &HashMap<String, AttachmentExportUrls> {
+        match self {
+            Self::Embedded(urls) => urls,
+            Self::Staged(export) => &export.urls,
+        }
+    }
+
+    fn publish(self) -> Result<Option<PathBuf>> {
+        match self {
+            Self::Embedded(_) => Ok(None),
+            Self::Staged(export) => export.publish().map(Some),
+        }
+    }
+}
+
+struct StagedAttachmentExport {
+    urls: HashMap<String, AttachmentExportUrls>,
+    staging_directory: tempfile::TempDir,
+    final_directory: PathBuf,
+}
+
+impl StagedAttachmentExport {
+    fn publish(self) -> Result<PathBuf> {
+        fs::rename(self.staging_directory.path(), &self.final_directory).with_context(|| {
+            format!(
+                "refusing to overwrite attachment directory `{}`; remove or rename it first",
+                self.final_directory.display()
+            )
+        })?;
+        Ok(self.final_directory)
+    }
+}
+
 fn embedded_attachment_urls(doc: &TmdDoc) -> HashMap<String, AttachmentExportUrls> {
     doc.attachments
         .iter_with_data()
@@ -950,37 +1014,51 @@ fn passive_attachment_mime(mime: &str) -> Option<&'static str> {
     }
 }
 
-fn extracted_attachment_urls(
-    doc: &TmdDoc,
-    output: &Path,
-) -> Result<HashMap<String, AttachmentExportUrls>> {
+fn stage_extracted_attachment_urls(doc: &TmdDoc, output: &Path) -> Result<StagedAttachmentExport> {
     let output_stem = output
         .file_stem()
         .and_then(|stem| stem.to_str())
         .filter(|stem| !stem.is_empty())
         .unwrap_or("document");
     let directory_name = format!("{output_stem}_assets");
-    let directory = output
+    let final_directory = output
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .join(&directory_name);
-    let mut urls = HashMap::new();
-
-    if !doc.attachments.is_empty() {
-        fs::create_dir(&directory).with_context(|| {
+    if let Err(error) = fs::symlink_metadata(&final_directory) {
+        ensure!(
+            error.kind() == io::ErrorKind::NotFound,
+            "failed to inspect attachment directory `{}`: {error}",
+            final_directory.display()
+        );
+    } else {
+        return Err(anyhow!(
+            "refusing to overwrite attachment directory `{}`; remove or rename it first",
+            final_directory.display()
+        ));
+    }
+    let parent = output
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let staging_directory = tempfile::Builder::new()
+        .prefix(".tmd-assets-")
+        .tempdir_in(parent)
+        .with_context(|| {
             format!(
-                "refusing to overwrite attachment directory `{}`; remove or rename it first",
-                directory.display()
+                "failed to stage attachment directory in `{}`",
+                parent.display()
             )
         })?;
-    }
+    let mut urls = HashMap::new();
+
     for (meta, data) in doc.attachments.iter_with_data() {
         let file_name = format!(
             "{}{}",
             meta.id,
             exported_asset_extension(meta.mime.as_ref())
         );
-        let destination = directory.join(&file_name);
+        let destination = staging_directory.path().join(&file_name);
         fs::write(&destination, data)
             .with_context(|| format!("failed to write `{}`", destination.display()))?;
         let download_url = format!(
@@ -1001,7 +1079,11 @@ fn extracted_attachment_urls(
             },
         );
     }
-    Ok(urls)
+    Ok(StagedAttachmentExport {
+        urls,
+        staging_directory,
+        final_directory,
+    })
 }
 
 fn exported_asset_extension(mime: &str) -> &'static str {
