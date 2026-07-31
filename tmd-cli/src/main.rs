@@ -1345,14 +1345,14 @@ struct PublishedAttachmentExport {
 impl PublishedAttachmentExport {
     fn remove_if_current(self) -> Result<()> {
         match Handle::from_path(&self.path) {
-            Ok(current) if current == self.handle => fs::remove_dir_all(&self.path).with_context(
-                || {
+            Ok(current) if current == self.handle => {
+                fs::remove_dir_all(&self.path).with_context(|| {
                     format!(
                         "failed to remove published attachment directory `{}`",
                         self.path.display()
                     )
-                },
-            ),
+                })
+            }
             Ok(_) => Ok(()),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(error).with_context(|| {
@@ -1786,13 +1786,15 @@ mod tests {
         fs::write(&output, b"shared export").expect("existing output");
         fs::hard_link(&output, &alias).expect("hard-linked alias");
 
-        let error = write_atomic_output(&output, |destination| {
-            destination.write_all(b"replacement")
-        })
-        .expect_err("hard-linked output must be rejected");
+        let error =
+            write_atomic_output(&output, |destination| destination.write_all(b"replacement"))
+                .expect_err("hard-linked output must be rejected");
 
         assert!(error.to_string().contains("hard links"));
-        assert_eq!(fs::read(&output).expect("preserved output"), b"shared export");
+        assert_eq!(
+            fs::read(&output).expect("preserved output"),
+            b"shared export"
+        );
         assert_eq!(fs::read(&alias).expect("preserved alias"), b"shared export");
     }
 
