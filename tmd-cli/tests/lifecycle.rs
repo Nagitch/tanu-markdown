@@ -181,6 +181,48 @@ fn linked_html_export_cleans_up_assets_after_output_failure() {
     assert!(assets.is_dir());
 }
 
+#[cfg(unix)]
+#[test]
+fn html_export_preserves_output_symlinks_and_target_permissions() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+
+    let directory = tempdir().expect("temporary directory");
+    let doc = directory.path().join("export.tmd");
+    let target = directory.path().join("shared.html");
+    let output = directory.path().join("linked.html");
+    run(vec![text("new"), argument(&doc)], None);
+    fs::write(&target, "old HTML").expect("HTML target");
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o644))
+        .expect("shared target permissions");
+    symlink(&target, &output).expect("HTML output symlink");
+
+    run(
+        vec![
+            text("export-html"),
+            argument(&doc),
+            argument(&output),
+            text("--self-contained"),
+        ],
+        None,
+    );
+
+    assert!(fs::symlink_metadata(&output)
+        .expect("preserved output symlink")
+        .file_type()
+        .is_symlink());
+    assert!(fs::read_to_string(&target)
+        .expect("exported target")
+        .contains("<!DOCTYPE html>"));
+    assert_eq!(
+        fs::metadata(&target)
+            .expect("target metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o644
+    );
+}
+
 #[test]
 fn update_reports_persisted_attachment_metadata() {
     let directory = tempdir().expect("temporary directory");

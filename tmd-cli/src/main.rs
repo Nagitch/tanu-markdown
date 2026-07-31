@@ -568,31 +568,20 @@ fn cmd_export_html(input: &Path, output: &Path, self_contained: bool) -> Result<
         body = body_html,
         attachments = attachment_section,
     );
-    let parent = output
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    let mut staged_html = tempfile::Builder::new()
-        .prefix(".tmd-html-")
-        .tempfile_in(parent)
-        .with_context(|| format!("failed to stage HTML output in `{}`", parent.display()))?;
-    staged_html
-        .write_all(output_html.as_bytes())
-        .with_context(|| format!("failed to stage HTML output for `{}`", output.display()))?;
     let published_assets = attachment_export.publish()?;
-    if let Err(error) = staged_html.persist(output) {
+    if let Err(error) = fs::write(output, output_html) {
         if let Some(directory) = published_assets {
             if let Err(cleanup_error) = fs::remove_dir_all(&directory) {
                 return Err(anyhow!(
                     "failed to write `{}`: {}; additionally failed to remove staged assets `{}`: {}",
                     output.display(),
-                    error.error,
+                    error,
                     directory.display(),
                     cleanup_error
                 ));
             }
         }
-        return Err(error.error).with_context(|| format!("failed to write `{}`", output.display()));
+        return Err(error).with_context(|| format!("failed to write `{}`", output.display()));
     }
     println!(
         "Exported `{}` to HTML at `{}`",
