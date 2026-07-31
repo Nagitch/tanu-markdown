@@ -67,6 +67,48 @@ test("save response replaces state when no newer edit exists", () => {
   });
 });
 
+test("validation results are discarded after a newer edit", () => {
+  const model = new TanuMarkdownModel(inspection("initial", "Initial", 0));
+  const validatedRevision = model.contentRevision;
+  const staleReport = {
+    valid: false,
+    issues: [
+      {
+        severity: "error" as const,
+        code: "stale",
+        message: "stale validation result",
+      },
+    ],
+    attachment_references: [],
+    database_user_version: 0,
+  };
+
+  model.applyState({ markdown: "newer edit", title: "Newer title" });
+
+  assert.equal(model.applyValidation(staleReport, validatedRevision), false);
+  assert.equal(model.inspection.validation.valid, true);
+  assert.deepEqual(model.inspection.validation.issues, []);
+});
+
+test("validation results apply to the revision they checked", () => {
+  const model = new TanuMarkdownModel(inspection("initial", "Initial", 0));
+  const report = {
+    valid: false,
+    issues: [
+      {
+        severity: "error" as const,
+        code: "current",
+        message: "current validation result",
+      },
+    ],
+    attachment_references: [],
+    database_user_version: 0,
+  };
+
+  assert.equal(model.applyValidation(report, model.contentRevision), true);
+  assert.equal(model.inspection.validation, report);
+});
+
 test("Save As retries until the destination contains the latest edit", async () => {
   const model = new TanuMarkdownModel(inspection("first", "First", 0));
   const persistedStates: Array<{ markdown: string; title: string }> = [];

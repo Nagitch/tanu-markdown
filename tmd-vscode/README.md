@@ -16,7 +16,8 @@ arrays directly to the installed CLI without invoking a shell.
 Commands retain the document that originated the action across dialogs and
 asynchronous saves. Saves, reads, exports, and attachment mutations are
 serialized per document so concurrent CLI read-modify-write operations cannot
-overwrite each other.
+overwrite each other. Validation results are applied only when the checked
+editor revision is still current.
 
 ## Requirements
 

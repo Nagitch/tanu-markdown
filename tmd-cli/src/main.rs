@@ -282,25 +282,20 @@ fn cmd_validate(input: &Path, json_output: bool) -> Result<()> {
         Ok(result) => result,
         Err(error) => {
             if json_output {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&json!({
-                        "schema_version": JSON_SCHEMA_VERSION,
-                        "valid": false,
-                        "issues": [{
-                            "severity": "error",
-                            "code": "container_read_failed",
-                            "message": format!("{error:#}"),
-                        }],
-                        "attachment_references": [],
-                        "database_user_version": null,
-                    }))?
-                );
+                print_validation_error("container_read_failed", &error)?;
             }
             return Err(error);
         }
     };
-    let report = validate_document(&doc).context("failed to validate document")?;
+    let report = match validate_document(&doc).context("failed to validate document") {
+        Ok(report) => report,
+        Err(error) => {
+            if json_output {
+                print_validation_error("validation_failed", &error)?;
+            }
+            return Err(error);
+        }
+    };
 
     if json_output {
         let mut value = serde_json::to_value(&report)?;
@@ -333,6 +328,24 @@ fn cmd_validate(input: &Path, json_output: bool) -> Result<()> {
     }
 
     ensure!(report.valid, "document validation failed");
+    Ok(())
+}
+
+fn print_validation_error(code: &str, error: &anyhow::Error) -> Result<()> {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({
+            "schema_version": JSON_SCHEMA_VERSION,
+            "valid": false,
+            "issues": [{
+                "severity": "error",
+                "code": code,
+                "message": format!("{error:#}"),
+            }],
+            "attachment_references": [],
+            "database_user_version": null,
+        }))?
+    );
     Ok(())
 }
 

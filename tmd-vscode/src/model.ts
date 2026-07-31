@@ -1,4 +1,4 @@
-import type { DocumentInspection } from "./types.js";
+import type { DocumentInspection, ValidationReport } from "./types.js";
 
 export interface EditorState {
   markdown: string;
@@ -47,6 +47,14 @@ export class TanuMarkdownModel {
     const currentState = this.snapshot();
     this.inspectionValue = inspection;
     this.setState(currentState);
+  }
+
+  applyValidation(report: ValidationReport, validatedRevision: number): boolean {
+    if (this.contentRevisionValue !== validatedRevision) {
+      return false;
+    }
+    this.inspectionValue.validation = report;
+    return true;
   }
 
   private setState(state: EditorState): void {

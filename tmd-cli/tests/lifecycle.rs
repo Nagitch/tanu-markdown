@@ -6,6 +6,7 @@ use std::process::{Command, Output, Stdio};
 
 use serde_json::{json, Value};
 use tempfile::tempdir;
+use tmd_core::{write_to_path, Format, TmdDoc};
 
 fn argument(path: &Path) -> OsString {
     path.as_os_str().to_owned()
@@ -388,6 +389,27 @@ fn machine_interfaces_reject_unsafe_inputs() {
     let report = parse_json(&validation);
     assert_eq!(report["valid"], false);
     assert_eq!(report["issues"][0]["code"], "container_read_failed");
+
+    let corrupt_database_doc = directory.path().join("corrupt-database.tmd");
+    let corrupt_document = TmdDoc::new("# Corrupt database\n".to_owned()).expect("document model");
+    let mut corrupt_database = vec![0; 512];
+    corrupt_database[..16].copy_from_slice(b"SQLite format 3\0");
+    fs::write(corrupt_document.db.as_path(), corrupt_database).expect("corrupt embedded database");
+    write_to_path(&corrupt_database_doc, &corrupt_document, Format::Tmd)
+        .expect("corrupt database container");
+    let database_validation = run_raw(
+        vec![
+            text("validate"),
+            argument(&corrupt_database_doc),
+            text("--json"),
+        ],
+        None,
+    );
+    assert!(!database_validation.status.success());
+    let database_report = parse_json(&database_validation);
+    assert_eq!(database_report["valid"], false);
+    assert_eq!(database_report["issues"][0]["code"], "validation_failed");
+    assert_eq!(database_report["database_user_version"], Value::Null);
 
     let safe_html_doc = directory.path().join("safe-html.tmd");
     let safe_html_output = directory.path().join("safe.html");

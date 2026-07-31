@@ -22,7 +22,9 @@ tmd convert notes.tmd notes.tmdp
 
 Validation checks container structure and hashes while loading, then reports
 TMD version support, `attach:` references, cover-image identity, and embedded
-database schema consistency. Add `--json` for machine-readable output.
+database schema consistency. Add `--json` for machine-readable output. JSON
+mode still emits a structured invalid report when container reading or
+validation execution fails, even though the command exits nonzero.
 
 ### Schema-versioned updates
 

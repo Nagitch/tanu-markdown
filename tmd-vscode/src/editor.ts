@@ -54,6 +54,10 @@ export class TanuMarkdownDocument implements vscode.CustomDocument {
     this.model.applyPersistedInspection(inspection, persistedRevision);
   }
 
+  applyValidation(report: ValidationReport, validatedRevision: number): boolean {
+    return this.model.applyValidation(report, validatedRevision);
+  }
+
   dispose(): void {
     this.disposeEmitter.fire();
     this.disposeEmitter.dispose();
@@ -175,8 +179,13 @@ export class TanuMarkdownEditorProvider
 
   async validateDocument(document: TanuMarkdownDocument): Promise<ValidationReport> {
     return this.documentOperations.run(document, async () => {
+      const validatedRevision = document.contentRevision;
       const report = await this.clientFactory().validate(filePath(document.uri));
-      document.inspection.validation = report;
+      if (!document.applyValidation(report, validatedRevision)) {
+        throw new Error(
+          "The document changed while validation was running; save and validate again.",
+        );
+      }
       await this.postModel(document);
       return report;
     });
