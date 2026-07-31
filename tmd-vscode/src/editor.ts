@@ -59,9 +59,7 @@ export class TanuMarkdownDocument implements vscode.CustomDocument {
   }
 
   get expectedDiskState(): string {
-    return this.diskBytesValue
-      ? createHash("sha256").update(this.diskBytesValue).digest("hex")
-      : "missing";
+    return diskState(this.diskBytesValue);
   }
 
   snapshot(): EditorState {
@@ -119,11 +117,9 @@ export class TanuMarkdownEditorProvider
     openContext: vscode.CustomDocumentOpenContext,
   ): Promise<TanuMarkdownDocument> {
     const source = openContext.backupId ? vscode.Uri.parse(openContext.backupId) : uri;
-    const persistedBytes = await vscode.workspace.fs.readFile(source);
-    const inspection = await inspectRetainedBytes(
+    const { inspection, persistedBytes } = await readAndInspectDocument(
       this.clientFactory(),
       source,
-      persistedBytes,
     );
     const diskBytes = openContext.backupId
       ? await readOptionalFile(uri)
@@ -171,10 +167,12 @@ export class TanuMarkdownEditorProvider
         title: state.title,
       };
       const client = this.clientFactory();
-      const inspection = await this.saveRetainedState(document, client, update);
-      document.replacePersistedBytes(
-        await vscode.workspace.fs.readFile(document.uri),
+      await this.saveRetainedState(document, client, update);
+      const { inspection, persistedBytes } = await readAndInspectDocument(
+        client,
+        document.uri,
       );
+      document.replacePersistedBytes(persistedBytes);
       document.applyPersistedInspection(inspection, savedRevision);
       await this.postModel(document);
     });
@@ -192,6 +190,7 @@ export class TanuMarkdownEditorProvider
       }
       const sourceExtension = document.inspection.format === "tmdp" ? ".tmdp" : ".tmd";
       let destinationPublished = false;
+      let expectedDestinationState: string | undefined;
       for (;;) {
         const stagingDirectory = await fs.mkdtemp(
           path.join(path.dirname(destination.fsPath), ".tmd-save-"),
@@ -219,8 +218,14 @@ export class TanuMarkdownEditorProvider
             destinationPublished ? Number.MAX_SAFE_INTEGER : 3,
           );
           stagedRevision = document.contentRevision;
-          await client.convert(stagedPath, filePath(destination));
+          const publishedState = diskState(await fs.readFile(stagedPath));
+          await client.convert(
+            stagedPath,
+            filePath(destination),
+            expectedDestinationState,
+          );
           destinationPublished = true;
+          expectedDestinationState = publishedState;
         } finally {
           await fs.rm(stagingDirectory, { force: true, recursive: true });
         }
@@ -234,10 +239,10 @@ export class TanuMarkdownEditorProvider
   async revertCustomDocument(document: TanuMarkdownDocument): Promise<void> {
     await this.documentOperations.run(document, async () => {
       const revertedRevision = document.contentRevision;
-      const [inspection, persistedBytes] = await Promise.all([
-        this.clientFactory().inspect(filePath(document.uri)),
-        vscode.workspace.fs.readFile(document.uri),
-      ]);
+      const { inspection, persistedBytes } = await readAndInspectDocument(
+        this.clientFactory(),
+        document.uri,
+      );
       document.replacePersistedBytes(persistedBytes);
       if (!document.replaceInspectionIfCurrent(inspection, revertedRevision)) {
         throw new Error(
@@ -363,10 +368,10 @@ export class TanuMarkdownEditorProvider
     document: TanuMarkdownDocument,
     persistedRevision: number,
   ): Promise<void> {
-    const [inspection, persistedBytes] = await Promise.all([
-      this.clientFactory().inspect(filePath(document.uri)),
-      vscode.workspace.fs.readFile(document.uri),
-    ]);
+    const { inspection, persistedBytes } = await readAndInspectDocument(
+      this.clientFactory(),
+      document.uri,
+    );
     document.replacePersistedBytes(persistedBytes);
     document.applyPersistedInspection(inspection, persistedRevision);
     // Attachment operations have already persisted the container. Emitting a
@@ -378,7 +383,7 @@ export class TanuMarkdownEditorProvider
     document: TanuMarkdownDocument,
     client: TmdCliClient,
     update: DocumentUpdate,
-  ): Promise<DocumentInspection> {
+  ): Promise<void> {
     const sourceExtension = document.inspection.format === "tmdp" ? ".tmdp" : ".tmd";
     const stagingPath = path.join(
       path.dirname(document.uri.fsPath),
@@ -388,13 +393,12 @@ export class TanuMarkdownEditorProvider
     try {
       await fs.writeFile(stagingPath, document.persistedBytes, { flag: "wx" });
       stagingCreated = true;
-      const inspection = await client.update(stagingPath, update);
+      await client.update(stagingPath, update);
       await client.convert(
         stagingPath,
         filePath(document.uri),
         document.expectedDiskState,
       );
-      return inspection;
     } finally {
       if (stagingCreated) {
         await fs.rm(stagingPath, { force: true });
@@ -568,6 +572,21 @@ async function inspectRetainedBytes(
   } finally {
     await fs.rm(directory, { force: true, recursive: true });
   }
+}
+
+async function readAndInspectDocument(
+  client: TmdCliClient,
+  source: vscode.Uri,
+): Promise<{ inspection: DocumentInspection; persistedBytes: Uint8Array }> {
+  const persistedBytes = await vscode.workspace.fs.readFile(source);
+  const inspection = await inspectRetainedBytes(client, source, persistedBytes);
+  return { inspection, persistedBytes };
+}
+
+function diskState(bytes: Uint8Array | undefined): string {
+  return bytes
+    ? createHash("sha256").update(bytes).digest("hex")
+    : "missing";
 }
 
 function requirePersistedRevision(

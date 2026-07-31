@@ -217,6 +217,11 @@ fn conditional_convert_rejects_stale_and_created_outputs() {
     );
 
     let original = fs::read(&output).expect("original output");
+    assert_eq!(
+        fs::read(&first).expect("source document"),
+        original,
+        "same-format conversion must produce the bytes whose digest is published"
+    );
     let original_sha256 = hex::encode(Sha256::digest(&original));
     run(
         vec![

@@ -537,9 +537,15 @@ fn write_new_file(
                 output.display()
             )
         })?;
+    let created_handle = Handle::from_file(
+        destination
+            .try_clone()
+            .with_context(|| format!("failed to retain identity for `{}`", output.display()))?,
+    )
+    .with_context(|| format!("failed to identify new output `{}`", output.display()))?;
     if let Err(error) = write(&mut destination) {
         drop(destination);
-        if let Err(cleanup_error) = fs::remove_file(output) {
+        if let Err(cleanup_error) = remove_created_file_if_current(output, &created_handle) {
             return Err(anyhow!(
                 "failed to write `{}`: {}; additionally failed to remove incomplete output: {}",
                 output.display(),
@@ -550,6 +556,21 @@ fn write_new_file(
         return Err(error).with_context(|| format!("failed to write `{}`", output.display()));
     }
     Ok(())
+}
+
+fn remove_created_file_if_current(output: &Path, created_handle: &Handle) -> Result<()> {
+    match Handle::from_path(output) {
+        Ok(current_handle) if &current_handle == created_handle => fs::remove_file(output)
+            .with_context(|| format!("failed to remove incomplete output `{}`", output.display())),
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| {
+            format!(
+                "failed to identify incomplete output `{}`",
+                output.display()
+            )
+        }),
+    }
 }
 
 fn cmd_export_html(input: &Path, output: &Path, self_contained: bool) -> Result<()> {
@@ -1513,5 +1534,28 @@ mod tests {
 
         assert!(error.to_string().contains("failed to write"));
         assert!(!output.exists(), "partial output must be removed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn new_file_write_failures_preserve_replacement_output() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let output = directory.path().join("partial.bin");
+        let displaced = directory.path().join("displaced.bin");
+
+        let error = write_new_file(&output, |destination| {
+            destination.write_all(b"partial")?;
+            fs::rename(&output, &displaced)?;
+            fs::write(&output, b"external replacement")?;
+            Err(io::Error::other("injected write failure"))
+        })
+        .expect_err("injected write failure must be reported");
+
+        assert!(error.to_string().contains("failed to write"));
+        assert_eq!(
+            fs::read(&output).expect("replacement output"),
+            b"external replacement"
+        );
+        assert_eq!(fs::read(&displaced).expect("partial output"), b"partial");
     }
 }
