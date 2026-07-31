@@ -202,6 +202,7 @@ export class TanuMarkdownEditorProvider
     logicalPath: string,
   ): Promise<void> {
     await this.documentOperations.run(document, async () => {
+      requirePersistedRevision(document, "add the attachment");
       const persistedRevision = document.contentRevision;
       await this.clientFactory().addAttachment(
         filePath(document.uri),
@@ -217,6 +218,7 @@ export class TanuMarkdownEditorProvider
     logicalPath: string,
   ): Promise<void> {
     await this.documentOperations.run(document, async () => {
+      requirePersistedRevision(document, "remove the attachment");
       const persistedRevision = document.contentRevision;
       await this.clientFactory().removeAttachment(filePath(document.uri), logicalPath);
       await this.reloadAfterExternalChange(document, persistedRevision);

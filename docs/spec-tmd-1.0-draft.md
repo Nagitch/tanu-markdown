@@ -69,7 +69,8 @@ Current writers use stored entries.
 to declared attachment metadata. `db_schema_version`, when present, MUST equal
 SQLite `PRAGMA user_version`. Readers implementing this draft MUST reject or
 report unsupported `tmd_version.major` values; this implementation supports
-major version 1.
+major version 1. This implementation refuses to rewrite documents with an
+unsupported major version because unknown manifest fields cannot be preserved.
 
 `extras` is reserved for application data that can be represented by any JSON
 value. Unknown top-level manifest fields are not currently preserved.

@@ -18,8 +18,8 @@ asynchronous saves. Saves, reads, exports, and attachment mutations are
 serialized per document so concurrent CLI read-modify-write operations cannot
 overwrite each other. Validation results are applied only when the checked
 editor revision is still current and known to have reached disk. Validation,
-HTML export, and format conversion reject an editor revision that a racing save
-has not persisted.
+attachment mutation, HTML export, and format conversion reject an editor
+revision that a racing save has not persisted.
 
 ## Requirements
 

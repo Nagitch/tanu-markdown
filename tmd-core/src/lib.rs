@@ -1148,6 +1148,12 @@ mod format {
     }
 
     fn build_zip(doc: &TmdDoc, mode: WriteMode) -> TmdResult<Vec<u8>> {
+        if doc.manifest.tmd_version.major != 1 {
+            return Err(TmdError::InvalidFormat(format!(
+                "refusing to write unsupported TMD major version {}",
+                doc.manifest.tmd_version.major
+            )));
+        }
         let cursor = std::io::Cursor::new(Vec::new());
         let mut writer = ZipWriter::new(cursor);
         let stored = SimpleFileOptions::default()
@@ -1885,6 +1891,24 @@ mod tests {
         let rebuilt = reader.read_doc().expect("read");
         assert_eq!(rebuilt.markdown, doc.markdown);
         assert_eq!(rebuilt.manifest.title, doc.manifest.title);
+    }
+
+    #[test]
+    fn writer_rejects_unsupported_major_version() {
+        let mut doc = sample_doc();
+        doc.manifest.tmd_version.major = 2;
+        let mut buffer = Cursor::new(Vec::new());
+
+        let error = write_tmd(&mut buffer, &doc, WriteMode::default())
+            .expect_err("future major version must not be rewritten");
+
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported TMD major version 2"),
+            "unexpected error: {error}"
+        );
+        assert!(buffer.into_inner().is_empty());
     }
 
     #[test]
