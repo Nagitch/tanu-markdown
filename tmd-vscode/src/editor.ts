@@ -10,6 +10,7 @@ import {
   TanuMarkdownModel,
   type EditorState,
 } from "./model.js";
+import { SerialTaskQueue } from "./queue.js";
 import type { DocumentInspection, DocumentUpdate, ValidationReport } from "./types.js";
 
 export const VIEW_TYPE = "tanuMarkdown.editor";
@@ -66,6 +67,7 @@ export class TanuMarkdownEditorProvider
     new vscode.EventEmitter<vscode.CustomDocumentEditEvent<TanuMarkdownDocument>>();
   readonly onDidChangeCustomDocument = this.changeEmitter.event;
   private readonly panels = new Map<TanuMarkdownDocument, Set<vscode.WebviewPanel>>();
+  private readonly attachmentMutations = new SerialTaskQueue<TanuMarkdownDocument>();
   private activeDocumentValue: TanuMarkdownDocument | undefined;
 
   constructor(private readonly clientFactory: () => TmdCliClient) {}
@@ -165,34 +167,45 @@ export class TanuMarkdownEditorProvider
     };
   }
 
-  async validateActive(): Promise<ValidationReport> {
-    const document = this.requireActiveDocument();
+  async validateDocument(document: TanuMarkdownDocument): Promise<ValidationReport> {
     const report = await this.clientFactory().validate(filePath(document.uri));
     document.inspection.validation = report;
     await this.postModel(document);
     return report;
   }
 
-  async addAttachmentActive(source: vscode.Uri, logicalPath: string): Promise<void> {
-    const document = this.requireActiveDocument();
-    const persistedRevision = document.contentRevision;
-    await this.clientFactory().addAttachment(
-      filePath(document.uri),
-      filePath(source),
-      logicalPath,
-    );
-    await this.reloadAfterExternalChange(document, persistedRevision);
+  async addAttachment(
+    document: TanuMarkdownDocument,
+    source: vscode.Uri,
+    logicalPath: string,
+  ): Promise<void> {
+    await this.attachmentMutations.run(document, async () => {
+      const persistedRevision = document.contentRevision;
+      await this.clientFactory().addAttachment(
+        filePath(document.uri),
+        filePath(source),
+        logicalPath,
+      );
+      await this.reloadAfterExternalChange(document, persistedRevision);
+    });
   }
 
-  async removeAttachmentActive(logicalPath: string): Promise<void> {
-    const document = this.requireActiveDocument();
-    const persistedRevision = document.contentRevision;
-    await this.clientFactory().removeAttachment(filePath(document.uri), logicalPath);
-    await this.reloadAfterExternalChange(document, persistedRevision);
+  async removeAttachment(
+    document: TanuMarkdownDocument,
+    logicalPath: string,
+  ): Promise<void> {
+    await this.attachmentMutations.run(document, async () => {
+      const persistedRevision = document.contentRevision;
+      await this.clientFactory().removeAttachment(filePath(document.uri), logicalPath);
+      await this.reloadAfterExternalChange(document, persistedRevision);
+    });
   }
 
-  async exportActive(output: vscode.Uri, selfContained: boolean): Promise<void> {
-    const document = this.requireActiveDocument();
+  async exportDocument(
+    document: TanuMarkdownDocument,
+    output: vscode.Uri,
+    selfContained: boolean,
+  ): Promise<void> {
     await this.clientFactory().exportHtml(
       filePath(document.uri),
       filePath(output),
@@ -200,16 +213,11 @@ export class TanuMarkdownEditorProvider
     );
   }
 
-  async convertActive(output: vscode.Uri): Promise<void> {
-    const document = this.requireActiveDocument();
+  async convertDocument(
+    document: TanuMarkdownDocument,
+    output: vscode.Uri,
+  ): Promise<void> {
     await this.clientFactory().convert(filePath(document.uri), filePath(output));
-  }
-
-  private requireActiveDocument(): TanuMarkdownDocument {
-    if (!this.activeDocumentValue) {
-      throw new Error("Open a .tmd or .tmdp document in the Tanu Markdown editor first.");
-    }
-    return this.activeDocumentValue;
   }
 
   private async reloadAfterExternalChange(
@@ -276,19 +284,22 @@ export class TanuMarkdownEditorProvider
         break;
       }
       case "validate":
-        await vscode.commands.executeCommand("tmd.validate");
+        await vscode.commands.executeCommand("tmd.validate", document);
         break;
       case "addAttachment":
-        await vscode.commands.executeCommand("tmd.addAttachment");
+        await vscode.commands.executeCommand("tmd.addAttachment", document);
         break;
       case "removeAttachment":
         if (typeof message.logicalPath === "string") {
-          await vscode.commands.executeCommand("workbench.action.files.save");
-          await this.removeAttachmentActive(message.logicalPath);
+          await vscode.commands.executeCommand(
+            "tmd.removeAttachment",
+            document,
+            message.logicalPath,
+          );
         }
         break;
       case "exportHtml":
-        await vscode.commands.executeCommand("tmd.exportHtml");
+        await vscode.commands.executeCommand("tmd.exportHtml", document);
         break;
     }
   }
