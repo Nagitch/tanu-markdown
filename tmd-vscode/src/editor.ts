@@ -487,10 +487,20 @@ export class TanuMarkdownEditorProvider
             document,
             label: "Edit Tanu Markdown",
             undo: async () => {
+              if (this.editLocks.has(document)) {
+                throw new Error(
+                  "Cannot undo while an attachment operation is in progress.",
+                );
+              }
               document.applyState(before);
               await this.postModel(document);
             },
             redo: async () => {
+              if (this.editLocks.has(document)) {
+                throw new Error(
+                  "Cannot redo while an attachment operation is in progress.",
+                );
+              }
               document.applyState(after);
               await this.postModel(document);
             },
