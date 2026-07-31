@@ -656,7 +656,7 @@ fn cmd_db_query(doc_path: &Path, sql: &str, json_output: bool) -> Result<()> {
             "| {} |",
             columns
                 .iter()
-                .map(|entry| entry.as_str().unwrap_or_default())
+                .map(|entry| escape_table_cell(entry.as_str().unwrap_or_default()))
                 .collect::<Vec<_>>()
                 .join(" | ")
         );
@@ -670,7 +670,7 @@ fn cmd_db_query(doc_path: &Path, sql: &str, json_output: bool) -> Result<()> {
                 row.as_array()
                     .expect("query row is an array")
                     .iter()
-                    .map(display_json_value)
+                    .map(display_table_value)
                     .collect::<Vec<_>>()
                     .join(" | ")
             );
@@ -1136,6 +1136,18 @@ fn display_json_value(value: &JsonValue) -> String {
             .unwrap_or_else(|| JsonValue::Object(value.clone()).to_string()),
         other => other.to_string(),
     }
+}
+
+fn display_table_value(value: &JsonValue) -> String {
+    escape_table_cell(&display_json_value(value))
+}
+
+fn escape_table_cell(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('|', "\\|")
+        .replace('\r', "\\r")
+        .replace('\n', "\\n")
 }
 
 fn format_display(format: Format) -> &'static str {

@@ -9,6 +9,7 @@ import {
 
 interface InputControl {
   value: string;
+  disabled: boolean;
   addEventListener(type: "input", listener: () => void): void;
 }
 
@@ -20,6 +21,7 @@ function inputControl(value: string): {
   return {
     control: {
       value,
+      disabled: false,
       addEventListener(type, listener) {
         assert.equal(type, "input");
         inputListener = listener;
@@ -38,20 +40,29 @@ test("editor sends state immediately and debounces only preview rendering", () =
   const messages: unknown[] = [];
   const timers: Array<{ callback: () => void; delay: number }> = [];
 
-  runInNewContext(editInputScript(), {
-    clearTimeout() {},
-    markdown: markdown.control,
-    setTimeout(callback: () => void, delay: number) {
-      timers.push({ callback, delay });
-      return timers.length;
-    },
-    title: title.control,
-    vscode: {
-      postMessage(message: unknown) {
-        messages.push(JSON.parse(JSON.stringify(message)));
+  runInNewContext(
+    `${editInputScript()}
+     ${authoritativeStateScript()}
+     applyAuthoritativeState(initialModel);`,
+    {
+      clearTimeout() {},
+      initialModel: { title: "Title", markdown: "First" },
+      markdown: markdown.control,
+      setTimeout(callback: () => void, delay: number) {
+        timers.push({ callback, delay });
+        return timers.length;
+      },
+      title: title.control,
+      vscode: {
+        postMessage(message: unknown) {
+          messages.push(JSON.parse(JSON.stringify(message)));
+        },
       },
     },
-  });
+  );
+
+  assert.equal(title.control.disabled, false);
+  assert.equal(markdown.control.disabled, false);
 
   title.control.value = "Updated";
   title.input();
@@ -77,12 +88,42 @@ test("editor sends state immediately and debounces only preview rendering", () =
   });
 });
 
+test("editor ignores input until the initial model is applied", () => {
+  const title = inputControl("");
+  const markdown = inputControl("");
+  const messages: unknown[] = [];
+  const context = {
+    clearTimeout() {},
+    markdown: markdown.control,
+    setTimeout() {
+      throw new Error("preview must not be queued before initialization");
+    },
+    title: title.control,
+    vscode: {
+      postMessage(message: unknown) {
+        messages.push(message);
+      },
+    },
+  };
+
+  runInNewContext(editInputScript(), context);
+  assert.equal(title.control.disabled, true);
+  assert.equal(markdown.control.disabled, true);
+
+  title.control.value = "premature title";
+  markdown.control.value = "premature markdown";
+  title.input();
+  markdown.input();
+  assert.deepEqual(messages, []);
+});
+
 test("authoritative model state replaces focused control values", () => {
-  const title = { value: "stale title" };
-  const markdown = { value: "stale markdown" };
+  const title = { value: "stale title", disabled: true };
+  const markdown = { value: "stale markdown", disabled: true };
 
   runInNewContext(
-    `${authoritativeStateScript()}
+    `let editorInitialized = false;
+     ${authoritativeStateScript()}
      applyAuthoritativeState(model);`,
     {
       markdown,
@@ -96,4 +137,6 @@ test("authoritative model state replaces focused control values", () => {
 
   assert.equal(title.value, "restored title");
   assert.equal(markdown.value, "restored markdown");
+  assert.equal(title.disabled, false);
+  assert.equal(markdown.disabled, false);
 });

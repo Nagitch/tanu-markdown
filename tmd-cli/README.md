@@ -87,7 +87,8 @@ tmd db query notes.tmd --sql "SELECT * FROM notes" --json
 `db query` accepts exactly one read-only SQLite statement. Mutations use
 `db exec`. JSON output represents non-finite SQLite `REAL` values as
 `{"real":"Infinity"}`, `{"real":"-Infinity"}`, or `{"real":"NaN"}` so they
-remain distinct from SQL `NULL`.
+remain distinct from SQL `NULL`. Human-readable table output escapes backslashes,
+column delimiters, and line breaks as `\\`, `\|`, `\r`, and `\n`.
 
 Migrate and update both `PRAGMA user_version` and the manifest:
 

@@ -445,8 +445,8 @@ function editorHtml(_webview: vscode.Webview): string {
   </nav>
   <main class="layout">
     <section class="pane">
-      <div class="field"><label for="title">Title</label><input id="title" type="text"></div>
-      <div class="field"><label for="markdown">Markdown</label><textarea id="markdown" spellcheck="true"></textarea></div>
+      <div class="field"><label for="title">Title</label><input id="title" type="text" disabled></div>
+      <div class="field"><label for="markdown">Markdown</label><textarea id="markdown" spellcheck="true" disabled></textarea></div>
       <div class="summary">
         <div class="card"><strong>Format</strong><div id="format">—</div></div>
         <div class="card"><strong>Database version</strong><div id="database-version">—</div></div>

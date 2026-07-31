@@ -87,6 +87,31 @@ fn query_preserves_non_finite_real_values() {
     assert!(table.contains("| Infinity | -Infinity |"));
 }
 
+#[test]
+fn query_table_output_preserves_cell_boundaries() {
+    let directory = tempdir().expect("temporary directory");
+    let doc = directory.path().join("table-output.tmd");
+    run(vec![text("new"), argument(&doc)], None);
+
+    let table_output = run(
+        vec![
+            text("db"),
+            text("query"),
+            argument(&doc),
+            text("--sql"),
+            text(
+                "SELECT 'left|right' AS \"pipe|column\", \
+                 'line1' || char(10) || 'line2' AS lines",
+            ),
+        ],
+        None,
+    );
+    let table = String::from_utf8(table_output.stdout).expect("UTF-8 table output");
+    assert!(table.contains("| pipe\\|column | lines |"));
+    assert!(table.contains("| left\\|right | line1\\nline2 |"));
+    assert_eq!(table.lines().count(), 3);
+}
+
 fn only_file_in(directory: &Path) -> PathBuf {
     let mut entries = fs::read_dir(directory)
         .expect("read asset directory")
