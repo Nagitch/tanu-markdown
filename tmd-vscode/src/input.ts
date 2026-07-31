@@ -22,7 +22,12 @@ export function editInputScript(): string {
       if (!editorInitialized) return;
       clearTimeout(previewTimer);
       previewTimer = setTimeout(
-        () => vscode.postMessage({ type: "preview", markdown: markdown.value }),
+        () =>
+          vscode.postMessage({
+            type: "preview",
+            clientRevision,
+            markdown: markdown.value,
+          }),
         ${PREVIEW_DEBOUNCE_MS},
       );
     };
@@ -48,6 +53,17 @@ export function authoritativeStateScript(): string {
         acknowledgedContentRevision,
         ack.contentRevision,
       );
+      return true;
+    };
+    const applyPreview = (message) => {
+      if (
+        !Number.isSafeInteger(message.clientRevision) ||
+        !Number.isSafeInteger(message.contentRevision) ||
+        typeof message.previewHtml !== "string" ||
+        message.clientRevision !== clientRevision ||
+        message.contentRevision < acknowledgedContentRevision
+      ) return false;
+      preview.innerHTML = message.previewHtml;
       return true;
     };
     const applyAuthoritativeState = (model) => {

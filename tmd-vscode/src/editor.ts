@@ -345,11 +345,20 @@ export class TanuMarkdownEditorProvider
         break;
       }
       case "preview": {
-        if (typeof message.markdown !== "string") {
+        if (
+          typeof message.markdown !== "string" ||
+          typeof message.clientRevision !== "number" ||
+          !Number.isSafeInteger(message.clientRevision) ||
+          message.clientRevision <= 0 ||
+          message.clientRevision !== this.panelClientRevisions.latest(panel) ||
+          message.markdown !== document.snapshot().markdown
+        ) {
           return;
         }
         await panel.webview.postMessage({
           type: "preview",
+          clientRevision: message.clientRevision,
+          contentRevision: document.contentRevision,
           previewHtml: renderSafeMarkdown(message.markdown),
         });
         break;
@@ -533,7 +542,7 @@ function editorHtml(_webview: vscode.Webview): string {
       const model = event.data;
       if (!model) return;
       if (model.type === "preview") {
-        preview.innerHTML = model.previewHtml;
+        applyPreview(model);
         return;
       }
       if (model.type === "validationState") {
@@ -545,8 +554,8 @@ function editorHtml(_webview: vscode.Webview): string {
         return;
       }
       if (model.type !== "model") return;
-      clearTimeout(previewTimer);
       if (!applyAuthoritativeState(model)) return;
+      clearTimeout(previewTimer);
       document.getElementById("format").textContent = model.inspection.format;
       document.getElementById("database-version").textContent = String(model.inspection.database_user_version);
       attachments.replaceChildren();

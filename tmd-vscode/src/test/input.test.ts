@@ -95,6 +95,7 @@ test("editor sends state immediately and debounces only preview rendering", () =
   timers[0]?.callback();
   assert.deepEqual(messages.at(-1), {
     type: "preview",
+    clientRevision: 2,
     markdown: "Second",
   });
 });
@@ -229,4 +230,44 @@ test("stale models cannot overwrite pending or acknowledged local edits", () => 
   ]);
   assert.equal(title.control.value, "current title");
   assert.equal(markdown.control.value, "current markdown");
+});
+
+test("stale preview responses cannot overwrite authoritative preview state", () => {
+  const preview = { innerHTML: "authoritative preview" };
+  const results: Record<string, unknown> = {};
+
+  runInNewContext(
+    `let clientRevision = 2;
+     let acknowledgedContentRevision = 4;
+     ${authoritativeStateScript()}
+     results.staleClient = applyPreview(staleClientPreview);
+     results.staleContent = applyPreview(staleContentPreview);
+     results.current = applyPreview(currentPreview);`,
+    {
+      currentPreview: {
+        clientRevision: 2,
+        contentRevision: 4,
+        previewHtml: "current preview",
+      },
+      preview,
+      results,
+      staleClientPreview: {
+        clientRevision: 1,
+        contentRevision: 4,
+        previewHtml: "stale client preview",
+      },
+      staleContentPreview: {
+        clientRevision: 2,
+        contentRevision: 3,
+        previewHtml: "stale content preview",
+      },
+    },
+  );
+
+  assert.deepEqual(results, {
+    staleClient: false,
+    staleContent: false,
+    current: true,
+  });
+  assert.equal(preview.innerHTML, "current preview");
 });
