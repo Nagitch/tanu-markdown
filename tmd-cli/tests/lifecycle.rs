@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use tempfile::tempdir;
 use tmd_core::{write_tmd, write_to_path, Format, TmdDoc, WriteMode};
 
@@ -183,6 +184,92 @@ fn db_exec_synchronizes_and_validates_user_version() {
     );
     assert!(!negative.status.success());
     assert_eq!(fs::read(&doc).expect("preserved document"), original);
+}
+
+#[test]
+fn conditional_convert_rejects_stale_and_created_outputs() {
+    let directory = tempdir().expect("temporary directory");
+    let first = directory.path().join("first.tmd");
+    let second = directory.path().join("second.tmd");
+    let output = directory.path().join("output.tmd");
+    let missing_output = directory.path().join("missing-output.tmd");
+    run(
+        vec![
+            text("new"),
+            argument(&first),
+            text("--title"),
+            text("First"),
+        ],
+        None,
+    );
+    run(
+        vec![
+            text("new"),
+            argument(&second),
+            text("--title"),
+            text("Second"),
+        ],
+        None,
+    );
+    run(
+        vec![text("convert"), argument(&first), argument(&output)],
+        None,
+    );
+
+    let original = fs::read(&output).expect("original output");
+    let original_sha256 = hex::encode(Sha256::digest(&original));
+    run(
+        vec![
+            text("convert"),
+            argument(&second),
+            argument(&output),
+            text("--expected-output-state"),
+            text(&original_sha256),
+        ],
+        None,
+    );
+    let replaced = fs::read(&output).expect("conditionally replaced output");
+    assert_ne!(replaced, original);
+
+    let stale = run_raw(
+        vec![
+            text("convert"),
+            argument(&first),
+            argument(&output),
+            text("--expected-output-state"),
+            text(&original_sha256),
+        ],
+        None,
+    );
+    assert!(!stale.status.success());
+    assert_eq!(fs::read(&output).expect("preserved output"), replaced);
+
+    run(
+        vec![
+            text("convert"),
+            argument(&first),
+            argument(&missing_output),
+            text("--expected-output-state"),
+            text("missing"),
+        ],
+        None,
+    );
+    let created = fs::read(&missing_output).expect("conditionally created output");
+    let created_conflict = run_raw(
+        vec![
+            text("convert"),
+            argument(&second),
+            argument(&missing_output),
+            text("--expected-output-state"),
+            text("missing"),
+        ],
+        None,
+    );
+    assert!(!created_conflict.status.success());
+    assert_eq!(
+        fs::read(&missing_output).expect("preserved created output"),
+        created
+    );
 }
 
 #[test]

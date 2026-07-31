@@ -1,8 +1,8 @@
 //! Tanu Markdown command-line interface.
 
 use std::collections::HashMap;
-use std::fs;
-use std::io::{self, Read, Write};
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, ensure, Context, Result};
@@ -13,8 +13,10 @@ use html_escape::{encode_double_quoted_attribute, encode_text};
 use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
 use pulldown_cmark::{html, CowStr, Event, Options, Parser as MdParser, Tag, TagEnd};
 use rusqlite::types::Value as SqlValue;
+use same_file::Handle;
 use serde::Deserialize;
 use serde_json::{json, Value as JsonValue};
+use sha2::{Digest, Sha256};
 use tmd_core::{
     export_db, import_db, migrate, read_from_path, reset_db, validate_document, write_to_path,
     AttachmentMeta, Format, TmdDoc, ValidationSeverity, SQLITE_MAX_USER_VERSION,
@@ -63,7 +65,13 @@ enum Commands {
         title: Option<String>,
     },
     /// Convert between `.tmd` and `.tmdp` containers.
-    Convert { input: PathBuf, output: PathBuf },
+    Convert {
+        input: PathBuf,
+        output: PathBuf,
+        /// Publish only if the output is still `missing` or has this SHA-256 digest.
+        #[arg(long, value_parser = parse_expected_output_state)]
+        expected_output_state: Option<ExpectedOutputState>,
+    },
     /// Validate a document and its cross-component invariants.
     Validate {
         input: PathBuf,
@@ -195,11 +203,21 @@ struct DocumentUpdate {
     tags: Option<Vec<String>>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ExpectedOutputState {
+    Missing,
+    Sha256([u8; 32]),
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Commands::New { output, title } => cmd_new(&output, title.as_deref()),
-        Commands::Convert { input, output } => cmd_convert(&input, &output),
+        Commands::Convert {
+            input,
+            output,
+            expected_output_state,
+        } => cmd_convert(&input, &output, expected_output_state.as_ref()),
         Commands::Validate { input, json } => cmd_validate(&input, json),
         Commands::Inspect { input, json } => cmd_inspect(&input, json),
         Commands::Update { input, json_stdin } => cmd_update(&input, json_stdin),
@@ -255,7 +273,7 @@ fn cmd_new(path: &Path, title: Option<&str>) -> Result<()> {
     doc.manifest.title = Some(display_title.to_owned());
     doc.touch();
 
-    write_document(path, &doc, format)?;
+    write_document_if_expected(path, &doc, format, Some(&ExpectedOutputState::Missing))?;
     println!(
         "Created new {} document at {}",
         format_display(format),
@@ -264,12 +282,16 @@ fn cmd_new(path: &Path, title: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-fn cmd_convert(input: &Path, output: &Path) -> Result<()> {
+fn cmd_convert(
+    input: &Path,
+    output: &Path,
+    expected_output_state: Option<&ExpectedOutputState>,
+) -> Result<()> {
     ensure_distinct_existing_paths(input, output, "converted document")?;
     let (doc, _) = read_document(input)?;
     let format = detect_format(output)?;
     ensure_parent_directory(output)?;
-    write_document(output, &doc, format)?;
+    write_document_if_expected(output, &doc, format, expected_output_state)?;
     println!(
         "Converted `{}` into `{}`",
         input.display(),
@@ -876,8 +898,159 @@ fn read_document(path: &Path) -> Result<(TmdDoc, Format)> {
 }
 
 fn write_document(path: &Path, doc: &TmdDoc, format: Format) -> Result<()> {
-    write_to_path(path, doc, format)
-        .with_context(|| format!("failed to atomically write `{}`", path.display()))
+    write_document_if_expected(path, doc, format, None)
+}
+
+fn write_document_if_expected(
+    path: &Path,
+    doc: &TmdDoc,
+    format: Format,
+    expected: Option<&ExpectedOutputState>,
+) -> Result<()> {
+    let mut locked = lock_document_output(path, expected)?;
+    let write_result = (|| {
+        verify_expected_output(&mut locked, path, expected)?;
+        write_to_path(path, doc, format)
+            .with_context(|| format!("failed to atomically write `{}`", path.display()))
+    })();
+    let cleanup_result = if write_result.is_err() {
+        locked.remove_placeholder_if_current(path)
+    } else {
+        Ok(())
+    };
+    let unlock_result = locked
+        .file
+        .unlock()
+        .with_context(|| format!("failed to unlock `{}`", path.display()));
+    write_result?;
+    cleanup_result?;
+    unlock_result
+}
+
+struct LockedOutput {
+    file: File,
+    placeholder_created: bool,
+}
+
+impl LockedOutput {
+    fn remove_placeholder_if_current(&self, path: &Path) -> Result<()> {
+        if self.placeholder_created && locked_file_is_current(&self.file, path).unwrap_or(false) {
+            fs::remove_file(path).with_context(|| {
+                format!("failed to remove output placeholder `{}`", path.display())
+            })?;
+        }
+        Ok(())
+    }
+}
+
+fn lock_document_output(
+    path: &Path,
+    expected: Option<&ExpectedOutputState>,
+) -> Result<LockedOutput> {
+    const MAX_LOCK_ATTEMPTS: usize = 8;
+
+    for _ in 0..MAX_LOCK_ATTEMPTS {
+        let open_result = OpenOptions::new().read(true).write(true).open(path);
+        match open_result {
+            Ok(file) => {
+                if expected == Some(&ExpectedOutputState::Missing) {
+                    return Err(output_conflict(path));
+                }
+                file.lock()
+                    .with_context(|| format!("failed to lock `{}`", path.display()))?;
+                if locked_file_is_current(&file, path).unwrap_or(false) {
+                    return Ok(LockedOutput {
+                        file,
+                        placeholder_created: false,
+                    });
+                }
+                file.unlock()
+                    .with_context(|| format!("failed to unlock stale `{}`", path.display()))?;
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                if matches!(expected, Some(ExpectedOutputState::Sha256(_))) {
+                    return Err(output_conflict(path));
+                }
+                match OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create_new(true)
+                    .open(path)
+                {
+                    Ok(file) => {
+                        file.lock().with_context(|| {
+                            format!("failed to lock new output `{}`", path.display())
+                        })?;
+                        return Ok(LockedOutput {
+                            file,
+                            placeholder_created: true,
+                        });
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                    Err(error) => {
+                        return Err(error).with_context(|| {
+                            format!("failed to create output placeholder `{}`", path.display())
+                        });
+                    }
+                }
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("failed to open output `{}`", path.display()));
+            }
+        }
+    }
+    Err(anyhow!(
+        "output `{}` kept changing while it was being locked",
+        path.display()
+    ))
+}
+
+fn locked_file_is_current(file: &File, path: &Path) -> io::Result<bool> {
+    Ok(Handle::from_file(file.try_clone()?)? == Handle::from_path(path)?)
+}
+
+fn verify_expected_output(
+    locked: &mut LockedOutput,
+    path: &Path,
+    expected: Option<&ExpectedOutputState>,
+) -> Result<()> {
+    match expected {
+        None => Ok(()),
+        Some(ExpectedOutputState::Missing) if locked.placeholder_created => Ok(()),
+        Some(ExpectedOutputState::Missing) => Err(output_conflict(path)),
+        Some(ExpectedOutputState::Sha256(expected_digest)) if !locked.placeholder_created => {
+            let actual_digest = sha256_file(&mut locked.file)
+                .with_context(|| format!("failed to hash locked output `{}`", path.display()))?;
+            if &actual_digest == expected_digest {
+                Ok(())
+            } else {
+                Err(output_conflict(path))
+            }
+        }
+        Some(ExpectedOutputState::Sha256(_)) => Err(output_conflict(path)),
+    }
+}
+
+fn sha256_file(file: &mut File) -> io::Result<[u8; 32]> {
+    file.seek(SeekFrom::Start(0))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hasher.finalize().into())
+}
+
+fn output_conflict(path: &Path) -> anyhow::Error {
+    anyhow!(
+        "output `{}` changed after it was opened; refusing to overwrite external changes",
+        path.display()
+    )
 }
 
 fn detect_format(path: &Path) -> Result<Format> {
@@ -906,6 +1079,21 @@ fn parse_sqlite_user_version(value: &str) -> std::result::Result<u32, String> {
         ));
     }
     Ok(version)
+}
+
+fn parse_expected_output_state(value: &str) -> std::result::Result<ExpectedOutputState, String> {
+    if value == "missing" {
+        return Ok(ExpectedOutputState::Missing);
+    }
+    let bytes = hex::decode(value)
+        .map_err(|error| format!("invalid expected output SHA-256 `{value}`: {error}"))?;
+    let digest: [u8; 32] = bytes.try_into().map_err(|bytes: Vec<u8>| {
+        format!(
+            "invalid expected output SHA-256 length {}; expected 64 hexadecimal characters",
+            bytes.len() * 2
+        )
+    })?;
+    Ok(ExpectedOutputState::Sha256(digest))
 }
 
 fn ensure_parent_directory(path: &Path) -> Result<()> {

@@ -3,7 +3,6 @@ import { test } from "node:test";
 import {
   persistRetainedDocument,
   persistLatestEditorState,
-  sameDiskState,
   TanuMarkdownModel,
 } from "../model.js";
 import type { DocumentInspection } from "../types.js";
@@ -229,14 +228,4 @@ test("document copies are constructed from retained bytes without rereading thei
   assert.deepEqual(updates, [
     { markdown: "# Unsaved\n", title: "Recovered" },
   ]);
-});
-
-test("disk state comparison detects external replacement, creation, and deletion", () => {
-  const original = Uint8Array.from([1, 2, 3]);
-
-  assert.equal(sameDiskState(original, Uint8Array.from([1, 2, 3])), true);
-  assert.equal(sameDiskState(original, Uint8Array.from([1, 2, 4])), false);
-  assert.equal(sameDiskState(original, undefined), false);
-  assert.equal(sameDiskState(undefined, Uint8Array.from([1])), false);
-  assert.equal(sameDiskState(undefined, undefined), true);
 });

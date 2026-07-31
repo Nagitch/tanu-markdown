@@ -927,6 +927,7 @@ dependencies = [
  "anyhow",
  "base64",
  "clap",
+ "hex",
  "html-escape",
  "mime_guess",
  "percent-encoding",
@@ -935,6 +936,7 @@ dependencies = [
  "same-file",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "tmd-core",
 ]
