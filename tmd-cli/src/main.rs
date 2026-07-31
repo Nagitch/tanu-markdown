@@ -612,9 +612,17 @@ fn cmd_db_init(doc_path: &Path, schema_path: Option<&Path>, version: Option<u32>
 fn cmd_db_exec(doc_path: &Path, sql: &str) -> Result<()> {
     ensure!(!sql.trim().is_empty(), "SQL must not be empty");
     let (mut doc, format) = read_document(doc_path)?;
-    doc.db_with_conn_mut(|conn| conn.execute_batch(sql))
-        .context("failed to access embedded database")?
-        .context("failed to execute SQL against embedded database")?;
+    doc.db_with_conn_mut(|conn| -> Result<()> {
+        conn.execute_batch(sql)?;
+        if !conn.is_autocommit() {
+            conn.execute_batch("ROLLBACK")
+                .context("failed to roll back incomplete SQL transaction")?;
+            return Err(anyhow!("SQL script left a transaction open"));
+        }
+        Ok(())
+    })
+    .context("failed to access embedded database")?
+    .context("failed to execute SQL against embedded database")?;
     doc.touch();
     write_document(doc_path, &doc, format)?;
     println!("Executed SQL and updated `{}`", doc_path.display());

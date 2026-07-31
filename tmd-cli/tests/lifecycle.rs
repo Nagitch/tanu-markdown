@@ -113,6 +113,34 @@ fn query_table_output_preserves_cell_boundaries() {
 }
 
 #[test]
+fn db_exec_rejects_scripts_that_leave_transactions_open() {
+    let directory = tempdir().expect("temporary directory");
+    let doc = directory.path().join("open-transaction.tmd");
+    run(vec![text("new"), argument(&doc)], None);
+    let original = fs::read(&doc).expect("original document");
+
+    let execution = run_raw(
+        vec![
+            text("db"),
+            text("exec"),
+            argument(&doc),
+            text("--sql"),
+            text("BEGIN; CREATE TABLE rolled_back (id INTEGER);"),
+        ],
+        None,
+    );
+
+    assert!(!execution.status.success());
+    assert!(
+        String::from_utf8_lossy(&execution.stderr).contains("SQL script left a transaction open")
+    );
+    assert_eq!(
+        fs::read(&doc).expect("document after rejected SQL"),
+        original
+    );
+}
+
+#[test]
 fn update_reports_persisted_attachment_metadata() {
     let directory = tempdir().expect("temporary directory");
     let doc_path = directory.path().join("missing-hash.tmd");
