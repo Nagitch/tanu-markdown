@@ -35,8 +35,8 @@ export class TanuMarkdownDocument implements vscode.CustomDocument {
     return this.model.contentRevision;
   }
 
-  get persistedRevision(): number {
-    return this.model.persistedRevision;
+  get isCurrentRevisionPersisted(): boolean {
+    return this.model.isCurrentRevisionPersisted;
   }
 
   snapshot(): EditorState {
@@ -184,11 +184,7 @@ export class TanuMarkdownEditorProvider
   async validateDocument(document: TanuMarkdownDocument): Promise<ValidationReport> {
     return this.documentOperations.run(document, async () => {
       const validatedRevision = document.contentRevision;
-      if (document.persistedRevision !== validatedRevision) {
-        throw new Error(
-          "The latest editor revision has not reached disk; save and validate again.",
-        );
-      }
+      requirePersistedRevision(document, "validate");
       const report = await this.clientFactory().validate(filePath(document.uri));
       if (!document.applyValidation(report, validatedRevision)) {
         throw new Error(
@@ -233,6 +229,7 @@ export class TanuMarkdownEditorProvider
     selfContained: boolean,
   ): Promise<void> {
     await this.documentOperations.run(document, async () => {
+      requirePersistedRevision(document, "export");
       await this.clientFactory().exportHtml(
         filePath(document.uri),
         filePath(output),
@@ -246,6 +243,7 @@ export class TanuMarkdownEditorProvider
     output: vscode.Uri,
   ): Promise<void> {
     await this.documentOperations.run(document, async () => {
+      requirePersistedRevision(document, "convert");
       await this.clientFactory().convert(filePath(document.uri), filePath(output));
     });
   }
@@ -360,6 +358,17 @@ function filePath(uri: vscode.Uri): string {
     throw new Error(`Tanu Markdown currently supports local files only, not ${uri.scheme}: URIs.`);
   }
   return uri.fsPath;
+}
+
+function requirePersistedRevision(
+  document: TanuMarkdownDocument,
+  operation: string,
+): void {
+  if (!document.isCurrentRevisionPersisted) {
+    throw new Error(
+      `The latest editor revision has not reached disk; save and ${operation} again.`,
+    );
+  }
 }
 
 async function showError(error: unknown): Promise<void> {

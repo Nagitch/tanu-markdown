@@ -23,6 +23,10 @@ export class TanuMarkdownModel {
     return this.persistedRevisionValue;
   }
 
+  get isCurrentRevisionPersisted(): boolean {
+    return this.persistedRevisionValue === this.contentRevisionValue;
+  }
+
   snapshot(): EditorState {
     return {
       markdown: this.inspectionValue.markdown,

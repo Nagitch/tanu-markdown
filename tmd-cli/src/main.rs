@@ -826,38 +826,27 @@ fn ensure_parent_directory(path: &Path) -> Result<()> {
 }
 
 fn ensure_distinct_existing_paths(input: &Path, output: &Path, output_kind: &str) -> Result<()> {
-    let output_metadata = match fs::metadata(output) {
-        Ok(metadata) => metadata,
+    match fs::metadata(output) {
+        Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => {
             return Err(error).with_context(|| format!("failed to inspect `{}`", output.display()));
         }
-    };
-    let input_metadata =
-        fs::metadata(input).with_context(|| format!("failed to inspect `{}`", input.display()))?;
-    let same_path = fs::canonicalize(input)
-        .with_context(|| format!("failed to resolve `{}`", input.display()))?
-        == fs::canonicalize(output)
-            .with_context(|| format!("failed to resolve `{}`", output.display()))?;
+    }
+    let same_path = same_file::is_same_file(input, output).with_context(|| {
+        format!(
+            "failed to compare `{}` and `{}`",
+            input.display(),
+            output.display()
+        )
+    })?;
 
     ensure!(
-        !(same_path || metadata_identifies_same_file(&input_metadata, &output_metadata)),
+        !same_path,
         "refusing to overwrite input document `{}` with {output_kind}",
         input.display(),
     );
     Ok(())
-}
-
-#[cfg(unix)]
-fn metadata_identifies_same_file(left: &fs::Metadata, right: &fs::Metadata) -> bool {
-    use std::os::unix::fs::MetadataExt;
-
-    left.dev() == right.dev() && left.ino() == right.ino()
-}
-
-#[cfg(not(unix))]
-fn metadata_identifies_same_file(_left: &fs::Metadata, _right: &fs::Metadata) -> bool {
-    false
 }
 
 #[derive(Clone, Debug)]
