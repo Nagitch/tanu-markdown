@@ -9,8 +9,11 @@ export class TanuMarkdownModel {
   private contentRevisionValue = 0;
   private persistedRevisionValue = 0;
   private validationRevisionValue = 0;
+  private persistedStateValue: EditorState;
 
-  constructor(private inspectionValue: DocumentInspection) {}
+  constructor(private inspectionValue: DocumentInspection) {
+    this.persistedStateValue = this.snapshot();
+  }
 
   get inspection(): DocumentInspection {
     return this.inspectionValue;
@@ -42,6 +45,9 @@ export class TanuMarkdownModel {
   applyState(state: EditorState): void {
     this.setState(state);
     this.contentRevisionValue += 1;
+    if (sameEditorState(state, this.persistedStateValue)) {
+      this.persistedRevisionValue = this.contentRevisionValue;
+    }
   }
 
   replaceInspectionIfCurrent(
@@ -55,6 +61,7 @@ export class TanuMarkdownModel {
     this.contentRevisionValue += 1;
     this.persistedRevisionValue = this.contentRevisionValue;
     this.validationRevisionValue = this.contentRevisionValue;
+    this.persistedStateValue = this.snapshot();
     return true;
   }
 
@@ -68,9 +75,18 @@ export class TanuMarkdownModel {
 
     const currentState = this.snapshot();
     this.inspectionValue = inspection;
+    this.persistedStateValue = this.snapshot();
     this.setState(currentState);
-    this.persistedRevisionValue = persistedRevision;
-    this.validationRevisionValue = persistedRevision;
+    const currentMatchesPersisted = sameEditorState(
+      currentState,
+      this.persistedStateValue,
+    );
+    this.persistedRevisionValue = currentMatchesPersisted
+      ? this.contentRevisionValue
+      : persistedRevision;
+    this.validationRevisionValue = currentMatchesPersisted
+      ? this.contentRevisionValue
+      : persistedRevision;
   }
 
   applyValidation(report: ValidationReport, validatedRevision: number): boolean {
@@ -86,6 +102,10 @@ export class TanuMarkdownModel {
     this.inspectionValue.markdown = state.markdown;
     this.inspectionValue.manifest.title = state.title || null;
   }
+}
+
+function sameEditorState(left: EditorState, right: EditorState): boolean {
+  return left.markdown === right.markdown && left.title === right.title;
 }
 
 export interface RevisionedEditorState {

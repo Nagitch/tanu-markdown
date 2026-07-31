@@ -6,7 +6,7 @@ use std::process::{Command, Output, Stdio};
 
 use serde_json::{json, Value};
 use tempfile::tempdir;
-use tmd_core::{write_to_path, Format, TmdDoc};
+use tmd_core::{write_tmd, write_to_path, Format, TmdDoc, WriteMode};
 
 fn argument(path: &Path) -> OsString {
     path.as_os_str().to_owned()
@@ -110,6 +110,61 @@ fn query_table_output_preserves_cell_boundaries() {
     assert!(table.contains("| pipe\\|column | lines |"));
     assert!(table.contains("| left\\|right | line1\\nline2 |"));
     assert_eq!(table.lines().count(), 3);
+}
+
+#[test]
+fn update_reports_persisted_attachment_metadata() {
+    let directory = tempdir().expect("temporary directory");
+    let doc_path = directory.path().join("missing-hash.tmd");
+    let mut doc = TmdDoc::new("# Before\n".to_owned()).expect("document model");
+    let attachment_id = doc
+        .add_attachment(
+            "attachments/note.txt",
+            "text/plain".parse().expect("text MIME"),
+            b"attachment".to_vec(),
+        )
+        .expect("add attachment");
+    let mut attachment_meta = doc
+        .attachment_meta(attachment_id)
+        .expect("attachment metadata")
+        .clone();
+    let attachment_data = doc
+        .attachments
+        .data(attachment_id)
+        .expect("attachment data")
+        .to_vec();
+    doc.remove_attachment(attachment_id)
+        .expect("remove hashed attachment");
+    attachment_meta.sha256 = None;
+    doc.attachments
+        .insert_entry(attachment_meta, attachment_data, false)
+        .expect("insert attachment without hash");
+    let mut output = fs::File::create(&doc_path).expect("create fixture");
+    write_tmd(
+        &mut output,
+        &doc,
+        WriteMode {
+            compute_hashes: false,
+        },
+    )
+    .expect("write fixture without hashes");
+    drop(output);
+
+    let update = json!({
+        "schema_version": 1,
+        "markdown": "# After\n",
+    });
+    let response = parse_json(&run(
+        vec![text("update"), argument(&doc_path), text("--json-stdin")],
+        Some(&update.to_string()),
+    ));
+    assert!(response["attachments"][0]["sha256"].is_string());
+    assert_eq!(response["validation"]["valid"], true);
+    assert!(response["validation"]["issues"]
+        .as_array()
+        .expect("validation issues")
+        .iter()
+        .all(|issue| issue["code"] != "attachment_sha256_missing"));
 }
 
 fn only_file_in(directory: &Path) -> PathBuf {

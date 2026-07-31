@@ -401,9 +401,10 @@ fn cmd_update(input: &Path, json_stdin: bool) -> Result<()> {
     }
     doc.touch();
     write_document(input, &doc, format)?;
+    let (persisted_doc, persisted_format) = read_document(input)?;
     println!(
         "{}",
-        serde_json::to_string_pretty(&inspection_value(&doc, format)?)?
+        serde_json::to_string_pretty(&inspection_value(&persisted_doc, persisted_format)?)?
     );
     Ok(())
 }

@@ -74,6 +74,37 @@ test("save response replaces state when no newer edit exists", () => {
   assert.equal(model.isValidationCurrent, true);
 });
 
+test("undo and redo restore the persisted save point", () => {
+  const model = new TanuMarkdownModel(inspection("initial", "Initial", 0));
+  const initial = model.snapshot();
+
+  model.applyState({ markdown: "saved edit", title: "Saved title" });
+  const savedRevision = model.contentRevision;
+  model.applyPersistedInspection(
+    inspection("saved edit", "Saved title", 0),
+    savedRevision,
+  );
+  const saved = model.snapshot();
+  assert.equal(model.isCurrentRevisionPersisted, true);
+
+  model.applyState(initial);
+  assert.equal(model.isCurrentRevisionPersisted, false);
+
+  model.applyState(saved);
+  assert.equal(model.isCurrentRevisionPersisted, true);
+});
+
+test("undoing the first edit restores the initially persisted state", () => {
+  const model = new TanuMarkdownModel(inspection("initial", "Initial", 0));
+  const initial = model.snapshot();
+
+  model.applyState({ markdown: "unsaved edit", title: "Unsaved title" });
+  assert.equal(model.isCurrentRevisionPersisted, false);
+
+  model.applyState(initial);
+  assert.equal(model.isCurrentRevisionPersisted, true);
+});
+
 test("inspection replacement is rejected after a newer edit", () => {
   const model = new TanuMarkdownModel(inspection("initial", "Initial", 0));
   const revertedRevision = model.contentRevision;
