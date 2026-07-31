@@ -1,5 +1,5 @@
 use crate::{normalize_logical_path, AttachmentId, TmdDoc, TmdResult};
-use pulldown_cmark::{Event, Parser, Tag};
+use pulldown_cmark::{Event, Options, Parser, Tag};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
@@ -55,7 +55,7 @@ fn issue(
 /// Return the unique `attach:` destinations referenced by Markdown.
 pub fn attachment_references(markdown: &str) -> Vec<String> {
     let mut paths = BTreeSet::new();
-    for event in Parser::new(markdown) {
+    for event in Parser::new_ext(markdown, Options::ENABLE_TABLES) {
         let destination = match event {
             Event::Start(Tag::Link { dest_url, .. })
             | Event::Start(Tag::Image { dest_url, .. }) => Some(dest_url),
@@ -208,11 +208,21 @@ mod tests {
 
     #[test]
     fn extracts_unique_attachment_references() {
-        let markdown =
-            "![one](attach:images/a.png)\n[other](attach:files/b.txt)\n[again](attach:files/b.txt)";
+        let markdown = concat!(
+            "![one](attach:images/a.png)\n",
+            "[other](attach:files/b.txt)\n",
+            "[again](attach:files/b.txt)\n\n",
+            "| Attachment |\n",
+            "| --- |\n",
+            "| [table](attach:files/table.txt) |\n",
+        );
         assert_eq!(
             attachment_references(markdown),
-            vec!["files/b.txt".to_owned(), "images/a.png".to_owned()]
+            vec![
+                "files/b.txt".to_owned(),
+                "files/table.txt".to_owned(),
+                "images/a.png".to_owned(),
+            ]
         );
     }
 
