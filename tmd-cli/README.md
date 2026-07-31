@@ -75,6 +75,7 @@ tmd db init notes.tmd --schema schema.sql --version 1
 ```
 
 Schema files may contain their own `BEGIN TRANSACTION`/`COMMIT` wrapper.
+Schema versions must be between `0` and SQLite's `2147483647` limit.
 
 Execute mutations and query with machine-readable rows:
 

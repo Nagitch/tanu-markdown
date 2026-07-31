@@ -44,19 +44,25 @@ export class TanuMarkdownModel {
     this.contentRevisionValue += 1;
   }
 
-  replaceInspection(inspection: DocumentInspection): void {
+  replaceInspectionIfCurrent(
+    inspection: DocumentInspection,
+    expectedRevision: number,
+  ): boolean {
+    if (this.contentRevisionValue !== expectedRevision) {
+      return false;
+    }
     this.inspectionValue = inspection;
     this.contentRevisionValue += 1;
     this.persistedRevisionValue = this.contentRevisionValue;
     this.validationRevisionValue = this.contentRevisionValue;
+    return true;
   }
 
   applyPersistedInspection(
     inspection: DocumentInspection,
     persistedRevision: number,
   ): void {
-    if (this.contentRevisionValue === persistedRevision) {
-      this.replaceInspection(inspection);
+    if (this.replaceInspectionIfCurrent(inspection, persistedRevision)) {
       return;
     }
 

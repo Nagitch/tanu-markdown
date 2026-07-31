@@ -411,6 +411,21 @@ fn machine_interfaces_reject_unsafe_inputs() {
     assert_eq!(database_report["issues"][0]["code"], "validation_failed");
     assert_eq!(database_report["database_user_version"], Value::Null);
 
+    let oversized_version = run_raw(
+        vec![
+            text("db"),
+            text("init"),
+            argument(&doc),
+            text("--version"),
+            text("2147483648"),
+        ],
+        None,
+    );
+    assert!(!oversized_version.status.success());
+    assert!(
+        String::from_utf8_lossy(&oversized_version.stderr).contains("must not exceed 2147483647")
+    );
+
     let safe_html_doc = directory.path().join("safe-html.tmd");
     let safe_html_output = directory.path().join("safe.html");
     let safe_html_linked_output = directory.path().join("safe-linked.html");
@@ -535,6 +550,24 @@ fn machine_interfaces_reject_unsafe_inputs() {
 
     #[cfg(unix)]
     {
+        use std::os::unix::fs::symlink;
+
+        let converted_alias = directory.path().join("converted-alias.tmdp");
+        symlink(&safe_html_doc, &converted_alias).expect("conversion symlink");
+        let aliased_conversion = run_raw(
+            vec![
+                text("convert"),
+                argument(&safe_html_doc),
+                argument(&converted_alias),
+            ],
+            None,
+        );
+        assert!(!aliased_conversion.status.success());
+        assert_eq!(
+            fs::read(&safe_html_doc).expect("preserved conversion source"),
+            original_document
+        );
+
         let hard_link = directory.path().join("database-export-hard-link.tmd");
         fs::hard_link(&safe_html_doc, &hard_link).expect("database export hard link");
         let hard_link_overwrite = run_raw(

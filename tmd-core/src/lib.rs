@@ -25,6 +25,9 @@ use uuid::Uuid;
 pub type AttachmentId = Uuid;
 pub type LogicalPath = String;
 
+/// Largest nonnegative value preserved by SQLite `PRAGMA user_version`.
+pub const SQLITE_MAX_USER_VERSION: u32 = i32::MAX as u32;
+
 /// Result type specialised for `tmd-core` operations.
 pub type TmdResult<T> = Result<T, TmdError>;
 
@@ -622,7 +625,7 @@ mod attach {
     }
 }
 mod db {
-    use super::{TmdDoc, TmdError, TmdResult};
+    use super::{TmdDoc, TmdError, TmdResult, SQLITE_MAX_USER_VERSION};
     use rusqlite::Connection;
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -740,6 +743,7 @@ mod db {
     }
 
     pub fn reset_db(doc: &mut TmdDoc, schema_sql: &str, version: u32) -> TmdResult<()> {
+        ensure_supported_user_version(version)?;
         let mut replacement = DbHandle::new_empty()?;
         replacement.with_conn_mut(|conn| -> TmdResult<()> {
             // The replacement database is not installed until the complete
@@ -759,6 +763,8 @@ mod db {
     }
 
     pub fn migrate(doc: &mut TmdDoc, up_sql: &str, from: u32, to: u32) -> TmdResult<()> {
+        ensure_supported_user_version(from)?;
+        ensure_supported_user_version(to)?;
         let bytes = fs::read(doc.db.as_path())?;
         let mut replacement = DbHandle::from_bytes(&bytes)?;
         replacement.with_conn_mut(|conn| -> TmdResult<()> {
@@ -781,6 +787,15 @@ mod db {
             Ok(())
         })??;
         doc.db = replacement;
+        Ok(())
+    }
+
+    fn ensure_supported_user_version(version: u32) -> TmdResult<()> {
+        if version > SQLITE_MAX_USER_VERSION {
+            return Err(TmdError::Db(format!(
+                "database schema version {version} exceeds SQLite user_version maximum {SQLITE_MAX_USER_VERSION}"
+            )));
+        }
         Ok(())
     }
 }
@@ -2088,6 +2103,31 @@ mod tests {
             })
             .expect("unchanged version");
         assert_eq!(version, 1);
+    }
+
+    #[test]
+    fn database_schema_helpers_reject_versions_above_sqlite_limit() {
+        let mut doc = sample_doc();
+
+        let reset_error = reset_db(&mut doc, "CREATE TABLE rejected(id INTEGER);", u32::MAX)
+            .expect_err("oversized reset version");
+        assert!(
+            reset_error.to_string().contains("exceeds SQLite"),
+            "unexpected error: {reset_error}"
+        );
+
+        reset_db(&mut doc, "CREATE TABLE base(id INTEGER);", 1).expect("valid reset");
+        let migrate_error = migrate(
+            &mut doc,
+            "ALTER TABLE base ADD COLUMN rejected TEXT;",
+            1,
+            u32::MAX,
+        )
+        .expect_err("oversized migration version");
+        assert!(
+            migrate_error.to_string().contains("exceeds SQLite"),
+            "unexpected error: {migrate_error}"
+        );
     }
 
     #[test]

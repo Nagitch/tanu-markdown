@@ -51,8 +51,11 @@ export class TanuMarkdownDocument implements vscode.CustomDocument {
     this.model.applyState(state);
   }
 
-  replaceInspection(inspection: DocumentInspection): void {
-    this.model.replaceInspection(inspection);
+  replaceInspectionIfCurrent(
+    inspection: DocumentInspection,
+    expectedRevision: number,
+  ): boolean {
+    return this.model.replaceInspectionIfCurrent(inspection, expectedRevision);
   }
 
   applyPersistedInspection(
@@ -161,7 +164,13 @@ export class TanuMarkdownEditorProvider
 
   async revertCustomDocument(document: TanuMarkdownDocument): Promise<void> {
     await this.documentOperations.run(document, async () => {
-      document.replaceInspection(await this.clientFactory().inspect(filePath(document.uri)));
+      const revertedRevision = document.contentRevision;
+      const inspection = await this.clientFactory().inspect(filePath(document.uri));
+      if (!document.replaceInspectionIfCurrent(inspection, revertedRevision)) {
+        throw new Error(
+          "The document changed while revert was loading; edits were preserved and revert was cancelled.",
+        );
+      }
       await this.postModel(document);
     });
   }

@@ -43,7 +43,8 @@ fn main() -> tmd_core::TmdResult<()> {
 - `Reader`, `Writer`, `ReadMode`, and `WriteMode` control implemented hash
   verification/recomputation behavior.
 - `DbHandle`, `import_db`, `export_db`, `reset_db`, and `migrate` manage the
-  embedded database. Reset and migration SQL may own a transaction.
+  embedded database. Reset and migration SQL may own a transaction; schema
+  versions are constrained to SQLite's nonnegative 31-bit range.
 - `validate_document` returns machine-readable issues, references, and the
   embedded database version.
 - `read_from_path` and `write_to_path` provide the common path-based API;

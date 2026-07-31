@@ -17,7 +17,7 @@ use serde::Deserialize;
 use serde_json::{json, Value as JsonValue};
 use tmd_core::{
     export_db, import_db, migrate, read_from_path, reset_db, validate_document, write_to_path,
-    AttachmentMeta, Format, TmdDoc, ValidationSeverity,
+    AttachmentMeta, Format, TmdDoc, ValidationSeverity, SQLITE_MAX_USER_VERSION,
 };
 
 const JSON_SCHEMA_VERSION: u32 = 1;
@@ -152,7 +152,7 @@ enum DbCommands {
         doc: PathBuf,
         #[arg(long)]
         schema: Option<PathBuf>,
-        #[arg(long)]
+        #[arg(long, value_parser = parse_sqlite_user_version)]
         version: Option<u32>,
     },
     /// Execute one or more mutating SQL statements.
@@ -172,9 +172,9 @@ enum DbCommands {
     /// Apply an explicit database migration and update the manifest version.
     Migrate {
         doc: PathBuf,
-        #[arg(long)]
+        #[arg(long, value_parser = parse_sqlite_user_version)]
         from: u32,
-        #[arg(long)]
+        #[arg(long, value_parser = parse_sqlite_user_version)]
         to: u32,
         #[arg(long)]
         sql: String,
@@ -265,6 +265,7 @@ fn cmd_new(path: &Path, title: Option<&str>) -> Result<()> {
 }
 
 fn cmd_convert(input: &Path, output: &Path) -> Result<()> {
+    ensure_distinct_existing_paths(input, output, "converted document")?;
     let (doc, _) = read_document(input)?;
     let format = detect_format(output)?;
     ensure_parent_directory(output)?;
@@ -813,6 +814,18 @@ fn detect_format(path: &Path) -> Result<Format> {
             path.display()
         )),
     }
+}
+
+fn parse_sqlite_user_version(value: &str) -> std::result::Result<u32, String> {
+    let version = value
+        .parse::<u32>()
+        .map_err(|error| format!("invalid SQLite schema version `{value}`: {error}"))?;
+    if version > SQLITE_MAX_USER_VERSION {
+        return Err(format!(
+            "SQLite schema version must not exceed {SQLITE_MAX_USER_VERSION}"
+        ));
+    }
+    Ok(version)
 }
 
 fn ensure_parent_directory(path: &Path) -> Result<()> {

@@ -74,6 +74,25 @@ test("save response replaces state when no newer edit exists", () => {
   assert.equal(model.isValidationCurrent, true);
 });
 
+test("inspection replacement is rejected after a newer edit", () => {
+  const model = new TanuMarkdownModel(inspection("initial", "Initial", 0));
+  const revertedRevision = model.contentRevision;
+  model.applyState({ markdown: "typed during revert", title: "Current" });
+
+  assert.equal(
+    model.replaceInspectionIfCurrent(
+      inspection("disk state", "Disk", 1),
+      revertedRevision,
+    ),
+    false,
+  );
+  assert.deepEqual(model.snapshot(), {
+    markdown: "typed during revert",
+    title: "Current",
+  });
+  assert.equal(model.isCurrentRevisionPersisted, false);
+});
+
 test("validation results are discarded after a newer edit", () => {
   const model = new TanuMarkdownModel(inspection("initial", "Initial", 0));
   const validatedRevision = model.contentRevision;

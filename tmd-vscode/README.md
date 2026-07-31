@@ -21,6 +21,7 @@ editor revision is still current and known to have reached disk. Validation,
 attachment mutation, HTML export, and format conversion reject an editor
 revision that a racing save has not persisted. Any edit immediately marks the
 displayed validation report stale until the current revision is validated.
+Edits received while a revert is loading cancel that revert and remain dirty.
 
 ## Requirements
 
