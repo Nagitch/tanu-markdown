@@ -646,17 +646,25 @@ fn cmd_db_init(doc_path: &Path, schema_path: Option<&Path>, version: Option<u32>
 fn cmd_db_exec(doc_path: &Path, sql: &str) -> Result<()> {
     ensure!(!sql.trim().is_empty(), "SQL must not be empty");
     let (mut doc, format) = read_document(doc_path)?;
-    doc.db_with_conn_mut(|conn| -> Result<()> {
-        conn.execute_batch(sql)?;
-        if !conn.is_autocommit() {
-            conn.execute_batch("ROLLBACK")
-                .context("failed to roll back incomplete SQL transaction")?;
-            return Err(anyhow!("SQL script left a transaction open"));
-        }
-        Ok(())
-    })
-    .context("failed to access embedded database")?
-    .context("failed to execute SQL against embedded database")?;
+    let user_version = doc
+        .db_with_conn_mut(|conn| -> Result<u32> {
+            conn.execute_batch(sql)?;
+            if !conn.is_autocommit() {
+                conn.execute_batch("ROLLBACK")
+                    .context("failed to roll back incomplete SQL transaction")?;
+                return Err(anyhow!("SQL script left a transaction open"));
+            }
+            let user_version: i64 =
+                conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+            ensure!(
+                (0..=i64::from(SQLITE_MAX_USER_VERSION)).contains(&user_version),
+                "SQL script set unsupported user_version {user_version}"
+            );
+            Ok(user_version as u32)
+        })
+        .context("failed to access embedded database")?
+        .context("failed to execute SQL against embedded database")?;
+    doc.manifest.db_schema_version = Some(user_version);
     doc.touch();
     write_document(doc_path, &doc, format)?;
     println!("Executed SQL and updated `{}`", doc_path.display());

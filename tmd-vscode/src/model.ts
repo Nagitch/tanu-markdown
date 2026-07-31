@@ -117,6 +117,19 @@ export interface RetainedEditorState extends RevisionedEditorState {
   readonly persistedBytes: Uint8Array;
 }
 
+export function sameDiskState(
+  expected: Uint8Array | undefined,
+  current: Uint8Array | undefined,
+): boolean {
+  if (!expected || !current) {
+    return expected === current;
+  }
+  return (
+    expected.length === current.length &&
+    expected.every((byte, index) => byte === current[index])
+  );
+}
+
 export async function persistRetainedDocument(
   source: RetainedEditorState,
   writeBase: (bytes: Uint8Array) => Promise<void>,

@@ -141,6 +141,51 @@ fn db_exec_rejects_scripts_that_leave_transactions_open() {
 }
 
 #[test]
+fn db_exec_synchronizes_and_validates_user_version() {
+    let directory = tempdir().expect("temporary directory");
+    let doc = directory.path().join("user-version.tmd");
+    run(vec![text("new"), argument(&doc)], None);
+
+    run(
+        vec![
+            text("db"),
+            text("exec"),
+            argument(&doc),
+            text("--sql"),
+            text("PRAGMA user_version = 2;"),
+        ],
+        None,
+    );
+    let inspection = parse_json(&run(
+        vec![text("inspect"), argument(&doc), text("--json")],
+        None,
+    ));
+    assert_eq!(inspection["manifest"]["db_schema_version"], 2);
+    assert_eq!(inspection["database_user_version"], 2);
+    assert_eq!(
+        parse_json(&run(
+            vec![text("validate"), argument(&doc), text("--json")],
+            None,
+        ))["valid"],
+        true
+    );
+
+    let original = fs::read(&doc).expect("valid version document");
+    let negative = run_raw(
+        vec![
+            text("db"),
+            text("exec"),
+            argument(&doc),
+            text("--sql"),
+            text("PRAGMA user_version = -1;"),
+        ],
+        None,
+    );
+    assert!(!negative.status.success());
+    assert_eq!(fs::read(&doc).expect("preserved document"), original);
+}
+
+#[test]
 fn linked_html_export_cleans_up_assets_after_output_failure() {
     let directory = tempdir().expect("temporary directory");
     let doc = directory.path().join("export.tmd");

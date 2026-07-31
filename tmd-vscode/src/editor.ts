@@ -8,6 +8,7 @@ import { authoritativeStateScript, editInputScript } from "./input.js";
 import { renderSafeMarkdown } from "./markdown.js";
 import {
   persistRetainedDocument,
+  sameDiskState,
   TanuMarkdownModel,
   type EditorState,
 } from "./model.js";
@@ -26,6 +27,7 @@ export class TanuMarkdownDocument implements vscode.CustomDocument {
     readonly uri: vscode.Uri,
     inspection: DocumentInspection,
     private persistedBytesValue: Uint8Array,
+    private diskBytesValue: Uint8Array | undefined,
   ) {
     this.model = new TanuMarkdownModel(inspection);
   }
@@ -52,6 +54,11 @@ export class TanuMarkdownDocument implements vscode.CustomDocument {
 
   replacePersistedBytes(bytes: Uint8Array): void {
     this.persistedBytesValue = bytes;
+    this.diskBytesValue = bytes;
+  }
+
+  diskMatches(bytes: Uint8Array | undefined): boolean {
+    return sameDiskState(this.diskBytesValue, bytes);
   }
 
   snapshot(): EditorState {
@@ -113,7 +120,10 @@ export class TanuMarkdownEditorProvider
       this.clientFactory().inspect(filePath(source)),
       vscode.workspace.fs.readFile(source),
     ]);
-    return new TanuMarkdownDocument(uri, inspection, persistedBytes);
+    const diskBytes = openContext.backupId
+      ? await readOptionalFile(uri)
+      : persistedBytes;
+    return new TanuMarkdownDocument(uri, inspection, persistedBytes, diskBytes);
   }
 
   async resolveCustomEditor(
@@ -366,6 +376,11 @@ export class TanuMarkdownEditorProvider
       await fs.writeFile(stagingPath, document.persistedBytes, { flag: "wx" });
       stagingCreated = true;
       const inspection = await client.update(stagingPath, update);
+      if (!document.diskMatches(await readOptionalFile(document.uri))) {
+        throw new Error(
+          "The document changed on disk after it was opened; save was cancelled to preserve the external changes.",
+        );
+      }
       await client.convert(stagingPath, filePath(document.uri));
       return inspection;
     } finally {
@@ -511,6 +526,17 @@ function filePath(uri: vscode.Uri): string {
     throw new Error(`Tanu Markdown currently supports local files only, not ${uri.scheme}: URIs.`);
   }
   return uri.fsPath;
+}
+
+async function readOptionalFile(uri: vscode.Uri): Promise<Uint8Array | undefined> {
+  try {
+    return await vscode.workspace.fs.readFile(uri);
+  } catch (error) {
+    if (error instanceof vscode.FileSystemError && error.code === "FileNotFound") {
+      return undefined;
+    }
+    throw error;
+  }
 }
 
 function requirePersistedRevision(
