@@ -72,6 +72,8 @@ Initialize a schema:
 tmd db init notes.tmd --schema schema.sql --version 1
 ```
 
+Schema files may contain their own `BEGIN TRANSACTION`/`COMMIT` wrapper.
+
 Execute mutations and query with machine-readable rows:
 
 ```bash

@@ -742,10 +742,16 @@ mod db {
     pub fn reset_db(doc: &mut TmdDoc, schema_sql: &str, version: u32) -> TmdResult<()> {
         let mut replacement = DbHandle::new_empty()?;
         replacement.with_conn_mut(|conn| -> TmdResult<()> {
-            let transaction = conn.transaction()?;
-            transaction.execute_batch(schema_sql)?;
-            transaction.pragma_update(None, "user_version", version as i64)?;
-            transaction.commit()?;
+            // The replacement database is not installed until the complete
+            // script succeeds, so scripts may manage their own transaction.
+            conn.execute_batch(schema_sql)?;
+            if !conn.is_autocommit() {
+                conn.execute_batch("ROLLBACK")?;
+                return Err(TmdError::Db(
+                    "schema script left a transaction open".to_owned(),
+                ));
+            }
+            conn.pragma_update(None, "user_version", version as i64)?;
             Ok(())
         })??;
         doc.db = replacement;
@@ -780,7 +786,7 @@ mod format {
     use std::collections::HashSet;
     use std::fs::{self, File};
     use std::io::{Read, Seek, SeekFrom, Write};
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use tempfile::NamedTempFile;
     use zip::write::SimpleFileOptions;
     use zip::{CompressionMethod, ZipArchive, ZipWriter};
@@ -1221,10 +1227,10 @@ mod format {
     }
 
     pub fn write_to_path(path: impl AsRef<Path>, doc: &TmdDoc, format: Format) -> TmdResult<()> {
-        let path = path.as_ref();
+        let path = resolve_write_target(path.as_ref())?;
         let parent = path.parent().unwrap_or_else(|| Path::new("."));
         let mut temporary = new_atomic_tempfile(parent)?;
-        match fs::metadata(path) {
+        match fs::metadata(&path) {
             Ok(metadata) => temporary
                 .as_file_mut()
                 .set_permissions(metadata.permissions())?,
@@ -1240,9 +1246,18 @@ mod format {
         }
         temporary.as_file_mut().sync_all()?;
         temporary
-            .persist(path)
+            .persist(&path)
             .map_err(|error| TmdError::Io(error.error))?;
         Ok(())
+    }
+
+    fn resolve_write_target(path: &Path) -> std::io::Result<PathBuf> {
+        match fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => fs::canonicalize(path),
+            Ok(_) => Ok(path.to_path_buf()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(path.to_path_buf()),
+            Err(error) => Err(error),
+        }
     }
 
     #[cfg(unix)]
@@ -1935,6 +1950,54 @@ mod tests {
     }
 
     #[test]
+    fn reset_db_accepts_transaction_wrapped_schema() {
+        let mut doc = sample_doc();
+        reset_db(
+            &mut doc,
+            "BEGIN TRANSACTION;
+             CREATE TABLE wrapped(id INTEGER PRIMARY KEY);
+             COMMIT;",
+            7,
+        )
+        .expect("reset with transaction-wrapped schema");
+
+        let (table_count, version): (u32, u32) = doc
+            .db_with_conn(|conn| {
+                let table_count = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM sqlite_master
+                         WHERE type = 'table' AND name = 'wrapped'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                let version = conn
+                    .query_row("PRAGMA user_version", [], |row| row.get(0))
+                    .unwrap();
+                (table_count, version)
+            })
+            .expect("inspect reset database");
+        assert_eq!(table_count, 1);
+        assert_eq!(version, 7);
+    }
+
+    #[test]
+    fn reset_db_rejects_schema_with_open_transaction() {
+        let mut doc = sample_doc();
+        let error = reset_db(
+            &mut doc,
+            "BEGIN TRANSACTION; CREATE TABLE incomplete(id INTEGER);",
+            1,
+        )
+        .expect_err("open transaction must be rejected");
+
+        assert!(
+            error.to_string().contains("left a transaction open"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
     fn reset_database_replaces_existing_schema() {
         let mut doc = sample_doc();
         reset_db(&mut doc, "CREATE TABLE old_table(id INTEGER);", 1).expect("first reset");
@@ -2075,6 +2138,50 @@ mod tests {
             .mode()
             & 0o777;
         assert_eq!(actual, 0o640);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_through_symlink_preserves_link_and_updates_target() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().unwrap();
+        let target = dir.path().join("target.tmd");
+        let link = dir.path().join("linked.tmd");
+        let mut original = sample_doc();
+        original.markdown = "# Original".to_owned();
+        write_to_path(&target, &original, Format::Tmd).expect("write target");
+        symlink(&target, &link).expect("create symlink");
+
+        let mut replacement = sample_doc();
+        replacement.markdown = "# Replacement".to_owned();
+        write_to_path(&link, &replacement, Format::Tmd).expect("write through symlink");
+
+        assert!(std::fs::symlink_metadata(&link)
+            .expect("symlink metadata")
+            .file_type()
+            .is_symlink());
+        let loaded = read_from_path(&target, Some(Format::Tmd)).expect("read target");
+        assert_eq!(loaded.markdown, "# Replacement");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_rejects_dangling_symlink_without_replacing_it() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().unwrap();
+        let target = dir.path().join("missing.tmd");
+        let link = dir.path().join("dangling.tmd");
+        symlink(&target, &link).expect("create dangling symlink");
+
+        write_to_path(&link, &sample_doc(), Format::Tmd).expect_err("reject dangling symlink");
+
+        assert!(std::fs::symlink_metadata(&link)
+            .expect("symlink metadata")
+            .file_type()
+            .is_symlink());
+        assert!(!target.exists());
     }
 
     #[test]
