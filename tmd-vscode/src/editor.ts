@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import * as fs from "node:fs/promises";
+import * as os from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import { findActiveDocument } from "./activity.js";
@@ -118,10 +119,12 @@ export class TanuMarkdownEditorProvider
     openContext: vscode.CustomDocumentOpenContext,
   ): Promise<TanuMarkdownDocument> {
     const source = openContext.backupId ? vscode.Uri.parse(openContext.backupId) : uri;
-    const [inspection, persistedBytes] = await Promise.all([
-      this.clientFactory().inspect(filePath(source)),
-      vscode.workspace.fs.readFile(source),
-    ]);
+    const persistedBytes = await vscode.workspace.fs.readFile(source);
+    const inspection = await inspectRetainedBytes(
+      this.clientFactory(),
+      source,
+      persistedBytes,
+    );
     const diskBytes = openContext.backupId
       ? await readOptionalFile(uri)
       : persistedBytes;
@@ -188,7 +191,8 @@ export class TanuMarkdownEditorProvider
         throw new Error("Save As destination must use the .tmd or .tmdp extension.");
       }
       const sourceExtension = document.inspection.format === "tmdp" ? ".tmdp" : ".tmd";
-      await persistLatestEditorState(document, async (state) => {
+      let destinationPublished = false;
+      for (;;) {
         const stagingDirectory = await fs.mkdtemp(
           path.join(path.dirname(destination.fsPath), ".tmd-save-"),
         );
@@ -197,21 +201,33 @@ export class TanuMarkdownEditorProvider
           sourceExtension === destinationExtension
             ? sourcePath
             : path.join(stagingDirectory, `destination${destinationExtension}`);
+        let stagedRevision = document.contentRevision;
         try {
           await fs.writeFile(sourcePath, document.persistedBytes, { flag: "wx" });
           if (sourcePath !== stagedPath) {
             await client.convert(sourcePath, stagedPath);
           }
-          await client.update(stagedPath, {
-            schema_version: 1,
-            markdown: state.markdown,
-            title: state.title,
-          });
+          await persistLatestEditorState(
+            document,
+            async (state) => {
+              await client.update(stagedPath, {
+                schema_version: 1,
+                markdown: state.markdown,
+                title: state.title,
+              });
+            },
+            destinationPublished ? Number.MAX_SAFE_INTEGER : 3,
+          );
+          stagedRevision = document.contentRevision;
           await client.convert(stagedPath, filePath(destination));
+          destinationPublished = true;
         } finally {
           await fs.rm(stagingDirectory, { force: true, recursive: true });
         }
-      });
+        if (document.contentRevision === stagedRevision) {
+          return;
+        }
+      }
     });
   }
 
@@ -532,6 +548,25 @@ async function readOptionalFile(uri: vscode.Uri): Promise<Uint8Array | undefined
       return undefined;
     }
     throw error;
+  }
+}
+
+async function inspectRetainedBytes(
+  client: TmdCliClient,
+  source: vscode.Uri,
+  bytes: Uint8Array,
+): Promise<DocumentInspection> {
+  const extension = path.extname(source.fsPath).toLowerCase();
+  if (![".tmd", ".tmdp"].includes(extension)) {
+    throw new Error("TMD documents must use the .tmd or .tmdp extension.");
+  }
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "tmd-open-"));
+  const snapshotPath = path.join(directory, `snapshot${extension}`);
+  try {
+    await fs.writeFile(snapshotPath, bytes, { flag: "wx" });
+    return await client.inspect(snapshotPath);
+  } finally {
+    await fs.rm(directory, { force: true, recursive: true });
   }
 }
 
