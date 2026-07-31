@@ -11,7 +11,7 @@ use base64::Engine;
 use clap::{Parser, Subcommand};
 use html_escape::{encode_double_quoted_attribute, encode_text};
 use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
-use pulldown_cmark::{html, CowStr, Event, Options, Parser as MdParser, Tag};
+use pulldown_cmark::{html, CowStr, Event, Options, Parser as MdParser, Tag, TagEnd};
 use rusqlite::types::Value as SqlValue;
 use serde::Deserialize;
 use serde_json::{json, Value as JsonValue};
@@ -508,8 +508,9 @@ fn cmd_export_html(input: &Path, output: &Path, self_contained: bool) -> Result<
     let mut options = Options::empty();
     options.insert(Options::ENABLE_TABLES);
     options.insert(Options::ENABLE_TASKLISTS);
+    let mut attachment_link_open = false;
     let parser = MdParser::new_ext(&doc.markdown, options)
-        .map(|event| rewrite_attachment_event(event, &attachment_urls));
+        .map(|event| rewrite_attachment_event(event, &attachment_urls, &mut attachment_link_open));
     let mut body_html = String::new();
     html::push_html(&mut body_html, parser);
 
@@ -920,20 +921,18 @@ fn extracted_attachment_urls(
         })?;
     }
     for (meta, data) in doc.attachments.iter_with_data() {
-        let destination = directory.join(&meta.logical_path);
-        ensure_parent_directory(&destination)?;
+        let file_name = format!(
+            "{}{}",
+            meta.id,
+            exported_asset_extension(meta.mime.as_ref())
+        );
+        let destination = directory.join(&file_name);
         fs::write(&destination, data)
             .with_context(|| format!("failed to write `{}`", destination.display()))?;
-        let encoded_path = meta
-            .logical_path
-            .split('/')
-            .map(|segment| utf8_percent_encode(segment, URL_SEGMENT_ENCODE_SET).to_string())
-            .collect::<Vec<_>>()
-            .join("/");
         let download_url = format!(
             "{}/{}",
             utf8_percent_encode(&directory_name, URL_SEGMENT_ENCODE_SET),
-            encoded_path
+            file_name
         );
         let inline_url = if passive_attachment_mime(meta.mime.as_ref()).is_some() {
             download_url.clone()
@@ -951,9 +950,23 @@ fn extracted_attachment_urls(
     Ok(urls)
 }
 
+fn exported_asset_extension(mime: &str) -> &'static str {
+    match passive_attachment_mime(mime) {
+        Some("image/avif") => ".avif",
+        Some("image/bmp") => ".bmp",
+        Some("image/gif") => ".gif",
+        Some("image/jpeg") => ".jpg",
+        Some("image/png") => ".png",
+        Some("image/webp") => ".webp",
+        Some("text/plain") => ".txt",
+        _ => ".bin",
+    }
+}
+
 fn rewrite_attachment_event<'a>(
     event: Event<'a>,
     attachment_urls: &HashMap<String, AttachmentExportUrls>,
+    attachment_link_open: &mut bool,
 ) -> Event<'a> {
     match event {
         Event::Html(source) | Event::InlineHtml(source) => Event::Text(source),
@@ -962,12 +975,39 @@ fn rewrite_attachment_event<'a>(
             dest_url,
             title,
             id,
-        }) => Event::Start(Tag::Link {
-            link_type,
-            dest_url: rewritten_destination(dest_url, attachment_urls),
-            title,
-            id,
-        }),
+        }) => {
+            if let Some(path) = dest_url.strip_prefix("attach:") {
+                *attachment_link_open = true;
+                let href = attachment_urls
+                    .get(path)
+                    .map(|urls| urls.download_url.as_str())
+                    .unwrap_or("#");
+                let title_attribute = if title.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        " title=\"{}\"",
+                        encode_double_quoted_attribute(title.as_ref())
+                    )
+                };
+                Event::Html(CowStr::from(format!(
+                    "<a download href=\"{}\"{}>",
+                    encode_double_quoted_attribute(href),
+                    title_attribute
+                )))
+            } else {
+                Event::Start(Tag::Link {
+                    link_type,
+                    dest_url: rewritten_destination(dest_url, attachment_urls),
+                    title,
+                    id,
+                })
+            }
+        }
+        Event::End(TagEnd::Link) if *attachment_link_open => {
+            *attachment_link_open = false;
+            Event::Html(CowStr::from("</a>"))
+        }
         Event::Start(Tag::Image {
             link_type,
             dest_url,

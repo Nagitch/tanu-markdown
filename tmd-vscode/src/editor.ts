@@ -5,7 +5,11 @@ import { findActiveDocument } from "./activity.js";
 import { TmdCliClient } from "./cli.js";
 import { editInputScript } from "./input.js";
 import { renderSafeMarkdown } from "./markdown.js";
-import { TanuMarkdownModel, type EditorState } from "./model.js";
+import {
+  persistLatestEditorState,
+  TanuMarkdownModel,
+  type EditorState,
+} from "./model.js";
 import type { DocumentInspection, DocumentUpdate, ValidationReport } from "./types.js";
 
 export const VIEW_TYPE = "tanuMarkdown.editor";
@@ -42,8 +46,11 @@ export class TanuMarkdownDocument implements vscode.CustomDocument {
     this.model.replaceInspection(inspection);
   }
 
-  applySavedInspection(inspection: DocumentInspection, savedRevision: number): void {
-    this.model.applySavedInspection(inspection, savedRevision);
+  applyPersistedInspection(
+    inspection: DocumentInspection,
+    persistedRevision: number,
+  ): void {
+    this.model.applyPersistedInspection(inspection, persistedRevision);
   }
 
   dispose(): void {
@@ -115,7 +122,7 @@ export class TanuMarkdownEditorProvider
       title: state.title,
     };
     const inspection = await this.clientFactory().update(filePath(document.uri), update);
-    document.applySavedInspection(inspection, savedRevision);
+    document.applyPersistedInspection(inspection, savedRevision);
     await this.postModel(document);
   }
 
@@ -125,11 +132,12 @@ export class TanuMarkdownEditorProvider
   ): Promise<void> {
     const client = this.clientFactory();
     await client.convert(filePath(document.uri), filePath(destination));
-    const state = document.snapshot();
-    await client.update(filePath(destination), {
-      schema_version: 1,
-      markdown: state.markdown,
-      title: state.title,
+    await persistLatestEditorState(document, async (state) => {
+      await client.update(filePath(destination), {
+        schema_version: 1,
+        markdown: state.markdown,
+        title: state.title,
+      });
     });
   }
 
@@ -167,18 +175,20 @@ export class TanuMarkdownEditorProvider
 
   async addAttachmentActive(source: vscode.Uri, logicalPath: string): Promise<void> {
     const document = this.requireActiveDocument();
+    const persistedRevision = document.contentRevision;
     await this.clientFactory().addAttachment(
       filePath(document.uri),
       filePath(source),
       logicalPath,
     );
-    await this.reloadAfterExternalChange(document);
+    await this.reloadAfterExternalChange(document, persistedRevision);
   }
 
   async removeAttachmentActive(logicalPath: string): Promise<void> {
     const document = this.requireActiveDocument();
+    const persistedRevision = document.contentRevision;
     await this.clientFactory().removeAttachment(filePath(document.uri), logicalPath);
-    await this.reloadAfterExternalChange(document);
+    await this.reloadAfterExternalChange(document, persistedRevision);
   }
 
   async exportActive(output: vscode.Uri, selfContained: boolean): Promise<void> {
@@ -202,8 +212,14 @@ export class TanuMarkdownEditorProvider
     return this.activeDocumentValue;
   }
 
-  private async reloadAfterExternalChange(document: TanuMarkdownDocument): Promise<void> {
-    document.replaceInspection(await this.clientFactory().inspect(filePath(document.uri)));
+  private async reloadAfterExternalChange(
+    document: TanuMarkdownDocument,
+    persistedRevision: number,
+  ): Promise<void> {
+    document.applyPersistedInspection(
+      await this.clientFactory().inspect(filePath(document.uri)),
+      persistedRevision,
+    );
     // Attachment operations have already persisted the container. Emitting a
     // content-change event here would incorrectly make the document dirty.
     await this.postModel(document);

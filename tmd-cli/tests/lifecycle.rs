@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 use std::fs;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 use serde_json::{json, Value};
@@ -47,6 +47,16 @@ fn text(value: &str) -> OsString {
 
 fn parse_json(output: &Output) -> Value {
     serde_json::from_slice(&output.stdout).expect("valid JSON output")
+}
+
+fn only_file_in(directory: &Path) -> PathBuf {
+    let mut entries = fs::read_dir(directory)
+        .expect("read asset directory")
+        .map(|entry| entry.expect("asset entry").path());
+    let file = entries.next().expect("one asset");
+    assert!(file.is_file(), "asset must be a regular file");
+    assert!(entries.next().is_none(), "expected exactly one asset");
+    file
 }
 
 fn exercise_lifecycle(extension: &str) {
@@ -211,10 +221,15 @@ fn exercise_lifecycle(extension: &str) {
         None,
     );
     let linked = fs::read_to_string(&linked_html).expect("linked HTML");
-    assert!(linked.contains("linked_assets/assets/note.txt"));
+    let linked_asset = only_file_in(&directory.path().join("linked_assets"));
+    let linked_asset_name = linked_asset
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("UTF-8 asset name");
+    assert!(linked_asset_name.ends_with(".txt"));
+    assert!(linked.contains(&format!("linked_assets/{linked_asset_name}")));
     assert_eq!(
-        fs::read_to_string(directory.path().join("linked_assets/assets/note.txt"))
-            .expect("linked attachment"),
+        fs::read_to_string(linked_asset).expect("linked attachment"),
         "attachment contents"
     );
 
@@ -446,11 +461,19 @@ fn machine_interfaces_reject_unsafe_inputs() {
         None,
     );
     let linked_html = fs::read_to_string(safe_html_linked_output).expect("safe linked HTML output");
-    assert!(linked_html.contains("<a href=\"#\">attachment</a>"));
-    assert!(!linked_html.contains("<a href=\"safe-linked_assets/active.html\">attachment</a>"));
-    assert!(
-        linked_html.contains("<a download href=\"safe-linked_assets/active.html\">active.html</a>")
-    );
+    let linked_asset = only_file_in(&directory.path().join("safe-linked_assets"));
+    let linked_asset_name = linked_asset
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("UTF-8 asset name");
+    assert!(linked_asset_name.ends_with(".bin"));
+    let linked_asset_url = format!("safe-linked_assets/{linked_asset_name}");
+    assert!(linked_html.contains(&format!(
+        "<a download href=\"{linked_asset_url}\">attachment</a>"
+    )));
+    assert!(linked_html.contains(&format!(
+        "<a download href=\"{linked_asset_url}\">active.html</a>"
+    )));
 
     let original_document = fs::read(&safe_html_doc).expect("original document");
     let overwrite = run_raw(
@@ -470,4 +493,44 @@ fn machine_interfaces_reject_unsafe_inputs() {
         fs::read(&safe_html_doc).expect("preserved source document"),
         original_document
     );
+
+    let collision_doc = directory.path().join("collision.tmd");
+    let collision_html = directory.path().join("collision.html");
+    let first_source = directory.path().join("first.txt");
+    let second_source = directory.path().join("second.txt");
+    fs::write(&first_source, "first").expect("first collision fixture");
+    fs::write(&second_source, "second").expect("second collision fixture");
+    run(vec![text("new"), argument(&collision_doc)], None);
+    for (source, logical_path) in [(&first_source, "a"), (&second_source, "a/b")] {
+        run(
+            vec![
+                text("attachment"),
+                text("add"),
+                argument(&collision_doc),
+                argument(source),
+                text("--path"),
+                text(logical_path),
+                text("--mime"),
+                text("text/plain"),
+            ],
+            None,
+        );
+    }
+    run(
+        vec![
+            text("export-html"),
+            argument(&collision_doc),
+            argument(&collision_html),
+        ],
+        None,
+    );
+    let exported_contents: Vec<String> = fs::read_dir(directory.path().join("collision_assets"))
+        .expect("collision-safe assets")
+        .map(|entry| {
+            fs::read_to_string(entry.expect("asset entry").path()).expect("asset contents")
+        })
+        .collect();
+    assert_eq!(exported_contents.len(), 2);
+    assert!(exported_contents.contains(&"first".to_owned()));
+    assert!(exported_contents.contains(&"second".to_owned()));
 }

@@ -55,9 +55,10 @@ The CLI translates terminal inputs into `tmd-core` operations. It owns:
 
 HTML rendering neutralizes raw markup and executable URL schemes. Self-contained
 exports retain passive raster-image and plain-text MIME types and downgrade
-other attachment data URIs to `application/octet-stream`; linked exports expose
-those other types only through download links. File-format validation belongs
-in `tmd-core`, not in CLI-only code.
+other attachment data URIs to `application/octet-stream`. Linked exports use
+flat UUID-based filenames, download-only attachment links, and passive inline
+image sources. File-format validation belongs in `tmd-core`, not in CLI-only
+code.
 
 ## `tmd-core-ffi`
 

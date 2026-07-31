@@ -35,8 +35,11 @@ export class TanuMarkdownModel {
     this.contentRevisionValue += 1;
   }
 
-  applySavedInspection(inspection: DocumentInspection, savedRevision: number): void {
-    if (this.contentRevisionValue === savedRevision) {
+  applyPersistedInspection(
+    inspection: DocumentInspection,
+    persistedRevision: number,
+  ): void {
+    if (this.contentRevisionValue === persistedRevision) {
       this.replaceInspection(inspection);
       return;
     }
@@ -50,4 +53,27 @@ export class TanuMarkdownModel {
     this.inspectionValue.markdown = state.markdown;
     this.inspectionValue.manifest.title = state.title || null;
   }
+}
+
+export interface RevisionedEditorState {
+  readonly contentRevision: number;
+  snapshot(): EditorState;
+}
+
+export async function persistLatestEditorState(
+  source: RevisionedEditorState,
+  persist: (state: EditorState) => Promise<void>,
+  maxAttempts = 3,
+): Promise<void> {
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const state = source.snapshot();
+    const revision = source.contentRevision;
+    await persist(state);
+    if (source.contentRevision === revision) {
+      return;
+    }
+  }
+  throw new Error(
+    "The document kept changing while it was being saved; pause editing and retry.",
+  );
 }
