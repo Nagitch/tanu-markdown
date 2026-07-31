@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import { findActiveDocument } from "./activity.js";
@@ -6,8 +7,7 @@ import { TmdCliClient } from "./cli.js";
 import { authoritativeStateScript, editInputScript } from "./input.js";
 import { renderSafeMarkdown } from "./markdown.js";
 import {
-  persistDocumentBackup,
-  persistLatestEditorState,
+  persistRetainedDocument,
   TanuMarkdownModel,
   type EditorState,
 } from "./model.js";
@@ -170,14 +170,17 @@ export class TanuMarkdownEditorProvider
   ): Promise<void> {
     await this.documentOperations.run(document, async () => {
       const client = this.clientFactory();
-      await client.convert(filePath(document.uri), filePath(destination));
-      await persistLatestEditorState(document, async (state) => {
-        await client.update(filePath(destination), {
-          schema_version: 1,
-          markdown: state.markdown,
-          title: state.title,
-        });
-      });
+      await persistRetainedDocument(
+        document,
+        async (bytes) => this.seedDestination(document, destination, client, bytes),
+        async (state) => {
+          await client.update(filePath(destination), {
+            schema_version: 1,
+            markdown: state.markdown,
+            title: state.title,
+          });
+        },
+      );
     });
   }
 
@@ -207,7 +210,7 @@ export class TanuMarkdownEditorProvider
     await this.documentOperations.run(document, async () => {
       try {
         const client = this.clientFactory();
-        await persistDocumentBackup(
+        await persistRetainedDocument(
           document,
           async (bytes) => vscode.workspace.fs.writeFile(destination, bytes),
           async (state) => {
@@ -321,6 +324,34 @@ export class TanuMarkdownEditorProvider
     // Attachment operations have already persisted the container. Emitting a
     // content-change event here would incorrectly make the document dirty.
     await this.postModel(document);
+  }
+
+  private async seedDestination(
+    document: TanuMarkdownDocument,
+    destination: vscode.Uri,
+    client: TmdCliClient,
+    bytes: Uint8Array,
+  ): Promise<void> {
+    const sourceExtension = document.inspection.format === "tmdp" ? ".tmdp" : ".tmd";
+    if (path.extname(destination.fsPath).toLowerCase() === sourceExtension) {
+      await vscode.workspace.fs.writeFile(destination, bytes);
+      return;
+    }
+
+    const stagingPath = path.join(
+      path.dirname(destination.fsPath),
+      `.tmd-save-${randomBytes(16).toString("hex")}${sourceExtension}`,
+    );
+    let stagingCreated = false;
+    try {
+      await fs.writeFile(stagingPath, bytes, { flag: "wx" });
+      stagingCreated = true;
+      await client.convert(stagingPath, filePath(destination));
+    } finally {
+      if (stagingCreated) {
+        await fs.rm(stagingPath, { force: true });
+      }
+    }
   }
 
   private recomputeActiveDocument(): void {

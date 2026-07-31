@@ -741,6 +741,7 @@ fn machine_interfaces_reject_unsafe_inputs() {
         "[script](javascript:alert(1))",
         "[mixed case](JaVaScRiPt:alert(2))",
         "[data](data:text/html,<script>alert(3)</script>)",
+        "![remote pixel](//attacker.example/pixel)",
         "[attachment](attach:active.html)",
         "[safe](https://example.com/path)",
         "",
@@ -774,6 +775,8 @@ fn machine_interfaces_reject_unsafe_inputs() {
     assert!(html.matches("href=\"#\"").count() >= 3);
     assert!(html.contains("href=\"https://example.com/path\""));
     assert!(!html.to_ascii_lowercase().contains("href=\"data:text/html"));
+    assert!(!html.contains("src=\"//attacker.example"));
+    assert!(html.contains("<img src=\"#\" alt=\"remote pixel\""));
     assert!(html.contains("data:application/octet-stream;base64,"));
 
     run(

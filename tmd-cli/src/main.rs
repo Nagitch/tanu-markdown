@@ -1189,6 +1189,13 @@ fn rewritten_destination<'a>(
 fn is_safe_export_destination(destination: &str) -> bool {
     let destination = destination.trim();
     if destination
+        .as_bytes()
+        .get(..2)
+        .is_some_and(|prefix| prefix.iter().all(|byte| matches!(byte, b'/' | b'\\')))
+    {
+        return false;
+    }
+    if destination
         .bytes()
         .any(|byte| byte.is_ascii_control() || byte == b' ')
     {

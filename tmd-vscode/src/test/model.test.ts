@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  persistDocumentBackup,
+  persistRetainedDocument,
   persistLatestEditorState,
   TanuMarkdownModel,
 } from "../model.js";
@@ -202,7 +202,7 @@ test("Save As fails safely when edits never become stable", async () => {
   );
 });
 
-test("backup is constructed from retained bytes without rereading its source", async () => {
+test("document copies are constructed from retained bytes without rereading their source", async () => {
   const persistedBytes = Uint8Array.from([0x54, 0x4d, 0x44]);
   const written: number[][] = [];
   const updates: Array<{ markdown: string; title: string }> = [];
@@ -214,7 +214,7 @@ test("backup is constructed from retained bytes without rereading its source", a
     },
   };
 
-  await persistDocumentBackup(
+  await persistRetainedDocument(
     source,
     async (bytes) => {
       written.push([...bytes]);
