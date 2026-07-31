@@ -636,12 +636,13 @@ fn cmd_export_html(input: &Path, output: &Path, self_contained: bool) -> Result<
         destination.write_all(output_html.as_bytes())
     }) {
         if let Some(directory) = published_assets {
-            if let Err(cleanup_error) = fs::remove_dir_all(&directory) {
+            let directory_path = directory.path.clone();
+            if let Err(cleanup_error) = directory.remove_if_current() {
                 return Err(anyhow!(
                     "failed to write `{}`: {}; additionally failed to remove staged assets `{}`: {}",
                     output.display(),
                     error,
-                    directory.display(),
+                    directory_path.display(),
                     cleanup_error
                 ));
             }
@@ -671,7 +672,10 @@ fn write_atomic_output(
         }
     };
     let existing_permissions = match fs::metadata(&target) {
-        Ok(metadata) => Some(metadata.permissions()),
+        Ok(metadata) => {
+            ensure_single_output_link(&target, &metadata)?;
+            Some(metadata.permissions())
+        }
         Err(error) if error.kind() == io::ErrorKind::NotFound => None,
         Err(error) => {
             return Err(error)
@@ -725,6 +729,54 @@ fn new_atomic_output_tempfile(parent: &Path) -> io::Result<tempfile::NamedTempFi
 #[cfg(not(unix))]
 fn new_atomic_output_tempfile(parent: &Path) -> io::Result<tempfile::NamedTempFile> {
     tempfile::NamedTempFile::new_in(parent)
+}
+
+fn ensure_single_output_link(path: &Path, metadata: &fs::Metadata) -> Result<()> {
+    if metadata.is_file() {
+        let links = output_hard_link_count(path, metadata)?;
+        ensure!(
+            links <= 1,
+            "refusing to atomically replace `{}` because it has {links} hard links",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn output_hard_link_count(_path: &Path, metadata: &fs::Metadata) -> io::Result<u64> {
+    use std::os::unix::fs::MetadataExt;
+
+    Ok(metadata.nlink())
+}
+
+#[cfg(windows)]
+fn output_hard_link_count(path: &Path, _metadata: &fs::Metadata) -> io::Result<u64> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileStandardInfo, GetFileInformationByHandleEx, FILE_STANDARD_INFO,
+    };
+
+    let file = File::open(path)?;
+    let mut information = FILE_STANDARD_INFO::default();
+    // SAFETY: `file` owns a valid handle and `information` is a correctly sized buffer.
+    let succeeded = unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FileStandardInfo,
+            std::ptr::addr_of_mut!(information).cast(),
+            std::mem::size_of::<FILE_STANDARD_INFO>() as u32,
+        )
+    };
+    if succeeded == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(u64::from(information.NumberOfLinks))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn output_hard_link_count(_path: &Path, _metadata: &fs::Metadata) -> io::Result<u64> {
+    Ok(1)
 }
 
 fn cmd_db_init(doc_path: &Path, schema_path: Option<&Path>, version: Option<u32>) -> Result<()> {
@@ -1250,7 +1302,7 @@ impl AttachmentExport {
         }
     }
 
-    fn publish(self) -> Result<Option<PathBuf>> {
+    fn publish(self) -> Result<Option<PublishedAttachmentExport>> {
         match self {
             Self::Embedded(_) => Ok(None),
             Self::Staged(export) => export.publish().map(Some),
@@ -1265,14 +1317,51 @@ struct StagedAttachmentExport {
 }
 
 impl StagedAttachmentExport {
-    fn publish(self) -> Result<PathBuf> {
+    fn publish(self) -> Result<PublishedAttachmentExport> {
+        let handle = Handle::from_path(self.staging_directory.path()).with_context(|| {
+            format!(
+                "failed to identify staged attachment directory `{}`",
+                self.staging_directory.path().display()
+            )
+        })?;
         fs::rename(self.staging_directory.path(), &self.final_directory).with_context(|| {
             format!(
                 "refusing to overwrite attachment directory `{}`; remove or rename it first",
                 self.final_directory.display()
             )
         })?;
-        Ok(self.final_directory)
+        Ok(PublishedAttachmentExport {
+            path: self.final_directory,
+            handle,
+        })
+    }
+}
+
+struct PublishedAttachmentExport {
+    path: PathBuf,
+    handle: Handle,
+}
+
+impl PublishedAttachmentExport {
+    fn remove_if_current(self) -> Result<()> {
+        match Handle::from_path(&self.path) {
+            Ok(current) if current == self.handle => fs::remove_dir_all(&self.path).with_context(
+                || {
+                    format!(
+                        "failed to remove published attachment directory `{}`",
+                        self.path.display()
+                    )
+                },
+            ),
+            Ok(_) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error).with_context(|| {
+                format!(
+                    "failed to identify published attachment directory `{}`",
+                    self.path.display()
+                )
+            }),
+        }
     }
 }
 
@@ -1685,6 +1774,55 @@ mod tests {
                 .0
                 .markdown,
             "external"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_output_rejects_multiply_linked_destinations() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let output = directory.path().join("export.html");
+        let alias = directory.path().join("export-alias.html");
+        fs::write(&output, b"shared export").expect("existing output");
+        fs::hard_link(&output, &alias).expect("hard-linked alias");
+
+        let error = write_atomic_output(&output, |destination| {
+            destination.write_all(b"replacement")
+        })
+        .expect_err("hard-linked output must be rejected");
+
+        assert!(error.to_string().contains("hard links"));
+        assert_eq!(fs::read(&output).expect("preserved output"), b"shared export");
+        assert_eq!(fs::read(&alias).expect("preserved alias"), b"shared export");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn asset_cleanup_preserves_replacement_directory() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let published_path = directory.path().join("document_assets");
+        let displaced_path = directory.path().join("displaced_assets");
+        fs::create_dir(&published_path).expect("published directory");
+        fs::write(published_path.join("original.bin"), b"original").expect("published asset");
+        let published = PublishedAttachmentExport {
+            handle: Handle::from_path(&published_path).expect("published identity"),
+            path: published_path.clone(),
+        };
+        fs::rename(&published_path, &displaced_path).expect("displace published directory");
+        fs::create_dir(&published_path).expect("replacement directory");
+        fs::write(published_path.join("external.bin"), b"external").expect("replacement asset");
+
+        published
+            .remove_if_current()
+            .expect("replacement must be preserved");
+
+        assert_eq!(
+            fs::read(published_path.join("external.bin")).expect("replacement asset"),
+            b"external"
+        );
+        assert_eq!(
+            fs::read(displaced_path.join("original.bin")).expect("original asset"),
+            b"original"
         );
     }
 }

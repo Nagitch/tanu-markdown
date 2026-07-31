@@ -34,3 +34,6 @@ serde_json.workspace = true
 sha2.workspace = true
 tempfile.workspace = true
 tmd-core = { path = "../tmd-core" }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
