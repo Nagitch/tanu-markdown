@@ -417,6 +417,80 @@ fn linked_html_export_cleans_up_assets_after_output_failure() {
     assert!(assets.is_dir());
 }
 
+#[test]
+fn conditional_html_export_rejects_stale_and_created_outputs() {
+    let directory = tempdir().expect("temporary directory");
+    let doc = directory.path().join("export.tmd");
+    let output = directory.path().join("output.html");
+    let missing_output = directory.path().join("missing-output.html");
+    run(vec![text("new"), argument(&doc)], None);
+    fs::write(&output, "approved output").expect("approved output");
+    let approved_sha256 = hex::encode(Sha256::digest(
+        fs::read(&output).expect("approved output bytes"),
+    ));
+
+    run(
+        vec![
+            text("export-html"),
+            argument(&doc),
+            argument(&output),
+            text("--self-contained"),
+            text("--expected-output-state"),
+            text(&approved_sha256),
+        ],
+        None,
+    );
+    let exported = fs::read(&output).expect("conditionally replaced output");
+    let exported_sha256 = hex::encode(Sha256::digest(&exported));
+
+    fs::write(&output, "external replacement").expect("external replacement");
+    let stale = run_raw(
+        vec![
+            text("export-html"),
+            argument(&doc),
+            argument(&output),
+            text("--self-contained"),
+            text("--expected-output-state"),
+            text(&exported_sha256),
+        ],
+        None,
+    );
+    assert!(!stale.status.success());
+    assert_eq!(
+        fs::read(&output).expect("preserved external replacement"),
+        b"external replacement"
+    );
+
+    run(
+        vec![
+            text("export-html"),
+            argument(&doc),
+            argument(&missing_output),
+            text("--self-contained"),
+            text("--expected-output-state"),
+            text("missing"),
+        ],
+        None,
+    );
+    let created = fs::read(&missing_output).expect("conditionally created output");
+    let created_conflict = run_raw(
+        vec![
+            text("export-html"),
+            argument(&doc),
+            argument(&missing_output),
+            text("--self-contained"),
+            text("--expected-output-state"),
+            text("missing"),
+        ],
+        None,
+    );
+    assert!(!created_conflict.status.success());
+    assert_eq!(
+        fs::read(&missing_output).expect("preserved created output"),
+        created
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn html_export_preserves_output_symlinks_and_target_permissions() {

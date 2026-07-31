@@ -98,10 +98,18 @@ export class TmdCliClient {
     await this.execute(["attachment", "remove", document, "--path", logicalPath]);
   }
 
-  async exportHtml(document: string, output: string, selfContained: boolean): Promise<void> {
+  async exportHtml(
+    document: string,
+    output: string,
+    selfContained: boolean,
+    expectedOutputState?: string,
+  ): Promise<void> {
     const arguments_ = ["export-html", document, output];
     if (selfContained) {
       arguments_.push("--self-contained");
+    }
+    if (expectedOutputState !== undefined) {
+      arguments_.push("--expected-output-state", expectedOutputState);
     }
     await this.execute(arguments_);
   }

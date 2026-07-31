@@ -102,6 +102,9 @@ enum Commands {
         output: PathBuf,
         #[arg(long)]
         self_contained: bool,
+        /// Publish only if the output is still `missing` or has this SHA-256 digest.
+        #[arg(long, value_parser = parse_expected_output_state)]
+        expected_output_state: Option<ExpectedOutputState>,
     },
     /// Manage the embedded SQLite database.
     Db {
@@ -246,7 +249,13 @@ fn main() -> Result<()> {
             input,
             output,
             self_contained,
-        } => cmd_export_html(&input, &output, self_contained),
+            expected_output_state,
+        } => cmd_export_html(
+            &input,
+            &output,
+            self_contained,
+            expected_output_state.as_ref(),
+        ),
         Commands::Db { command } => match command {
             DbCommands::Init {
                 doc,
@@ -598,7 +607,12 @@ fn remove_created_file_if_current(output: &Path, created_handle: &Handle) -> Res
     }
 }
 
-fn cmd_export_html(input: &Path, output: &Path, self_contained: bool) -> Result<()> {
+fn cmd_export_html(
+    input: &Path,
+    output: &Path,
+    self_contained: bool,
+    expected_output_state: Option<&ExpectedOutputState>,
+) -> Result<()> {
     ensure_distinct_existing_paths(input, output, "HTML output")?;
     let (doc, _) = read_document(input)?;
     let validation = validate_document(&doc).context("failed to validate document")?;
@@ -657,7 +671,9 @@ fn cmd_export_html(input: &Path, output: &Path, self_contained: bool) -> Result<
         attachments = attachment_section,
     );
     let published_assets = attachment_export.publish()?;
-    if let Err(error) = write_bytes_to_path(output, output_html.as_bytes()) {
+    if let Err(error) =
+        write_bytes_if_expected(output, output_html.as_bytes(), expected_output_state)
+    {
         if let Some(directory) = published_assets {
             let directory_path = directory.path.clone();
             if let Err(cleanup_error) = directory.remove_if_current() {

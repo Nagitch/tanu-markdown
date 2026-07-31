@@ -354,12 +354,14 @@ export class TanuMarkdownEditorProvider
     output: vscode.Uri,
     selfContained: boolean,
   ): Promise<void> {
+    const expectedOutputState = diskState(await readOptionalFile(output));
     await this.documentOperations.run(document, async () => {
       requirePersistedRevision(document, "export");
       await this.clientFactory().exportHtml(
         filePath(document.uri),
         filePath(output),
         selfContained,
+        expectedOutputState,
       );
     });
   }
@@ -368,9 +370,14 @@ export class TanuMarkdownEditorProvider
     document: TanuMarkdownDocument,
     output: vscode.Uri,
   ): Promise<void> {
+    const expectedOutputState = diskState(await readOptionalFile(output));
     await this.documentOperations.run(document, async () => {
       requirePersistedRevision(document, "convert");
-      await this.clientFactory().convert(filePath(document.uri), filePath(output));
+      await this.clientFactory().convert(
+        filePath(document.uri),
+        filePath(output),
+        expectedOutputState,
+      );
     });
   }
 
