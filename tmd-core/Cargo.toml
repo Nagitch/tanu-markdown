@@ -34,3 +34,6 @@ tempfile.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
 zip.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true

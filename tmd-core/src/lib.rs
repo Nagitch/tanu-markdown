@@ -1257,14 +1257,20 @@ mod format {
 
     pub fn write_to_path(path: impl AsRef<Path>, doc: &TmdDoc, format: Format) -> TmdResult<()> {
         let path = resolve_write_target(path.as_ref())?;
+        let existing_metadata = match fs::metadata(&path) {
+            Ok(metadata) => {
+                ensure_single_hard_link(&path, &metadata)?;
+                Some(metadata)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        };
         let parent = path.parent().unwrap_or_else(|| Path::new("."));
         let mut temporary = new_atomic_tempfile(parent)?;
-        match fs::metadata(&path) {
-            Ok(metadata) => temporary
+        if let Some(metadata) = existing_metadata {
+            temporary
                 .as_file_mut()
-                .set_permissions(metadata.permissions())?,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
+                .set_permissions(metadata.permissions())?;
         }
         {
             let file = temporary.as_file_mut();
@@ -1287,6 +1293,59 @@ mod format {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(path.to_path_buf()),
             Err(error) => Err(error),
         }
+    }
+
+    fn ensure_single_hard_link(path: &Path, metadata: &fs::Metadata) -> std::io::Result<()> {
+        if metadata.is_file() {
+            let links = hard_link_count(path, metadata)?;
+            if links > 1 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!(
+                        "refusing to atomically replace `{}` because it has {links} hard links",
+                        path.display()
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    fn hard_link_count(_path: &Path, metadata: &fs::Metadata) -> std::io::Result<u64> {
+        use std::os::unix::fs::MetadataExt;
+
+        Ok(metadata.nlink())
+    }
+
+    #[cfg(windows)]
+    fn hard_link_count(path: &Path, _metadata: &fs::Metadata) -> std::io::Result<u64> {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FileStandardInfo, GetFileInformationByHandleEx, FILE_STANDARD_INFO,
+        };
+
+        let file = File::open(path)?;
+        // SAFETY: `file` owns a valid handle for the duration of the call, and
+        // `information` points to a correctly sized writable buffer.
+        let mut information = FILE_STANDARD_INFO::default();
+        let succeeded = unsafe {
+            GetFileInformationByHandleEx(
+                file.as_raw_handle(),
+                FileStandardInfo,
+                std::ptr::addr_of_mut!(information).cast(),
+                std::mem::size_of::<FILE_STANDARD_INFO>() as u32,
+            )
+        };
+        if succeeded == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(u64::from(information.NumberOfLinks))
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    fn hard_link_count(_path: &Path, _metadata: &fs::Metadata) -> std::io::Result<u64> {
+        Ok(1)
     }
 
     #[cfg(unix)]
@@ -2296,6 +2355,30 @@ mod tests {
             .is_symlink());
         let loaded = read_from_path(&target, Some(Format::Tmd)).expect("read target");
         assert_eq!(loaded.markdown, "# Replacement");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_rejects_multiply_linked_destination() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("document.tmd");
+        let alias = dir.path().join("alias.tmd");
+        write_to_path(&path, &sample_doc(), Format::Tmd).expect("write original");
+        std::fs::hard_link(&path, &alias).expect("create hard link");
+        let original_bytes = std::fs::read(&path).expect("read original");
+
+        let error = write_to_path(&path, &sample_doc(), Format::Tmd)
+            .expect_err("reject multiply linked destination");
+
+        assert!(error.to_string().contains("has 2 hard links"));
+        assert_eq!(
+            std::fs::read(&path).expect("preserved path"),
+            original_bytes
+        );
+        assert_eq!(
+            std::fs::read(&alias).expect("preserved alias"),
+            original_bytes
+        );
     }
 
     #[cfg(unix)]

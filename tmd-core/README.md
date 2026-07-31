@@ -49,7 +49,8 @@ fn main() -> tmd_core::TmdResult<()> {
   embedded database version.
 - `read_from_path` and `write_to_path` provide the common path-based API;
   writers reject unsupported TMD major versions rather than risk stripping
-  unknown manifest data.
+  unknown manifest data, and reject destinations with multiple hard links
+  because atomic replacement cannot update every alias safely.
 
 See the
 [TMD 1.0 draft specification](https://github.com/Nagitch/tanu-markdown/blob/main/docs/spec-tmd-1.0-draft.md)
