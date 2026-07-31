@@ -493,6 +493,18 @@ fn cmd_attachment_extract(doc_path: &Path, logical_path: &str, output: &Path) ->
         .data(id)
         .ok_or_else(|| anyhow!("attachment `{logical_path}` has no data"))?;
     ensure_parent_directory(output)?;
+    write_new_file(output, |destination| {
+        destination.write_all(data)?;
+        destination.sync_all()
+    })?;
+    println!("Extracted `{logical_path}` to `{}`", output.display());
+    Ok(())
+}
+
+fn write_new_file(
+    output: &Path,
+    write: impl FnOnce(&mut fs::File) -> io::Result<()>,
+) -> Result<()> {
     let mut destination = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -503,10 +515,18 @@ fn cmd_attachment_extract(doc_path: &Path, logical_path: &str, output: &Path) ->
                 output.display()
             )
         })?;
-    destination
-        .write_all(data)
-        .with_context(|| format!("failed to write `{}`", output.display()))?;
-    println!("Extracted `{logical_path}` to `{}`", output.display());
+    if let Err(error) = write(&mut destination) {
+        drop(destination);
+        if let Err(cleanup_error) = fs::remove_file(output) {
+            return Err(anyhow!(
+                "failed to write `{}`: {}; additionally failed to remove incomplete output: {}",
+                output.display(),
+                error,
+                cleanup_error
+            ));
+        }
+        return Err(error).with_context(|| format!("failed to write `{}`", output.display()));
+    }
     Ok(())
 }
 
@@ -1270,5 +1290,25 @@ fn format_name(format: Format) -> &'static str {
     match format {
         Format::Tmd => "tmd",
         Format::Tmdp => "tmdp",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_file_write_failures_remove_partial_output() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let output = directory.path().join("partial.bin");
+
+        let error = write_new_file(&output, |destination| {
+            destination.write_all(b"partial")?;
+            Err(io::Error::other("injected write failure"))
+        })
+        .expect_err("injected write failure must be reported");
+
+        assert!(error.to_string().contains("failed to write"));
+        assert!(!output.exists(), "partial output must be removed");
     }
 }
