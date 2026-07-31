@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { SerialTaskQueue } from "../queue.js";
 
-test("tasks for one document run serially", async () => {
+test("document operations run serially", async () => {
   const queue = new SerialTaskQueue<object>();
   const document = {};
   const order: string[] = [];
@@ -54,4 +54,12 @@ test("a failed task does not block the next mutation", async () => {
   await assert.rejects(failure, /expected failure/);
   await recovery;
   assert.deepEqual(order, ["failed", "recovered"]);
+});
+
+test("queued document operations return their values", async () => {
+  const queue = new SerialTaskQueue<object>();
+
+  const value = await queue.run({}, async () => ({ valid: true }));
+
+  assert.deepEqual(value, { valid: true });
 });

@@ -74,7 +74,7 @@ with argument arrays and no shell. The webview uses a restrictive content
 security policy, nonce-bound scripts/styles, DOM text APIs, and escaped preview
 HTML. Edit state is sent immediately so closing a panel cannot strand input;
 only preview rendering is debounced. Commands remain bound to their originating
-document across asynchronous work, and attachment mutations run through a
+document across asynchronous work, and all document I/O runs through a
 per-document serial queue. The current editor supports local files only.
 
 ## Repository-level contracts

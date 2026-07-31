@@ -1,12 +1,16 @@
 export class SerialTaskQueue<Key> {
   private readonly tails = new Map<Key, Promise<void>>();
 
-  run(key: Key, task: () => Promise<void>): Promise<void> {
+  run<Value>(key: Key, task: () => Promise<Value>): Promise<Value> {
     const previous = this.tails.get(key) ?? Promise.resolve();
-    const current = previous.catch(() => undefined).then(task);
-    this.tails.set(key, current);
-    return current.finally(() => {
-      if (this.tails.get(key) === current) {
+    const result = previous.then(task);
+    const tail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.tails.set(key, tail);
+    return result.finally(() => {
+      if (this.tails.get(key) === tail) {
         this.tails.delete(key);
       }
     });

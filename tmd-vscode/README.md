@@ -14,8 +14,9 @@ It opens `.tmd` and `.tmdp` files through `tmd inspect --json` and provides:
 Container parsing remains exclusively in Rust. The extension passes argument
 arrays directly to the installed CLI without invoking a shell.
 Commands retain the document that originated the action across dialogs and
-asynchronous saves. Attachment mutations are serialized per document so
-concurrent CLI read-modify-write operations cannot overwrite each other.
+asynchronous saves. Saves, reads, exports, and attachment mutations are
+serialized per document so concurrent CLI read-modify-write operations cannot
+overwrite each other.
 
 ## Requirements
 

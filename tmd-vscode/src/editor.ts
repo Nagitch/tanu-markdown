@@ -67,7 +67,7 @@ export class TanuMarkdownEditorProvider
     new vscode.EventEmitter<vscode.CustomDocumentEditEvent<TanuMarkdownDocument>>();
   readonly onDidChangeCustomDocument = this.changeEmitter.event;
   private readonly panels = new Map<TanuMarkdownDocument, Set<vscode.WebviewPanel>>();
-  private readonly attachmentMutations = new SerialTaskQueue<TanuMarkdownDocument>();
+  private readonly documentOperations = new SerialTaskQueue<TanuMarkdownDocument>();
   private activeDocumentValue: TanuMarkdownDocument | undefined;
 
   constructor(private readonly clientFactory: () => TmdCliClient) {}
@@ -116,36 +116,42 @@ export class TanuMarkdownEditorProvider
   }
 
   async saveCustomDocument(document: TanuMarkdownDocument): Promise<void> {
-    const state = document.snapshot();
-    const savedRevision = document.contentRevision;
-    const update: DocumentUpdate = {
-      schema_version: 1,
-      markdown: state.markdown,
-      title: state.title,
-    };
-    const inspection = await this.clientFactory().update(filePath(document.uri), update);
-    document.applyPersistedInspection(inspection, savedRevision);
-    await this.postModel(document);
+    await this.documentOperations.run(document, async () => {
+      const state = document.snapshot();
+      const savedRevision = document.contentRevision;
+      const update: DocumentUpdate = {
+        schema_version: 1,
+        markdown: state.markdown,
+        title: state.title,
+      };
+      const inspection = await this.clientFactory().update(filePath(document.uri), update);
+      document.applyPersistedInspection(inspection, savedRevision);
+      await this.postModel(document);
+    });
   }
 
   async saveCustomDocumentAs(
     document: TanuMarkdownDocument,
     destination: vscode.Uri,
   ): Promise<void> {
-    const client = this.clientFactory();
-    await client.convert(filePath(document.uri), filePath(destination));
-    await persistLatestEditorState(document, async (state) => {
-      await client.update(filePath(destination), {
-        schema_version: 1,
-        markdown: state.markdown,
-        title: state.title,
+    await this.documentOperations.run(document, async () => {
+      const client = this.clientFactory();
+      await client.convert(filePath(document.uri), filePath(destination));
+      await persistLatestEditorState(document, async (state) => {
+        await client.update(filePath(destination), {
+          schema_version: 1,
+          markdown: state.markdown,
+          title: state.title,
+        });
       });
     });
   }
 
   async revertCustomDocument(document: TanuMarkdownDocument): Promise<void> {
-    document.replaceInspection(await this.clientFactory().inspect(filePath(document.uri)));
-    await this.postModel(document);
+    await this.documentOperations.run(document, async () => {
+      document.replaceInspection(await this.clientFactory().inspect(filePath(document.uri)));
+      await this.postModel(document);
+    });
   }
 
   async backupCustomDocument(
@@ -168,10 +174,12 @@ export class TanuMarkdownEditorProvider
   }
 
   async validateDocument(document: TanuMarkdownDocument): Promise<ValidationReport> {
-    const report = await this.clientFactory().validate(filePath(document.uri));
-    document.inspection.validation = report;
-    await this.postModel(document);
-    return report;
+    return this.documentOperations.run(document, async () => {
+      const report = await this.clientFactory().validate(filePath(document.uri));
+      document.inspection.validation = report;
+      await this.postModel(document);
+      return report;
+    });
   }
 
   async addAttachment(
@@ -179,7 +187,7 @@ export class TanuMarkdownEditorProvider
     source: vscode.Uri,
     logicalPath: string,
   ): Promise<void> {
-    await this.attachmentMutations.run(document, async () => {
+    await this.documentOperations.run(document, async () => {
       const persistedRevision = document.contentRevision;
       await this.clientFactory().addAttachment(
         filePath(document.uri),
@@ -194,7 +202,7 @@ export class TanuMarkdownEditorProvider
     document: TanuMarkdownDocument,
     logicalPath: string,
   ): Promise<void> {
-    await this.attachmentMutations.run(document, async () => {
+    await this.documentOperations.run(document, async () => {
       const persistedRevision = document.contentRevision;
       await this.clientFactory().removeAttachment(filePath(document.uri), logicalPath);
       await this.reloadAfterExternalChange(document, persistedRevision);
@@ -206,18 +214,22 @@ export class TanuMarkdownEditorProvider
     output: vscode.Uri,
     selfContained: boolean,
   ): Promise<void> {
-    await this.clientFactory().exportHtml(
-      filePath(document.uri),
-      filePath(output),
-      selfContained,
-    );
+    await this.documentOperations.run(document, async () => {
+      await this.clientFactory().exportHtml(
+        filePath(document.uri),
+        filePath(output),
+        selfContained,
+      );
+    });
   }
 
   async convertDocument(
     document: TanuMarkdownDocument,
     output: vscode.Uri,
   ): Promise<void> {
-    await this.clientFactory().convert(filePath(document.uri), filePath(output));
+    await this.documentOperations.run(document, async () => {
+      await this.clientFactory().convert(filePath(document.uri), filePath(output));
+    });
   }
 
   private async reloadAfterExternalChange(
