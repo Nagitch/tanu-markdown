@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { runInNewContext } from "node:vm";
 import { test } from "node:test";
-import { editInputScript, PREVIEW_DEBOUNCE_MS } from "../input.js";
+import {
+  authoritativeStateScript,
+  editInputScript,
+  PREVIEW_DEBOUNCE_MS,
+} from "../input.js";
 
 interface InputControl {
   value: string;
@@ -71,4 +75,25 @@ test("editor sends state immediately and debounces only preview rendering", () =
     type: "preview",
     markdown: "Second",
   });
+});
+
+test("authoritative model state replaces focused control values", () => {
+  const title = { value: "stale title" };
+  const markdown = { value: "stale markdown" };
+
+  runInNewContext(
+    `${authoritativeStateScript()}
+     applyAuthoritativeState(model);`,
+    {
+      markdown,
+      model: {
+        title: "restored title",
+        markdown: "restored markdown",
+      },
+      title,
+    },
+  );
+
+  assert.equal(title.value, "restored title");
+  assert.equal(markdown.value, "restored markdown");
 });

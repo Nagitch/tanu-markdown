@@ -20,3 +20,12 @@ export function editInputScript(): string {
     });
   `;
 }
+
+export function authoritativeStateScript(): string {
+  return `
+    const applyAuthoritativeState = (model) => {
+      title.value = model.title;
+      markdown.value = model.markdown;
+    };
+  `;
+}

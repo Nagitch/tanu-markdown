@@ -3,7 +3,7 @@ import * as path from "node:path";
 import * as vscode from "vscode";
 import { findActiveDocument } from "./activity.js";
 import { TmdCliClient } from "./cli.js";
-import { editInputScript } from "./input.js";
+import { authoritativeStateScript, editInputScript } from "./input.js";
 import { renderSafeMarkdown } from "./markdown.js";
 import {
   persistLatestEditorState,
@@ -401,6 +401,7 @@ function editorHtml(_webview: vscode.Webview): string {
     const validation = document.getElementById("validation");
     const preview = document.getElementById("preview");
     ${editInputScript()}
+    ${authoritativeStateScript()}
     document.getElementById("validate").addEventListener("click", () => vscode.postMessage({ type: "validate" }));
     document.getElementById("add-attachment").addEventListener("click", () => vscode.postMessage({ type: "addAttachment" }));
     document.getElementById("export-html").addEventListener("click", () => vscode.postMessage({ type: "exportHtml" }));
@@ -414,8 +415,7 @@ function editorHtml(_webview: vscode.Webview): string {
       }
       if (model.type !== "model") return;
       clearTimeout(previewTimer);
-      if (document.activeElement !== title) title.value = model.title;
-      if (document.activeElement !== markdown) markdown.value = model.markdown;
+      applyAuthoritativeState(model);
       document.getElementById("format").textContent = model.inspection.format;
       document.getElementById("database-version").textContent = String(model.inspection.database_user_version);
       attachments.replaceChildren();
