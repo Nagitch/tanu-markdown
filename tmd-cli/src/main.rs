@@ -19,8 +19,8 @@ use serde_json::{json, Value as JsonValue};
 use sha2::{Digest, Sha256};
 use tmd_core::{
     attachment_references, export_db, import_db, migrate, read_tmd, read_tmdp, reset_db,
-    validate_document, write_to_path, AttachmentMeta, Format, ReadMode, TmdDoc, ValidationSeverity,
-    SQLITE_MAX_USER_VERSION,
+    validate_document, write_bytes_to_path, write_to_path, AttachmentMeta, Format, ReadMode,
+    TmdDoc, ValidationSeverity, SQLITE_MAX_USER_VERSION,
 };
 
 const JSON_SCHEMA_VERSION: u32 = 1;
@@ -653,9 +653,7 @@ fn cmd_export_html(input: &Path, output: &Path, self_contained: bool) -> Result<
         attachments = attachment_section,
     );
     let published_assets = attachment_export.publish()?;
-    if let Err(error) = write_atomic_output(output, |destination| {
-        destination.write_all(output_html.as_bytes())
-    }) {
+    if let Err(error) = write_bytes_to_path(output, output_html.as_bytes()) {
         if let Some(directory) = published_assets {
             let directory_path = directory.path.clone();
             if let Err(cleanup_error) = directory.remove_if_current() {
@@ -676,128 +674,6 @@ fn cmd_export_html(input: &Path, output: &Path, self_contained: bool) -> Result<
         output.display()
     );
     Ok(())
-}
-
-fn write_atomic_output(
-    output: &Path,
-    write: impl FnOnce(&mut File) -> io::Result<()>,
-) -> Result<()> {
-    let target = match fs::symlink_metadata(output) {
-        Ok(metadata) if metadata.file_type().is_symlink() => fs::canonicalize(output)
-            .with_context(|| format!("failed to resolve output symlink `{}`", output.display()))?,
-        Ok(_) => output.to_path_buf(),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => output.to_path_buf(),
-        Err(error) => {
-            return Err(error)
-                .with_context(|| format!("failed to inspect output `{}`", output.display()));
-        }
-    };
-    let existing_permissions = match fs::metadata(&target) {
-        Ok(metadata) => {
-            ensure_single_output_link(&target, &metadata)?;
-            Some(metadata.permissions())
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-        Err(error) => {
-            return Err(error)
-                .with_context(|| format!("failed to inspect output `{}`", target.display()));
-        }
-    };
-    let parent = target
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    let mut temporary = new_atomic_output_tempfile(parent).with_context(|| {
-        format!(
-            "failed to create temporary output in `{}`",
-            parent.display()
-        )
-    })?;
-    if let Some(permissions) = existing_permissions {
-        temporary
-            .as_file_mut()
-            .set_permissions(permissions)
-            .with_context(|| {
-                format!("failed to preserve permissions for `{}`", target.display())
-            })?;
-    }
-    write(temporary.as_file_mut()).with_context(|| {
-        format!(
-            "failed to write temporary output for `{}`",
-            target.display()
-        )
-    })?;
-    temporary
-        .as_file_mut()
-        .sync_all()
-        .with_context(|| format!("failed to sync temporary output for `{}`", target.display()))?;
-    temporary
-        .persist(&target)
-        .map_err(|error| error.error)
-        .with_context(|| format!("failed to publish output `{}`", target.display()))?;
-    Ok(())
-}
-
-#[cfg(unix)]
-fn new_atomic_output_tempfile(parent: &Path) -> io::Result<tempfile::NamedTempFile> {
-    use std::os::unix::fs::PermissionsExt;
-
-    tempfile::Builder::new()
-        .permissions(fs::Permissions::from_mode(0o666))
-        .tempfile_in(parent)
-}
-
-#[cfg(not(unix))]
-fn new_atomic_output_tempfile(parent: &Path) -> io::Result<tempfile::NamedTempFile> {
-    tempfile::NamedTempFile::new_in(parent)
-}
-
-fn ensure_single_output_link(path: &Path, metadata: &fs::Metadata) -> Result<()> {
-    if metadata.is_file() {
-        let links = output_hard_link_count(path, metadata)?;
-        ensure!(
-            links <= 1,
-            "refusing to atomically replace `{}` because it has {links} hard links",
-            path.display()
-        );
-    }
-    Ok(())
-}
-
-#[cfg(unix)]
-fn output_hard_link_count(_path: &Path, metadata: &fs::Metadata) -> io::Result<u64> {
-    use std::os::unix::fs::MetadataExt;
-
-    Ok(metadata.nlink())
-}
-
-#[cfg(windows)]
-fn output_hard_link_count(path: &Path, _metadata: &fs::Metadata) -> io::Result<u64> {
-    use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Storage::FileSystem::{
-        FileStandardInfo, GetFileInformationByHandleEx, FILE_STANDARD_INFO,
-    };
-
-    let file = File::open(path)?;
-    let mut information = FILE_STANDARD_INFO::default();
-    // SAFETY: `file` owns a valid handle and `information` is a correctly sized buffer.
-    let succeeded = unsafe {
-        GetFileInformationByHandleEx(
-            file.as_raw_handle(),
-            FileStandardInfo,
-            std::ptr::addr_of_mut!(information).cast(),
-            std::mem::size_of::<FILE_STANDARD_INFO>() as u32,
-        )
-    };
-    if succeeded == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(u64::from(information.NumberOfLinks))
-}
-
-#[cfg(not(any(unix, windows)))]
-fn output_hard_link_count(_path: &Path, _metadata: &fs::Metadata) -> io::Result<u64> {
-    Ok(1)
 }
 
 fn cmd_db_init(doc_path: &Path, schema_path: Option<&Path>, version: Option<u32>) -> Result<()> {
@@ -1750,27 +1626,6 @@ mod tests {
     }
 
     #[test]
-    fn atomic_output_write_failures_preserve_existing_output() {
-        let directory = tempfile::tempdir().expect("temporary directory");
-        let output = directory.path().join("existing.html");
-        fs::write(&output, b"complete previous export").expect("existing output");
-
-        let error = write_atomic_output(&output, |destination| {
-            destination.write_all(b"partial replacement")?;
-            Err(io::Error::other("injected write failure"))
-        })
-        .expect_err("injected write failure must be reported");
-
-        assert!(error
-            .to_string()
-            .contains("failed to write temporary output"));
-        assert_eq!(
-            fs::read(&output).expect("preserved output"),
-            b"complete previous export"
-        );
-    }
-
-    #[test]
     fn stale_document_mutations_cannot_replace_newer_contents() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let output = directory.path().join("document.tmd");
@@ -1807,9 +1662,8 @@ mod tests {
         fs::write(&output, b"shared export").expect("existing output");
         fs::hard_link(&output, &alias).expect("hard-linked alias");
 
-        let error =
-            write_atomic_output(&output, |destination| destination.write_all(b"replacement"))
-                .expect_err("hard-linked output must be rejected");
+        let error = write_bytes_to_path(&output, b"replacement")
+            .expect_err("hard-linked output must be rejected");
 
         assert!(error.to_string().contains("hard links"));
         assert_eq!(

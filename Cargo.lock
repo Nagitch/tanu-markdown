@@ -939,7 +939,6 @@ dependencies = [
  "sha2",
  "tempfile",
  "tmd-core",
- "windows-sys",
 ]
 
 [[package]]

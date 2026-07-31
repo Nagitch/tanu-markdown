@@ -404,11 +404,13 @@ export class TanuMarkdownEditorProvider
       await fs.writeFile(stagingPath, document.persistedBytes, { flag: "wx" });
       stagingCreated = true;
       await client.update(stagingPath, update);
+      const publishedBytes = await fs.readFile(stagingPath);
       await client.convert(
         stagingPath,
         filePath(document.uri),
         document.expectedDiskState,
       );
+      document.replacePersistedBytes(publishedBytes);
     } finally {
       if (stagingCreated) {
         await fs.rm(stagingPath, { force: true });

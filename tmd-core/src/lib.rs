@@ -5,8 +5,8 @@ pub use db::{
     export_db, import_db, migrate, reset_db, with_conn, with_conn_mut, DbHandle, DbOptions,
 };
 pub use format::{
-    read_from_path, read_tmd, read_tmdp, sniff_format, write_tmd, write_tmdp, write_to_path,
-    Format, ReadMode, Reader, WriteMode, Writer,
+    read_from_path, read_tmd, read_tmdp, sniff_format, write_bytes_to_path, write_tmd, write_tmdp,
+    write_to_path, Format, ReadMode, Reader, WriteMode, Writer,
 };
 pub use manifest::{AttachmentMeta, AttachmentRef, LinkRef, Manifest, Semver};
 pub use util::{normalize_logical_path, now_utc};
@@ -1256,7 +1256,28 @@ mod format {
     }
 
     pub fn write_to_path(path: impl AsRef<Path>, doc: &TmdDoc, format: Format) -> TmdResult<()> {
-        let path = resolve_write_target(path.as_ref())?;
+        replace_path_atomically(path.as_ref(), |file| {
+            let mut writer =
+                Writer::new(std::io::BufWriter::new(file), format, WriteMode::default())?;
+            writer.write_doc(doc)?;
+            writer.finish()
+        })
+    }
+
+    /// Atomically write arbitrary bytes with the same destination safety and metadata checks
+    /// used for TMD containers.
+    pub fn write_bytes_to_path(path: impl AsRef<Path>, bytes: &[u8]) -> TmdResult<()> {
+        replace_path_atomically(path.as_ref(), |file| {
+            file.write_all(bytes)?;
+            Ok(())
+        })
+    }
+
+    fn replace_path_atomically(
+        path: &Path,
+        write: impl FnOnce(&mut File) -> TmdResult<()>,
+    ) -> TmdResult<()> {
+        let path = resolve_write_target(path)?;
         let existing_metadata = match fs::metadata(&path) {
             Ok(metadata) => {
                 ensure_single_hard_link(&path, &metadata)?;
@@ -1273,13 +1294,7 @@ mod format {
                 .set_permissions(metadata.permissions())?;
             ensure_replacement_metadata_compatible(&path, temporary.path(), &metadata)?;
         }
-        {
-            let file = temporary.as_file_mut();
-            let mut writer =
-                Writer::new(std::io::BufWriter::new(file), format, WriteMode::default())?;
-            writer.write_doc(doc)?;
-            writer.finish()?;
-        }
+        write(temporary.as_file_mut())?;
         temporary.as_file_mut().sync_all()?;
         temporary
             .persist(&path)
