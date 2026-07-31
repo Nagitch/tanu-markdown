@@ -50,6 +50,43 @@ fn parse_json(output: &Output) -> Value {
     serde_json::from_slice(&output.stdout).expect("valid JSON output")
 }
 
+#[test]
+fn query_preserves_non_finite_real_values() {
+    let directory = tempdir().expect("temporary directory");
+    let doc = directory.path().join("non-finite.tmd");
+    run(vec![text("new"), argument(&doc)], None);
+
+    let json_output = run(
+        vec![
+            text("db"),
+            text("query"),
+            argument(&doc),
+            text("--sql"),
+            text("SELECT 1e999 AS positive, -1e999 AS negative"),
+            text("--json"),
+        ],
+        None,
+    );
+    let query = parse_json(&json_output);
+    assert_eq!(
+        query["rows"],
+        json!([[{"real": "Infinity"}, {"real": "-Infinity"}]])
+    );
+
+    let table_output = run(
+        vec![
+            text("db"),
+            text("query"),
+            argument(&doc),
+            text("--sql"),
+            text("SELECT 1e999 AS positive, -1e999 AS negative"),
+        ],
+        None,
+    );
+    let table = String::from_utf8(table_output.stdout).expect("UTF-8 table output");
+    assert!(table.contains("| Infinity | -Infinity |"));
+}
+
 fn only_file_in(directory: &Path) -> PathBuf {
     let mut entries = fs::read_dir(directory)
         .expect("read asset directory")

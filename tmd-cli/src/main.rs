@@ -1111,7 +1111,16 @@ fn sql_value_json(value: &SqlValue) -> JsonValue {
     match value {
         SqlValue::Null => JsonValue::Null,
         SqlValue::Integer(value) => json!(value),
-        SqlValue::Real(value) => json!(value),
+        SqlValue::Real(value) if value.is_finite() => json!(value),
+        SqlValue::Real(value) => json!({
+            "real": if value.is_nan() {
+                "NaN"
+            } else if value.is_sign_positive() {
+                "Infinity"
+            } else {
+                "-Infinity"
+            }
+        }),
         SqlValue::Text(value) => json!(value),
         SqlValue::Blob(value) => json!({ "base64": BASE64_STANDARD.encode(value) }),
     }
@@ -1121,6 +1130,10 @@ fn display_json_value(value: &JsonValue) -> String {
     match value {
         JsonValue::Null => "NULL".to_owned(),
         JsonValue::String(value) => value.clone(),
+        JsonValue::Object(value) if value.len() == 1 && value.contains_key("real") => value["real"]
+            .as_str()
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| JsonValue::Object(value.clone()).to_string()),
         other => other.to_string(),
     }
 }
