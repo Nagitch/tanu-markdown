@@ -59,7 +59,9 @@ asset directory and actual `attach:` links/images are rewritten. With the flag,
 the URLs become data URIs. Raw HTML in Markdown is emitted as text, external
 destinations are limited to relative URLs plus `http`, `https`, `mailto`, and
 `tel`, and executable data-URI MIME types are exported as
-`application/octet-stream`.
+`application/octet-stream`. In linked exports, executable attachment types are
+available only through the generated download listing, not inline Markdown
+links. Export refuses an output path that resolves to the source document.
 
 ## Embedded database
 

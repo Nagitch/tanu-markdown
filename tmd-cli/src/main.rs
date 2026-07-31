@@ -489,6 +489,7 @@ fn cmd_attachment_extract(doc_path: &Path, logical_path: &str, output: &Path) ->
 }
 
 fn cmd_export_html(input: &Path, output: &Path, self_contained: bool) -> Result<()> {
+    ensure_distinct_existing_paths(input, output)?;
     let (doc, _) = read_document(input)?;
     let validation = validate_document(&doc).context("failed to validate document")?;
     ensure!(
@@ -809,23 +810,72 @@ fn ensure_parent_directory(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn embedded_attachment_urls(doc: &TmdDoc) -> HashMap<String, String> {
+fn ensure_distinct_existing_paths(input: &Path, output: &Path) -> Result<()> {
+    let output_metadata = match fs::metadata(output) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to inspect `{}`", output.display()));
+        }
+    };
+    let input_metadata =
+        fs::metadata(input).with_context(|| format!("failed to inspect `{}`", input.display()))?;
+    let same_path = fs::canonicalize(input)
+        .with_context(|| format!("failed to resolve `{}`", input.display()))?
+        == fs::canonicalize(output)
+            .with_context(|| format!("failed to resolve `{}`", output.display()))?;
+
+    ensure!(
+        !(same_path || metadata_identifies_same_file(&input_metadata, &output_metadata)),
+        "refusing to overwrite input document `{}` with HTML output",
+        input.display()
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+fn metadata_identifies_same_file(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    left.dev() == right.dev() && left.ino() == right.ino()
+}
+
+#[cfg(not(unix))]
+fn metadata_identifies_same_file(_left: &fs::Metadata, _right: &fs::Metadata) -> bool {
+    false
+}
+
+#[derive(Clone, Debug)]
+struct AttachmentExportUrls {
+    inline_url: String,
+    download_url: String,
+}
+
+fn embedded_attachment_urls(doc: &TmdDoc) -> HashMap<String, AttachmentExportUrls> {
     doc.attachments
         .iter_with_data()
         .map(|(meta, data)| {
+            let url = format!(
+                "data:{};base64,{}",
+                safe_embedded_mime(meta.mime.as_ref()),
+                BASE64_STANDARD.encode(data)
+            );
             (
                 meta.logical_path.clone(),
-                format!(
-                    "data:{};base64,{}",
-                    safe_embedded_mime(meta.mime.as_ref()),
-                    BASE64_STANDARD.encode(data)
-                ),
+                AttachmentExportUrls {
+                    inline_url: url.clone(),
+                    download_url: url,
+                },
             )
         })
         .collect()
 }
 
 fn safe_embedded_mime(mime: &str) -> &'static str {
+    passive_attachment_mime(mime).unwrap_or("application/octet-stream")
+}
+
+fn passive_attachment_mime(mime: &str) -> Option<&'static str> {
     match mime
         .split(';')
         .next()
@@ -834,18 +884,21 @@ fn safe_embedded_mime(mime: &str) -> &'static str {
         .to_ascii_lowercase()
         .as_str()
     {
-        "image/avif" => "image/avif",
-        "image/bmp" => "image/bmp",
-        "image/gif" => "image/gif",
-        "image/jpeg" => "image/jpeg",
-        "image/png" => "image/png",
-        "image/webp" => "image/webp",
-        "text/plain" => "text/plain",
-        _ => "application/octet-stream",
+        "image/avif" => Some("image/avif"),
+        "image/bmp" => Some("image/bmp"),
+        "image/gif" => Some("image/gif"),
+        "image/jpeg" => Some("image/jpeg"),
+        "image/png" => Some("image/png"),
+        "image/webp" => Some("image/webp"),
+        "text/plain" => Some("text/plain"),
+        _ => None,
     }
 }
 
-fn extracted_attachment_urls(doc: &TmdDoc, output: &Path) -> Result<HashMap<String, String>> {
+fn extracted_attachment_urls(
+    doc: &TmdDoc,
+    output: &Path,
+) -> Result<HashMap<String, AttachmentExportUrls>> {
     let output_stem = output
         .file_stem()
         .and_then(|stem| stem.to_str())
@@ -877,13 +930,22 @@ fn extracted_attachment_urls(doc: &TmdDoc, output: &Path) -> Result<HashMap<Stri
             .map(|segment| utf8_percent_encode(segment, URL_SEGMENT_ENCODE_SET).to_string())
             .collect::<Vec<_>>()
             .join("/");
+        let download_url = format!(
+            "{}/{}",
+            utf8_percent_encode(&directory_name, URL_SEGMENT_ENCODE_SET),
+            encoded_path
+        );
+        let inline_url = if passive_attachment_mime(meta.mime.as_ref()).is_some() {
+            download_url.clone()
+        } else {
+            "#".to_owned()
+        };
         urls.insert(
             meta.logical_path.clone(),
-            format!(
-                "{}/{}",
-                utf8_percent_encode(&directory_name, URL_SEGMENT_ENCODE_SET),
-                encoded_path
-            ),
+            AttachmentExportUrls {
+                inline_url,
+                download_url,
+            },
         );
     }
     Ok(urls)
@@ -891,7 +953,7 @@ fn extracted_attachment_urls(doc: &TmdDoc, output: &Path) -> Result<HashMap<Stri
 
 fn rewrite_attachment_event<'a>(
     event: Event<'a>,
-    attachment_urls: &HashMap<String, String>,
+    attachment_urls: &HashMap<String, AttachmentExportUrls>,
 ) -> Event<'a> {
     match event {
         Event::Html(source) | Event::InlineHtml(source) => Event::Text(source),
@@ -923,12 +985,12 @@ fn rewrite_attachment_event<'a>(
 
 fn rewritten_destination<'a>(
     destination: CowStr<'a>,
-    attachment_urls: &HashMap<String, String>,
+    attachment_urls: &HashMap<String, AttachmentExportUrls>,
 ) -> CowStr<'a> {
     if let Some(path) = destination.strip_prefix("attach:") {
         return attachment_urls
             .get(path)
-            .cloned()
+            .map(|urls| urls.inline_url.clone())
             .map(CowStr::from)
             .unwrap_or_else(|| CowStr::from("#"));
     }
@@ -961,7 +1023,10 @@ fn is_safe_export_destination(destination: &str) -> bool {
     }
 }
 
-fn render_attachment_listing(doc: &TmdDoc, attachment_urls: &HashMap<String, String>) -> String {
+fn render_attachment_listing(
+    doc: &TmdDoc,
+    attachment_urls: &HashMap<String, AttachmentExportUrls>,
+) -> String {
     let mut metadata: Vec<_> = doc.list_attachments().collect();
     if metadata.is_empty() {
         return String::new();
@@ -972,7 +1037,7 @@ fn render_attachment_listing(doc: &TmdDoc, attachment_urls: &HashMap<String, Str
     for meta in metadata {
         let href = attachment_urls
             .get(&meta.logical_path)
-            .map(String::as_str)
+            .map(|urls| urls.download_url.as_str())
             .unwrap_or("#");
         output.push_str(&format!(
             "  <li><a download href=\"{}\">{}</a> ({} bytes, {})</li>\n",

@@ -37,9 +37,9 @@ db/main.sqlite3
 
 Each attachment declared by `attachments.json` MUST have exactly one ZIP entry
 whose name equals its `logical_path`. ZIP entry names MUST be enclosed relative
-paths. Duplicate or unsafe entry names are invalid. Readers MAY ignore safe,
-unrecognized entries; writers in this implementation emit only required and
-declared attachment entries.
+paths. Duplicate, unsafe, or undeclared entry names are invalid. Readers
+implementing this draft MUST reject entries other than the four required
+entries and declared attachments.
 
 ZIP compression method and entry ordering are not part of the contract.
 Current writers use stored entries.

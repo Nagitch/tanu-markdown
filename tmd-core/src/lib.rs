@@ -788,6 +788,12 @@ mod format {
     const EOCD_SIGNATURE: [u8; 4] = [0x50, 0x4b, 0x05, 0x06];
     const MAX_COMMENT_SEARCH: usize = 0xFFFF + 22;
     const TMD_COMMENT_PREFIX: &[u8] = b"TMD1\0";
+    const REQUIRED_ENTRY_NAMES: [&str; 4] = [
+        "manifest.json",
+        "index.md",
+        "attachments.json",
+        "db/main.sqlite3",
+    ];
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum Format {
@@ -1037,6 +1043,25 @@ mod format {
         let markdown = read_markdown_from_zip(zip)?;
         let manifest = read_manifest_from_zip(zip)?;
         let attachment_metas = read_attachment_manifest(zip)?;
+        let expected_names: HashSet<String> = REQUIRED_ENTRY_NAMES
+            .into_iter()
+            .map(str::to_owned)
+            .chain(
+                attachment_metas
+                    .iter()
+                    .map(|meta| meta.logical_path.clone()),
+            )
+            .collect();
+        if let Some(name) = names.difference(&expected_names).next() {
+            return Err(TmdError::InvalidFormat(format!(
+                "undeclared ZIP entry `{name}`"
+            )));
+        }
+        if let Some(name) = expected_names.difference(&names).next() {
+            return Err(TmdError::InvalidFormat(format!(
+                "missing declared ZIP entry `{name}`"
+            )));
+        }
 
         let mut attachments = AttachmentStore::new();
         for meta in attachment_metas {
@@ -1598,6 +1623,30 @@ mod tests {
             archive.set_position(0);
             read_tmd(&mut archive, ReadMode::default()).expect_err("archive must be rejected");
         }
+    }
+
+    #[test]
+    fn reader_rejects_undeclared_zip_entries() {
+        let doc = sample_doc();
+        let mut archive = Cursor::new(Vec::new());
+        write_tmd(&mut archive, &doc, WriteMode::default()).expect("write valid archive");
+        archive.set_position(0);
+
+        let mut writer = ZipWriter::new_append(archive).expect("append ZIP entry");
+        writer
+            .start_file("payload.bin", SimpleFileOptions::default())
+            .expect("start undeclared entry");
+        writer
+            .write_all(b"undeclared")
+            .expect("write undeclared entry");
+        let mut archive = writer.finish().expect("finish archive");
+        archive.set_position(0);
+
+        let error = read_tmd(&mut archive, ReadMode::default())
+            .expect_err("undeclared entry must be rejected");
+        assert!(error
+            .to_string()
+            .contains("undeclared ZIP entry `payload.bin`"));
     }
 
     #[test]

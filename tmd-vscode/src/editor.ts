@@ -5,42 +5,45 @@ import { findActiveDocument } from "./activity.js";
 import { TmdCliClient } from "./cli.js";
 import { editInputScript } from "./input.js";
 import { renderSafeMarkdown } from "./markdown.js";
+import { TanuMarkdownModel, type EditorState } from "./model.js";
 import type { DocumentInspection, DocumentUpdate, ValidationReport } from "./types.js";
 
 export const VIEW_TYPE = "tanuMarkdown.editor";
 
-interface EditorState {
-  markdown: string;
-  title: string;
-}
-
 export class TanuMarkdownDocument implements vscode.CustomDocument {
   private readonly disposeEmitter = new vscode.EventEmitter<void>();
   readonly onDidDispose = this.disposeEmitter.event;
+  private readonly model: TanuMarkdownModel;
 
   constructor(
     readonly uri: vscode.Uri,
-    private inspectionValue: DocumentInspection,
-  ) {}
+    inspection: DocumentInspection,
+  ) {
+    this.model = new TanuMarkdownModel(inspection);
+  }
 
   get inspection(): DocumentInspection {
-    return this.inspectionValue;
+    return this.model.inspection;
+  }
+
+  get contentRevision(): number {
+    return this.model.contentRevision;
   }
 
   snapshot(): EditorState {
-    return {
-      markdown: this.inspectionValue.markdown,
-      title: this.inspectionValue.manifest.title ?? "",
-    };
+    return this.model.snapshot();
   }
 
   applyState(state: EditorState): void {
-    this.inspectionValue.markdown = state.markdown;
-    this.inspectionValue.manifest.title = state.title || null;
+    this.model.applyState(state);
   }
 
   replaceInspection(inspection: DocumentInspection): void {
-    this.inspectionValue = inspection;
+    this.model.replaceInspection(inspection);
+  }
+
+  applySavedInspection(inspection: DocumentInspection, savedRevision: number): void {
+    this.model.applySavedInspection(inspection, savedRevision);
   }
 
   dispose(): void {
@@ -105,13 +108,14 @@ export class TanuMarkdownEditorProvider
 
   async saveCustomDocument(document: TanuMarkdownDocument): Promise<void> {
     const state = document.snapshot();
+    const savedRevision = document.contentRevision;
     const update: DocumentUpdate = {
       schema_version: 1,
       markdown: state.markdown,
       title: state.title,
     };
     const inspection = await this.clientFactory().update(filePath(document.uri), update);
-    document.replaceInspection(inspection);
+    document.applySavedInspection(inspection, savedRevision);
     await this.postModel(document);
   }
 

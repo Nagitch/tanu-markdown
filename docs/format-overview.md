@@ -62,7 +62,7 @@ Default reads:
 
 - parse required JSON and SQLite entries;
 - require `db/main.sqlite3` to have a SQLite 3 header;
-- reject unsafe or duplicate ZIP entry names;
+- reject unsafe, duplicate, or undeclared ZIP entry names;
 - reject malformed `.tmdp` comments and invalid UTF-8 Markdown;
 - verify attachment byte lengths and SHA-256 digests when present.
 

@@ -376,6 +376,7 @@ fn machine_interfaces_reject_unsafe_inputs() {
 
     let safe_html_doc = directory.path().join("safe-html.tmd");
     let safe_html_output = directory.path().join("safe.html");
+    let safe_html_linked_output = directory.path().join("safe-linked.html");
     let active_html = directory.path().join("active.html");
     fs::write(&active_html, "<script>alert('attachment')</script>")
         .expect("active HTML attachment");
@@ -435,4 +436,38 @@ fn machine_interfaces_reject_unsafe_inputs() {
     assert!(html.contains("href=\"https://example.com/path\""));
     assert!(!html.to_ascii_lowercase().contains("href=\"data:text/html"));
     assert!(html.contains("data:application/octet-stream;base64,"));
+
+    run(
+        vec![
+            text("export-html"),
+            argument(&safe_html_doc),
+            argument(&safe_html_linked_output),
+        ],
+        None,
+    );
+    let linked_html = fs::read_to_string(safe_html_linked_output).expect("safe linked HTML output");
+    assert!(linked_html.contains("<a href=\"#\">attachment</a>"));
+    assert!(!linked_html.contains("<a href=\"safe-linked_assets/active.html\">attachment</a>"));
+    assert!(
+        linked_html.contains("<a download href=\"safe-linked_assets/active.html\">active.html</a>")
+    );
+
+    let original_document = fs::read(&safe_html_doc).expect("original document");
+    let overwrite = run_raw(
+        vec![
+            text("export-html"),
+            argument(&safe_html_doc),
+            argument(&safe_html_doc),
+            text("--self-contained"),
+        ],
+        None,
+    );
+    assert!(!overwrite.status.success());
+    assert!(
+        String::from_utf8_lossy(&overwrite.stderr).contains("refusing to overwrite input document")
+    );
+    assert_eq!(
+        fs::read(&safe_html_doc).expect("preserved source document"),
+        original_document
+    );
 }
