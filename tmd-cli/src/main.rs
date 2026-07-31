@@ -18,8 +18,9 @@ use serde::Deserialize;
 use serde_json::{json, Value as JsonValue};
 use sha2::{Digest, Sha256};
 use tmd_core::{
-    export_db, import_db, migrate, read_tmd, read_tmdp, reset_db, validate_document, write_to_path,
-    AttachmentMeta, Format, ReadMode, TmdDoc, ValidationSeverity, SQLITE_MAX_USER_VERSION,
+    attachment_references, export_db, import_db, migrate, read_tmd, read_tmdp, reset_db,
+    validate_document, write_to_path, AttachmentMeta, Format, ReadMode, TmdDoc, ValidationSeverity,
+    SQLITE_MAX_USER_VERSION,
 };
 
 const JSON_SCHEMA_VERSION: u32 = 1;
@@ -487,7 +488,16 @@ fn cmd_attachment_add(
 
 fn cmd_attachment_remove(doc_path: &Path, logical_path: &str) -> Result<()> {
     let (mut doc, format, expected) = read_document_for_update(doc_path)?;
+    ensure_attachment_unreferenced(&doc, logical_path, "remove")?;
     let id = attachment_id_by_path(&doc, logical_path)?;
+    if doc
+        .manifest
+        .cover_image
+        .as_ref()
+        .is_some_and(|cover| cover.id == id)
+    {
+        doc.manifest.cover_image = None;
+    }
     doc.remove_attachment(id)
         .context("failed to remove attachment")?;
     doc.touch();
@@ -498,12 +508,23 @@ fn cmd_attachment_remove(doc_path: &Path, logical_path: &str) -> Result<()> {
 
 fn cmd_attachment_rename(doc_path: &Path, from: &str, to: &str) -> Result<()> {
     let (mut doc, format, expected) = read_document_for_update(doc_path)?;
+    ensure_attachment_unreferenced(&doc, from, "rename")?;
     let id = attachment_id_by_path(&doc, from)?;
     doc.rename_attachment(id, to)
         .context("failed to rename attachment")?;
     doc.touch();
     write_document_if_expected(doc_path, &doc, format, Some(&expected))?;
     println!("Renamed `{from}` to `{to}` in `{}`", doc_path.display());
+    Ok(())
+}
+
+fn ensure_attachment_unreferenced(doc: &TmdDoc, logical_path: &str, operation: &str) -> Result<()> {
+    ensure!(
+        !attachment_references(&doc.markdown)
+            .iter()
+            .any(|path| path == logical_path),
+        "cannot {operation} attachment `{logical_path}` while Markdown references it; update the attach: destination first"
+    );
     Ok(())
 }
 

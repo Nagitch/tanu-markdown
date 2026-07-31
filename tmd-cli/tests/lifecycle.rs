@@ -7,7 +7,9 @@ use std::process::{Command, Output, Stdio};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tempfile::tempdir;
-use tmd_core::{write_tmd, write_to_path, Format, TmdDoc, WriteMode};
+use tmd_core::{
+    read_from_path, write_tmd, write_to_path, AttachmentRef, Format, TmdDoc, WriteMode,
+};
 
 fn argument(path: &Path) -> OsString {
     path.as_os_str().to_owned()
@@ -274,6 +276,103 @@ fn conditional_convert_rejects_stale_and_created_outputs() {
     assert_eq!(
         fs::read(&missing_output).expect("preserved created output"),
         created
+    );
+}
+
+#[test]
+fn attachment_mutations_preserve_references_and_cover_metadata() {
+    let directory = tempdir().expect("temporary directory");
+    let doc_path = directory.path().join("attachments.tmd");
+    let source = directory.path().join("cover.png");
+    fs::write(&source, b"cover").expect("attachment fixture");
+    run(vec![text("new"), argument(&doc_path)], None);
+    run(
+        vec![
+            text("attachment"),
+            text("add"),
+            argument(&doc_path),
+            argument(&source),
+            text("--path"),
+            text("images/cover.png"),
+            text("--mime"),
+            text("image/png"),
+        ],
+        None,
+    );
+    let referenced = json!({
+        "schema_version": 1,
+        "markdown": "![Cover](attach:images/cover.png)\n",
+    });
+    run(
+        vec![text("update"), argument(&doc_path), text("--json-stdin")],
+        Some(&referenced.to_string()),
+    );
+    let referenced_bytes = fs::read(&doc_path).expect("referenced document");
+
+    let rename = run_raw(
+        vec![
+            text("attachment"),
+            text("rename"),
+            argument(&doc_path),
+            text("--from"),
+            text("images/cover.png"),
+            text("--to"),
+            text("images/renamed.png"),
+        ],
+        None,
+    );
+    assert!(!rename.status.success());
+    assert!(String::from_utf8_lossy(&rename.stderr).contains("update the attach: destination"));
+    let remove = run_raw(
+        vec![
+            text("attachment"),
+            text("remove"),
+            argument(&doc_path),
+            text("--path"),
+            text("images/cover.png"),
+        ],
+        None,
+    );
+    assert!(!remove.status.success());
+    assert_eq!(
+        fs::read(&doc_path).expect("preserved referenced document"),
+        referenced_bytes
+    );
+
+    let unreferenced = json!({
+        "schema_version": 1,
+        "markdown": "# Cover\n",
+    });
+    run(
+        vec![text("update"), argument(&doc_path), text("--json-stdin")],
+        Some(&unreferenced.to_string()),
+    );
+    let mut doc = read_from_path(&doc_path, Some(Format::Tmd)).expect("document with attachment");
+    let cover_id = doc
+        .attachment_meta_by_path("images/cover.png")
+        .expect("cover attachment")
+        .id;
+    doc.manifest.cover_image = Some(AttachmentRef { id: cover_id });
+    write_to_path(&doc_path, &doc, Format::Tmd).expect("set cover metadata");
+
+    run(
+        vec![
+            text("attachment"),
+            text("remove"),
+            argument(&doc_path),
+            text("--path"),
+            text("images/cover.png"),
+        ],
+        None,
+    );
+    let removed = read_from_path(&doc_path, Some(Format::Tmd)).expect("removed attachment");
+    assert_eq!(removed.manifest.cover_image, None);
+    assert_eq!(
+        parse_json(&run(
+            vec![text("validate"), argument(&doc_path), text("--json")],
+            None,
+        ))["valid"],
+        true
     );
 }
 
@@ -668,6 +767,14 @@ fn exercise_lifecycle(extension: &str) {
     ));
     assert_eq!(converted_validation["valid"], true);
 
+    let rename_update = json!({
+        "schema_version": 1,
+        "markdown": "# Lifecycle\n\n[Download the note](attach:assets/renamed.txt)\n",
+    });
+    run(
+        vec![text("update"), argument(&converted), text("--json-stdin")],
+        Some(&rename_update.to_string()),
+    );
     run(
         vec![
             text("attachment"),
@@ -679,14 +786,6 @@ fn exercise_lifecycle(extension: &str) {
             text("assets/renamed.txt"),
         ],
         None,
-    );
-    let rename_update = json!({
-        "schema_version": 1,
-        "markdown": "# Lifecycle\n\n[Download the note](attach:assets/renamed.txt)\n",
-    });
-    run(
-        vec![text("update"), argument(&converted), text("--json-stdin")],
-        Some(&rename_update.to_string()),
     );
     run(
         vec![
@@ -704,6 +803,14 @@ fn exercise_lifecycle(extension: &str) {
         "attachment contents"
     );
 
+    let remove_update = json!({
+        "schema_version": 1,
+        "markdown": "# Lifecycle\n\nAttachment removed.\n",
+    });
+    run(
+        vec![text("update"), argument(&converted), text("--json-stdin")],
+        Some(&remove_update.to_string()),
+    );
     run(
         vec![
             text("attachment"),
@@ -713,14 +820,6 @@ fn exercise_lifecycle(extension: &str) {
             text("assets/renamed.txt"),
         ],
         None,
-    );
-    let remove_update = json!({
-        "schema_version": 1,
-        "markdown": "# Lifecycle\n\nAttachment removed.\n",
-    });
-    run(
-        vec![text("update"), argument(&converted), text("--json-stdin")],
-        Some(&remove_update.to_string()),
     );
     run(
         vec![text("validate"), argument(&converted), text("--json")],
