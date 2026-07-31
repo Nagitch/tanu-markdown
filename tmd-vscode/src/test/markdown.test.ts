@@ -14,10 +14,11 @@ test("safe preview escapes source HTML and executable URLs", () => {
 
 test("safe preview retains supported links and formatting", () => {
   const output = renderSafeMarkdown(
-    "**Bold** [site](https://example.com) [file](attach:files/note.txt)",
+    "**Bold** [site](https://example.com/?a=1&b=2) [file](attach:files/note.txt)",
   );
   assert.match(output, /<strong>Bold<\/strong>/);
-  assert.match(output, /href="https:\/\/example\.com"/);
+  assert.match(output, /href="https:\/\/example\.com\/\?a=1&amp;b=2"/);
+  assert.doesNotMatch(output, /&amp;amp;/);
   assert.match(output, /href="attach:files\/note\.txt"/);
 });
 

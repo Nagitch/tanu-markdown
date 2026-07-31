@@ -15,27 +15,47 @@ function safeDestination(destination: string): string | undefined {
     trimmed.startsWith("http://") ||
     trimmed.startsWith("mailto:")
   ) {
-    return escapeHtml(trimmed);
+    return trimmed;
   }
   return undefined;
 }
 
-function renderInline(value: string): string {
+function renderTextFormatting(value: string): string {
   let output = escapeHtml(value);
-  output = output.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_match, alt: string, destination: string) => {
-    const safe = safeDestination(destination);
-    return safe
-      ? `<span class="image-placeholder" data-source="${safe}">[image: ${alt}]</span>`
-      : `[image: ${alt}]`;
-  });
-  output = output.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label: string, destination: string) => {
-    const safe = safeDestination(destination);
-    return safe ? `<a href="${safe}">${label}</a>` : label;
-  });
   output = output.replace(/`([^`]+)`/g, "<code>$1</code>");
   output = output.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   output = output.replace(/\*([^*]+)\*/g, "<em>$1</em>");
   return output;
+}
+
+function renderInline(value: string): string {
+  const links = /(!?)\[([^\]]*)\]\(([^)]+)\)/g;
+  const output: string[] = [];
+  let cursor = 0;
+
+  for (const match of value.matchAll(links)) {
+    const index = match.index ?? 0;
+    output.push(renderTextFormatting(value.slice(cursor, index)));
+    const image = match[1] === "!";
+    const label = match[2] ?? "";
+    const safe = safeDestination(match[3] ?? "");
+    if (image) {
+      output.push(
+        safe
+          ? `<span class="image-placeholder" data-source="${escapeHtml(safe)}">[image: ${escapeHtml(label)}]</span>`
+          : `[image: ${escapeHtml(label)}]`,
+      );
+    } else {
+      output.push(
+        safe
+          ? `<a href="${escapeHtml(safe)}">${renderTextFormatting(label)}</a>`
+          : renderTextFormatting(label),
+      );
+    }
+    cursor = index + match[0].length;
+  }
+  output.push(renderTextFormatting(value.slice(cursor)));
+  return output.join("");
 }
 
 /**
