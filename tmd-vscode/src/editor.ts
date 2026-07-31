@@ -11,6 +11,7 @@ import {
   type EditorState,
 } from "./model.js";
 import { SerialTaskQueue } from "./queue.js";
+import { ClientRevisionTracker } from "./revision.js";
 import type { DocumentInspection, DocumentUpdate, ValidationReport } from "./types.js";
 
 export const VIEW_TYPE = "tanuMarkdown.editor";
@@ -82,7 +83,8 @@ export class TanuMarkdownEditorProvider
     new vscode.EventEmitter<vscode.CustomDocumentEditEvent<TanuMarkdownDocument>>();
   readonly onDidChangeCustomDocument = this.changeEmitter.event;
   private readonly panels = new Map<TanuMarkdownDocument, Set<vscode.WebviewPanel>>();
-  private readonly panelClientRevisions = new WeakMap<vscode.WebviewPanel, number>();
+  private readonly panelClientRevisions =
+    new ClientRevisionTracker<vscode.WebviewPanel>();
   private readonly documentOperations = new SerialTaskQueue<TanuMarkdownDocument>();
   private activeDocumentValue: TanuMarkdownDocument | undefined;
 
@@ -291,6 +293,8 @@ export class TanuMarkdownEditorProvider
     }
     switch (message.type) {
       case "ready":
+        // Reloaded webviews restart their client-side revision counter.
+        this.panelClientRevisions.reset(panel);
         await this.postModel(document);
         break;
       case "edit": {
@@ -304,8 +308,7 @@ export class TanuMarkdownEditorProvider
           return;
         }
         const clientRevision = message.clientRevision;
-        const previousClientRevision = this.panelClientRevisions.get(panel) ?? 0;
-        if (clientRevision <= previousClientRevision) {
+        if (!this.panelClientRevisions.accept(panel, clientRevision)) {
           await panel.webview.postMessage({
             type: "editAck",
             clientRevision,
@@ -313,7 +316,6 @@ export class TanuMarkdownEditorProvider
           });
           return;
         }
-        this.panelClientRevisions.set(panel, clientRevision);
         const before = document.snapshot();
         const after = { markdown: message.markdown, title: message.title };
         if (before.markdown !== after.markdown || before.title !== after.title) {
@@ -392,7 +394,7 @@ export class TanuMarkdownEditorProvider
       [...panels].map((panel) =>
         panel.webview.postMessage({
           ...model,
-          acknowledgedClientRevision: this.panelClientRevisions.get(panel) ?? 0,
+          acknowledgedClientRevision: this.panelClientRevisions.latest(panel),
         }),
       ),
     );
