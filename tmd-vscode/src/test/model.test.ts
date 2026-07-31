@@ -53,6 +53,7 @@ test("persisted inspection preserves edits made while an operation was pending",
   assert.equal(model.persistedRevision, savedRevision);
   assert.notEqual(model.persistedRevision, model.contentRevision);
   assert.equal(model.isCurrentRevisionPersisted, false);
+  assert.equal(model.isValidationCurrent, false);
 });
 
 test("save response replaces state when no newer edit exists", () => {
@@ -70,6 +71,7 @@ test("save response replaces state when no newer edit exists", () => {
   });
   assert.equal(model.persistedRevision, model.contentRevision);
   assert.equal(model.isCurrentRevisionPersisted, true);
+  assert.equal(model.isValidationCurrent, true);
 });
 
 test("validation results are discarded after a newer edit", () => {
@@ -93,6 +95,7 @@ test("validation results are discarded after a newer edit", () => {
   assert.equal(model.applyValidation(staleReport, validatedRevision), false);
   assert.equal(model.inspection.validation.valid, true);
   assert.deepEqual(model.inspection.validation.issues, []);
+  assert.equal(model.isValidationCurrent, false);
 });
 
 test("validation results apply to the revision they checked", () => {
@@ -112,6 +115,7 @@ test("validation results apply to the revision they checked", () => {
 
   assert.equal(model.applyValidation(report, model.contentRevision), true);
   assert.equal(model.inspection.validation, report);
+  assert.equal(model.isValidationCurrent, true);
 });
 
 test("Save As retries until the destination contains the latest edit", async () => {

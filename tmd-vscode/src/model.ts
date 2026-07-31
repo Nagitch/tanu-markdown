@@ -8,6 +8,7 @@ export interface EditorState {
 export class TanuMarkdownModel {
   private contentRevisionValue = 0;
   private persistedRevisionValue = 0;
+  private validationRevisionValue = 0;
 
   constructor(private inspectionValue: DocumentInspection) {}
 
@@ -27,6 +28,10 @@ export class TanuMarkdownModel {
     return this.persistedRevisionValue === this.contentRevisionValue;
   }
 
+  get isValidationCurrent(): boolean {
+    return this.validationRevisionValue === this.contentRevisionValue;
+  }
+
   snapshot(): EditorState {
     return {
       markdown: this.inspectionValue.markdown,
@@ -43,6 +48,7 @@ export class TanuMarkdownModel {
     this.inspectionValue = inspection;
     this.contentRevisionValue += 1;
     this.persistedRevisionValue = this.contentRevisionValue;
+    this.validationRevisionValue = this.contentRevisionValue;
   }
 
   applyPersistedInspection(
@@ -58,6 +64,7 @@ export class TanuMarkdownModel {
     this.inspectionValue = inspection;
     this.setState(currentState);
     this.persistedRevisionValue = persistedRevision;
+    this.validationRevisionValue = persistedRevision;
   }
 
   applyValidation(report: ValidationReport, validatedRevision: number): boolean {
@@ -65,6 +72,7 @@ export class TanuMarkdownModel {
       return false;
     }
     this.inspectionValue.validation = report;
+    this.validationRevisionValue = validatedRevision;
     return true;
   }
 

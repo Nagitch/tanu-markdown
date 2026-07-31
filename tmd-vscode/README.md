@@ -19,7 +19,8 @@ serialized per document so concurrent CLI read-modify-write operations cannot
 overwrite each other. Validation results are applied only when the checked
 editor revision is still current and known to have reached disk. Validation,
 attachment mutation, HTML export, and format conversion reject an editor
-revision that a racing save has not persisted.
+revision that a racing save has not persisted. Any edit immediately marks the
+displayed validation report stale until the current revision is validated.
 
 ## Requirements
 

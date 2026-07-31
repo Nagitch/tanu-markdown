@@ -39,6 +39,10 @@ export class TanuMarkdownDocument implements vscode.CustomDocument {
     return this.model.isCurrentRevisionPersisted;
   }
 
+  get isValidationCurrent(): boolean {
+    return this.model.isValidationCurrent;
+  }
+
   snapshot(): EditorState {
     return this.model.snapshot();
   }
@@ -301,6 +305,10 @@ export class TanuMarkdownEditorProvider
             await this.postModel(document);
           },
         });
+        await panel.webview.postMessage({
+          type: "validationState",
+          validationCurrent: document.isValidationCurrent,
+        });
         break;
       }
       case "preview": {
@@ -339,6 +347,7 @@ export class TanuMarkdownEditorProvider
     const model = {
       type: "model",
       inspection: document.inspection,
+      validationCurrent: document.isValidationCurrent,
       markdown: state.markdown,
       title: state.title,
       previewHtml: renderSafeMarkdown(state.markdown),
@@ -410,6 +419,7 @@ function editorHtml(_webview: vscode.Webview): string {
     .card { padding: .65rem; border: 1px solid var(--vscode-panel-border); }
     .valid { color: var(--vscode-testing-iconPassed); }
     .invalid { color: var(--vscode-testing-iconFailed); }
+    .stale { color: var(--vscode-descriptionForeground); }
     li { margin: .35rem 0; }
     .attachment { display: flex; justify-content: space-between; gap: .5rem; align-items: center; }
     .preview { line-height: 1.6; }
@@ -458,11 +468,35 @@ function editorHtml(_webview: vscode.Webview): string {
     document.getElementById("add-attachment").addEventListener("click", () => vscode.postMessage({ type: "addAttachment" }));
     document.getElementById("export-html").addEventListener("click", () => vscode.postMessage({ type: "exportHtml" }));
     preview.addEventListener("click", (event) => { if (event.target.closest("a")) event.preventDefault(); });
+    function renderValidation(report, current) {
+      validation.replaceChildren();
+      const status = document.createElement("p");
+      if (!current || !report) {
+        status.className = "stale";
+        status.textContent = "Validation required";
+        validation.append(status);
+        return;
+      }
+      status.className = report.valid ? "valid" : "invalid";
+      status.textContent = report.valid ? "Valid" : "Validation errors";
+      validation.append(status);
+      const issues = document.createElement("ul");
+      for (const issue of report.issues) {
+        const item = document.createElement("li");
+        item.textContent = issue.severity + " [" + issue.code + "]: " + issue.message;
+        issues.append(item);
+      }
+      validation.append(issues);
+    }
     window.addEventListener("message", (event) => {
       const model = event.data;
       if (!model) return;
       if (model.type === "preview") {
         preview.innerHTML = model.previewHtml;
+        return;
+      }
+      if (model.type === "validationState") {
+        renderValidation(undefined, model.validationCurrent);
         return;
       }
       if (model.type !== "model") return;
@@ -489,18 +523,7 @@ function editorHtml(_webview: vscode.Webview): string {
         item.textContent = object.type + ": " + object.name;
         databaseObjects.append(item);
       }
-      validation.replaceChildren();
-      const status = document.createElement("p");
-      status.className = model.inspection.validation.valid ? "valid" : "invalid";
-      status.textContent = model.inspection.validation.valid ? "Valid" : "Validation errors";
-      validation.append(status);
-      const issues = document.createElement("ul");
-      for (const issue of model.inspection.validation.issues) {
-        const item = document.createElement("li");
-        item.textContent = issue.severity + " [" + issue.code + "]: " + issue.message;
-        issues.append(item);
-      }
-      validation.append(issues);
+      renderValidation(model.inspection.validation, model.validationCurrent);
       preview.innerHTML = model.previewHtml;
     });
     vscode.postMessage({ type: "ready" });
