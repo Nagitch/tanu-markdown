@@ -35,6 +35,10 @@ export class TanuMarkdownDocument implements vscode.CustomDocument {
     return this.model.contentRevision;
   }
 
+  get persistedRevision(): number {
+    return this.model.persistedRevision;
+  }
+
   snapshot(): EditorState {
     return this.model.snapshot();
   }
@@ -180,6 +184,11 @@ export class TanuMarkdownEditorProvider
   async validateDocument(document: TanuMarkdownDocument): Promise<ValidationReport> {
     return this.documentOperations.run(document, async () => {
       const validatedRevision = document.contentRevision;
+      if (document.persistedRevision !== validatedRevision) {
+        throw new Error(
+          "The latest editor revision has not reached disk; save and validate again.",
+        );
+      }
       const report = await this.clientFactory().validate(filePath(document.uri));
       if (!document.applyValidation(report, validatedRevision)) {
         throw new Error(

@@ -516,6 +516,43 @@ fn machine_interfaces_reject_unsafe_inputs() {
         original_document
     );
 
+    let database_overwrite = run_raw(
+        vec![
+            text("db"),
+            text("export"),
+            argument(&safe_html_doc),
+            argument(&safe_html_doc),
+        ],
+        None,
+    );
+    assert!(!database_overwrite.status.success());
+    assert!(String::from_utf8_lossy(&database_overwrite.stderr)
+        .contains("refusing to overwrite input document"));
+    assert_eq!(
+        fs::read(&safe_html_doc).expect("preserved database export source"),
+        original_document
+    );
+
+    #[cfg(unix)]
+    {
+        let hard_link = directory.path().join("database-export-hard-link.tmd");
+        fs::hard_link(&safe_html_doc, &hard_link).expect("database export hard link");
+        let hard_link_overwrite = run_raw(
+            vec![
+                text("db"),
+                text("export"),
+                argument(&safe_html_doc),
+                argument(&hard_link),
+            ],
+            None,
+        );
+        assert!(!hard_link_overwrite.status.success());
+        assert_eq!(
+            fs::read(&safe_html_doc).expect("preserved hard-linked source"),
+            original_document
+        );
+    }
+
     let collision_doc = directory.path().join("collision.tmd");
     let collision_html = directory.path().join("collision.html");
     let first_source = directory.path().join("first.txt");

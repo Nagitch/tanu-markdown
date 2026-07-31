@@ -759,20 +759,28 @@ mod db {
     }
 
     pub fn migrate(doc: &mut TmdDoc, up_sql: &str, from: u32, to: u32) -> TmdResult<()> {
-        doc.db.with_conn_mut(|conn| -> TmdResult<()> {
-            let transaction = conn.transaction()?;
-            let current: u32 =
-                transaction.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        let bytes = fs::read(doc.db.as_path())?;
+        let mut replacement = DbHandle::from_bytes(&bytes)?;
+        replacement.with_conn_mut(|conn| -> TmdResult<()> {
+            let current: u32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
             if current != from {
                 return Err(TmdError::Db(format!(
                     "expected user_version {from} but found {current}"
                 )));
             }
-            transaction.execute_batch(up_sql)?;
-            transaction.pragma_update(None, "user_version", to as i64)?;
-            transaction.commit()?;
+            // Run against a replacement copy so plain and transaction-wrapped
+            // scripts are both supported without risking partial mutation.
+            conn.execute_batch(up_sql)?;
+            if !conn.is_autocommit() {
+                conn.execute_batch("ROLLBACK")?;
+                return Err(TmdError::Db(
+                    "migration script left a transaction open".to_owned(),
+                ));
+            }
+            conn.pragma_update(None, "user_version", to as i64)?;
             Ok(())
         })??;
+        doc.db = replacement;
         Ok(())
     }
 }
@@ -1995,6 +2003,67 @@ mod tests {
             error.to_string().contains("left a transaction open"),
             "unexpected error: {error}"
         );
+    }
+
+    #[test]
+    fn migrate_accepts_transaction_wrapped_script() {
+        let mut doc = sample_doc();
+        reset_db(&mut doc, "CREATE TABLE base(id INTEGER PRIMARY KEY);", 1).expect("reset");
+
+        migrate(
+            &mut doc,
+            "BEGIN TRANSACTION;
+             ALTER TABLE base ADD COLUMN value TEXT;
+             COMMIT;",
+            1,
+            2,
+        )
+        .expect("transaction-wrapped migration");
+
+        let columns: Vec<String> = doc
+            .db_with_conn(|conn| {
+                let mut statement = conn.prepare("PRAGMA table_info(base)").unwrap();
+                statement
+                    .query_map([], |row| row.get(1))
+                    .unwrap()
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap()
+            })
+            .expect("inspect migrated table");
+        assert_eq!(columns, vec!["id", "value"]);
+        let version: u32 = doc
+            .db_with_conn(|conn| {
+                conn.query_row("PRAGMA user_version", [], |row| row.get(0))
+                    .unwrap()
+            })
+            .expect("migration version");
+        assert_eq!(version, 2);
+    }
+
+    #[test]
+    fn migrate_rejects_script_with_open_transaction() {
+        let mut doc = sample_doc();
+        reset_db(&mut doc, "CREATE TABLE base(id INTEGER PRIMARY KEY);", 1).expect("reset");
+
+        let error = migrate(
+            &mut doc,
+            "BEGIN TRANSACTION; ALTER TABLE base ADD COLUMN incomplete TEXT;",
+            1,
+            2,
+        )
+        .expect_err("open transaction must be rejected");
+
+        assert!(
+            error.to_string().contains("left a transaction open"),
+            "unexpected error: {error}"
+        );
+        let version: u32 = doc
+            .db_with_conn(|conn| {
+                conn.query_row("PRAGMA user_version", [], |row| row.get(0))
+                    .unwrap()
+            })
+            .expect("unchanged version");
+        assert_eq!(version, 1);
     }
 
     #[test]

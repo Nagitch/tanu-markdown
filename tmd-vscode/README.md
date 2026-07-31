@@ -17,7 +17,7 @@ Commands retain the document that originated the action across dialogs and
 asynchronous saves. Saves, reads, exports, and attachment mutations are
 serialized per document so concurrent CLI read-modify-write operations cannot
 overwrite each other. Validation results are applied only when the checked
-editor revision is still current.
+editor revision is still current and known to have reached disk.
 
 ## Requirements
 

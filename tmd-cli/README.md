@@ -100,6 +100,8 @@ tmd db import notes.tmd database.sqlite3
 tmd db export notes.tmd database.sqlite3
 ```
 
+Database export refuses output paths that resolve to the source container.
+
 ## Contracts
 
 - Input/output format is inferred from `.tmd` or `.tmdp`.

@@ -50,6 +50,8 @@ test("persisted inspection preserves edits made while an operation was pending",
     title: "Newer title",
   });
   assert.equal(model.inspection.database_user_version, 2);
+  assert.equal(model.persistedRevision, savedRevision);
+  assert.notEqual(model.persistedRevision, model.contentRevision);
 });
 
 test("save response replaces state when no newer edit exists", () => {
@@ -65,6 +67,7 @@ test("save response replaces state when no newer edit exists", () => {
     markdown: "saved snapshot",
     title: "Saved title",
   });
+  assert.equal(model.persistedRevision, model.contentRevision);
 });
 
 test("validation results are discarded after a newer edit", () => {

@@ -502,7 +502,7 @@ fn cmd_attachment_extract(doc_path: &Path, logical_path: &str, output: &Path) ->
 }
 
 fn cmd_export_html(input: &Path, output: &Path, self_contained: bool) -> Result<()> {
-    ensure_distinct_existing_paths(input, output)?;
+    ensure_distinct_existing_paths(input, output, "HTML output")?;
     let (doc, _) = read_document(input)?;
     let validation = validate_document(&doc).context("failed to validate document")?;
     ensure!(
@@ -711,6 +711,7 @@ fn cmd_db_import(doc_path: &Path, source: &Path) -> Result<()> {
 }
 
 fn cmd_db_export(doc_path: &Path, output: &Path) -> Result<()> {
+    ensure_distinct_existing_paths(doc_path, output, "database export")?;
     let (doc, _) = read_document(doc_path)?;
     ensure_parent_directory(output)?;
     export_db(&doc, output).context("failed to export embedded database")?;
@@ -824,7 +825,7 @@ fn ensure_parent_directory(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn ensure_distinct_existing_paths(input: &Path, output: &Path) -> Result<()> {
+fn ensure_distinct_existing_paths(input: &Path, output: &Path, output_kind: &str) -> Result<()> {
     let output_metadata = match fs::metadata(output) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -841,8 +842,8 @@ fn ensure_distinct_existing_paths(input: &Path, output: &Path) -> Result<()> {
 
     ensure!(
         !(same_path || metadata_identifies_same_file(&input_metadata, &output_metadata)),
-        "refusing to overwrite input document `{}` with HTML output",
-        input.display()
+        "refusing to overwrite input document `{}` with {output_kind}",
+        input.display(),
     );
     Ok(())
 }
