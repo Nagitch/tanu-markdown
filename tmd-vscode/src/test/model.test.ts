@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  persistDocumentBackup,
   persistLatestEditorState,
   TanuMarkdownModel,
 } from "../model.js";
@@ -199,4 +200,32 @@ test("Save As fails safely when edits never become stable", async () => {
     ),
     /kept changing/,
   );
+});
+
+test("backup is constructed from retained bytes without rereading its source", async () => {
+  const persistedBytes = Uint8Array.from([0x54, 0x4d, 0x44]);
+  const written: number[][] = [];
+  const updates: Array<{ markdown: string; title: string }> = [];
+  const source = {
+    contentRevision: 3,
+    persistedBytes,
+    snapshot() {
+      return { markdown: "# Unsaved\n", title: "Recovered" };
+    },
+  };
+
+  await persistDocumentBackup(
+    source,
+    async (bytes) => {
+      written.push([...bytes]);
+    },
+    async (state) => {
+      updates.push(state);
+    },
+  );
+
+  assert.deepEqual(written, [[0x54, 0x4d, 0x44]]);
+  assert.deepEqual(updates, [
+    { markdown: "# Unsaved\n", title: "Recovered" },
+  ]);
 });

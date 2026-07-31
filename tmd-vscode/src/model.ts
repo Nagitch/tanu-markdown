@@ -113,6 +113,19 @@ export interface RevisionedEditorState {
   snapshot(): EditorState;
 }
 
+export interface BackupEditorState extends RevisionedEditorState {
+  readonly persistedBytes: Uint8Array;
+}
+
+export async function persistDocumentBackup(
+  source: BackupEditorState,
+  writeBase: (bytes: Uint8Array) => Promise<void>,
+  persist: (state: EditorState) => Promise<void>,
+): Promise<void> {
+  await writeBase(source.persistedBytes);
+  await persistLatestEditorState(source, persist);
+}
+
 export async function persistLatestEditorState(
   source: RevisionedEditorState,
   persist: (state: EditorState) => Promise<void>,

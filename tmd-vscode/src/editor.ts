@@ -6,6 +6,7 @@ import { TmdCliClient } from "./cli.js";
 import { authoritativeStateScript, editInputScript } from "./input.js";
 import { renderSafeMarkdown } from "./markdown.js";
 import {
+  persistDocumentBackup,
   persistLatestEditorState,
   TanuMarkdownModel,
   type EditorState,
@@ -24,6 +25,7 @@ export class TanuMarkdownDocument implements vscode.CustomDocument {
   constructor(
     readonly uri: vscode.Uri,
     inspection: DocumentInspection,
+    private persistedBytesValue: Uint8Array,
   ) {
     this.model = new TanuMarkdownModel(inspection);
   }
@@ -42,6 +44,14 @@ export class TanuMarkdownDocument implements vscode.CustomDocument {
 
   get isValidationCurrent(): boolean {
     return this.model.isValidationCurrent;
+  }
+
+  get persistedBytes(): Uint8Array {
+    return this.persistedBytesValue;
+  }
+
+  replacePersistedBytes(bytes: Uint8Array): void {
+    this.persistedBytesValue = bytes;
   }
 
   snapshot(): EditorState {
@@ -99,8 +109,11 @@ export class TanuMarkdownEditorProvider
     openContext: vscode.CustomDocumentOpenContext,
   ): Promise<TanuMarkdownDocument> {
     const source = openContext.backupId ? vscode.Uri.parse(openContext.backupId) : uri;
-    const inspection = await this.clientFactory().inspect(filePath(source));
-    return new TanuMarkdownDocument(uri, inspection);
+    const [inspection, persistedBytes] = await Promise.all([
+      this.clientFactory().inspect(filePath(source)),
+      vscode.workspace.fs.readFile(source),
+    ]);
+    return new TanuMarkdownDocument(uri, inspection, persistedBytes);
   }
 
   async resolveCustomEditor(
@@ -143,6 +156,9 @@ export class TanuMarkdownEditorProvider
         title: state.title,
       };
       const inspection = await this.clientFactory().update(filePath(document.uri), update);
+      document.replacePersistedBytes(
+        await vscode.workspace.fs.readFile(document.uri),
+      );
       document.applyPersistedInspection(inspection, savedRevision);
       await this.postModel(document);
     });
@@ -168,7 +184,11 @@ export class TanuMarkdownEditorProvider
   async revertCustomDocument(document: TanuMarkdownDocument): Promise<void> {
     await this.documentOperations.run(document, async () => {
       const revertedRevision = document.contentRevision;
-      const inspection = await this.clientFactory().inspect(filePath(document.uri));
+      const [inspection, persistedBytes] = await Promise.all([
+        this.clientFactory().inspect(filePath(document.uri)),
+        vscode.workspace.fs.readFile(document.uri),
+      ]);
+      document.replacePersistedBytes(persistedBytes);
       if (!document.replaceInspectionIfCurrent(inspection, revertedRevision)) {
         throw new Error(
           "The document changed while revert was loading; edits were preserved and revert was cancelled.",
@@ -184,7 +204,29 @@ export class TanuMarkdownEditorProvider
   ): Promise<vscode.CustomDocumentBackup> {
     const extension = path.extname(document.uri.fsPath).toLowerCase() === ".tmdp" ? ".tmdp" : ".tmd";
     const destination = vscode.Uri.file(`${context.destination.fsPath}${extension}`);
-    await this.saveCustomDocumentAs(document, destination);
+    await this.documentOperations.run(document, async () => {
+      try {
+        const client = this.clientFactory();
+        await persistDocumentBackup(
+          document,
+          async (bytes) => vscode.workspace.fs.writeFile(destination, bytes),
+          async (state) => {
+            await client.update(filePath(destination), {
+              schema_version: 1,
+              markdown: state.markdown,
+              title: state.title,
+            });
+          },
+        );
+      } catch (error) {
+        try {
+          await vscode.workspace.fs.delete(destination);
+        } catch {
+          // The failed backup may not have created an output.
+        }
+        throw error;
+      }
+    });
     return {
       id: destination.toString(),
       delete: async () => {
@@ -270,10 +312,12 @@ export class TanuMarkdownEditorProvider
     document: TanuMarkdownDocument,
     persistedRevision: number,
   ): Promise<void> {
-    document.applyPersistedInspection(
-      await this.clientFactory().inspect(filePath(document.uri)),
-      persistedRevision,
-    );
+    const [inspection, persistedBytes] = await Promise.all([
+      this.clientFactory().inspect(filePath(document.uri)),
+      vscode.workspace.fs.readFile(document.uri),
+    ]);
+    document.replacePersistedBytes(persistedBytes);
+    document.applyPersistedInspection(inspection, persistedRevision);
     // Attachment operations have already persisted the container. Emitting a
     // content-change event here would incorrectly make the document dirty.
     await this.postModel(document);
