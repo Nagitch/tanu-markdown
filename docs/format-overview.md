@@ -69,7 +69,8 @@ Default reads:
 Structured document validation additionally checks TMD major-version support,
 cover-image IDs, `attach:` Markdown references, and manifest/database schema
 versions. Path-based writes use same-directory temporary files and atomic
-replacement.
+replacement. Replacements preserve existing file permissions; newly created
+documents use ordinary creation permissions subject to the process umask.
 
 File extensions select output format in the CLI. Callers of `tmd-core` can pass
 an explicit `Format`.

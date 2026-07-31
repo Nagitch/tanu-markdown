@@ -3,6 +3,7 @@ import * as path from "node:path";
 import * as vscode from "vscode";
 import { findActiveDocument } from "./activity.js";
 import { TmdCliClient } from "./cli.js";
+import { editInputScript } from "./input.js";
 import { renderSafeMarkdown } from "./markdown.js";
 import type { DocumentInspection, DocumentUpdate, ValidationReport } from "./types.js";
 
@@ -95,7 +96,7 @@ export class TanuMarkdownEditorProvider
     });
     panel.webview.onDidReceiveMessage(async (message: unknown) => {
       try {
-        await this.handleMessage(document, message);
+        await this.handleMessage(document, panel, message);
       } catch (error) {
         await showError(error);
       }
@@ -210,6 +211,7 @@ export class TanuMarkdownEditorProvider
 
   private async handleMessage(
     document: TanuMarkdownDocument,
+    panel: vscode.WebviewPanel,
     message: unknown,
   ): Promise<void> {
     if (!isMessage(message)) {
@@ -241,7 +243,16 @@ export class TanuMarkdownEditorProvider
             await this.postModel(document);
           },
         });
-        await this.postModel(document);
+        break;
+      }
+      case "preview": {
+        if (typeof message.markdown !== "string") {
+          return;
+        }
+        await panel.webview.postMessage({
+          type: "preview",
+          previewHtml: renderSafeMarkdown(message.markdown),
+        });
         break;
       }
       case "validate":
@@ -369,20 +380,20 @@ function editorHtml(_webview: vscode.Webview): string {
     const databaseObjects = document.getElementById("database-objects");
     const validation = document.getElementById("validation");
     const preview = document.getElementById("preview");
-    let editTimer;
-    const sendEdit = () => {
-      clearTimeout(editTimer);
-      editTimer = setTimeout(() => vscode.postMessage({ type: "edit", title: title.value, markdown: markdown.value }), 150);
-    };
-    title.addEventListener("input", sendEdit);
-    markdown.addEventListener("input", sendEdit);
+    ${editInputScript()}
     document.getElementById("validate").addEventListener("click", () => vscode.postMessage({ type: "validate" }));
     document.getElementById("add-attachment").addEventListener("click", () => vscode.postMessage({ type: "addAttachment" }));
     document.getElementById("export-html").addEventListener("click", () => vscode.postMessage({ type: "exportHtml" }));
     preview.addEventListener("click", (event) => { if (event.target.closest("a")) event.preventDefault(); });
     window.addEventListener("message", (event) => {
       const model = event.data;
-      if (!model || model.type !== "model") return;
+      if (!model) return;
+      if (model.type === "preview") {
+        preview.innerHTML = model.previewHtml;
+        return;
+      }
+      if (model.type !== "model") return;
+      clearTimeout(previewTimer);
       if (document.activeElement !== title) title.value = model.title;
       if (document.activeElement !== markdown) markdown.value = model.markdown;
       document.getElementById("format").textContent = model.inspection.format;

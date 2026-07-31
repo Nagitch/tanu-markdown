@@ -1198,7 +1198,7 @@ mod format {
     pub fn write_to_path(path: impl AsRef<Path>, doc: &TmdDoc, format: Format) -> TmdResult<()> {
         let path = path.as_ref();
         let parent = path.parent().unwrap_or_else(|| Path::new("."));
-        let mut temporary = NamedTempFile::new_in(parent)?;
+        let mut temporary = new_atomic_tempfile(parent)?;
         match fs::metadata(path) {
             Ok(metadata) => temporary
                 .as_file_mut()
@@ -1220,7 +1220,19 @@ mod format {
         Ok(())
     }
 
-    // No additional helpers
+    #[cfg(unix)]
+    fn new_atomic_tempfile(parent: &Path) -> std::io::Result<NamedTempFile> {
+        use std::os::unix::fs::PermissionsExt;
+
+        tempfile::Builder::new()
+            .permissions(fs::Permissions::from_mode(0o666))
+            .tempfile_in(parent)
+    }
+
+    #[cfg(not(unix))]
+    fn new_atomic_tempfile(parent: &Path) -> std::io::Result<NamedTempFile> {
+        NamedTempFile::new_in(parent)
+    }
 }
 
 #[cfg(feature = "ffi")]
@@ -1966,6 +1978,54 @@ mod tests {
         let loaded = read_from_path(&path, Some(Format::Tmd)).expect("read path");
         assert_eq!(loaded.markdown, doc.markdown);
         assert_eq!(loaded.list_attachments().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn new_atomic_write_honors_ordinary_creation_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let doc = sample_doc();
+        let dir = tempdir().unwrap();
+        let control = dir.path().join("control");
+        let path = dir.path().join("new.tmd");
+        std::fs::File::create(&control).expect("create control");
+        let expected = std::fs::metadata(control)
+            .expect("control metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+
+        write_to_path(&path, &doc, Format::Tmd).expect("write path");
+
+        let actual = std::fs::metadata(path)
+            .expect("document metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(actual, expected);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_replacement_preserves_existing_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let doc = sample_doc();
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("existing.tmd");
+        std::fs::write(&path, b"old").expect("write existing");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640))
+            .expect("set permissions");
+
+        write_to_path(&path, &doc, Format::Tmd).expect("replace path");
+
+        let actual = std::fs::metadata(path)
+            .expect("document metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(actual, 0o640);
     }
 
     #[test]

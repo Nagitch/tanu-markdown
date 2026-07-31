@@ -70,7 +70,9 @@ The extension owns custom-document state, undo/redo, save/revert/backup,
 commands, safe live preview, and VS Code user experience. It invokes the CLI
 with argument arrays and no shell. The webview uses a restrictive content
 security policy, nonce-bound scripts/styles, DOM text APIs, and escaped preview
-HTML. The current editor supports local files only.
+HTML. Edit state is sent immediately so closing a panel cannot strand input;
+only preview rendering is debounced. The current editor supports local files
+only.
 
 ## Repository-level contracts
 
