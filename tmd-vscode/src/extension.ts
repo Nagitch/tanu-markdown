@@ -1,26 +1,39 @@
 import * as path from "node:path";
 import * as vscode from "vscode";
-import { TmdCliClient } from "./cli.js";
+import { CliError, TmdCliClient } from "./cli.js";
+import { resolveCliExecutable } from "./cli-path.js";
 import {
   TanuMarkdownDocument,
   TanuMarkdownEditorProvider,
   VIEW_TYPE,
 } from "./editor.js";
 
-function client(): TmdCliClient {
+const CLI_SETUP_URL =
+  "https://github.com/Nagitch/tanu-markdown/tree/develop/tmd-vscode#cli-selection";
+
+function client(context: vscode.ExtensionContext): TmdCliClient {
   const configuration = vscode.workspace.getConfiguration("tanuMarkdown");
+  const selection = resolveCliExecutable(
+    context.extensionPath,
+    configuration.get<string>("cliPath"),
+  );
   return new TmdCliClient(
-    configuration.get<string>("cliPath", "tmd"),
+    selection.executable,
     configuration.get<number>("timeoutMs", 15_000),
   );
 }
 
 export function activate(context: vscode.ExtensionContext): void {
-  const provider = new TanuMarkdownEditorProvider(client);
+  const clientFactory = () => client(context);
+  const errorHandler = (error: unknown) => showExtensionError(error, context);
+  const provider = new TanuMarkdownEditorProvider(clientFactory, errorHandler);
   context.subscriptions.push(
     vscode.window.registerCustomEditorProvider(VIEW_TYPE, provider, {
       supportsMultipleEditorsPerDocument: false,
       webviewOptions: { retainContextWhenHidden: true },
+    }),
+    vscode.commands.registerCommand("tmd.selectCli", async () => {
+      await selectCli(context);
     }),
     vscode.commands.registerCommand("tmd.newDocument", async () => {
       await withErrorHandling(async () => {
@@ -35,9 +48,9 @@ export function activate(context: vscode.ExtensionContext): void {
           value: "New TMD Document",
         });
         if (title === undefined) return;
-        await client().newDocument(uri.fsPath, title);
+        await clientFactory().newDocument(uri.fsPath, title);
         await vscode.commands.executeCommand("vscode.openWith", uri, VIEW_TYPE);
-      });
+      }, errorHandler);
     }),
     vscode.commands.registerCommand(
       "tmd.validate",
@@ -56,7 +69,7 @@ export function activate(context: vscode.ExtensionContext): void {
               first ? `Validation failed: ${first.message}` : "Validation failed.",
             );
           }
-        });
+        }, errorHandler);
       },
     ),
     vscode.commands.registerCommand(
@@ -80,7 +93,7 @@ export function activate(context: vscode.ExtensionContext): void {
           });
           if (!logicalPath) return;
           await provider.addAttachment(document, source, logicalPath);
-        });
+        }, errorHandler);
       },
     ),
     vscode.commands.registerCommand(
@@ -97,7 +110,7 @@ export function activate(context: vscode.ExtensionContext): void {
             ));
           if (!logicalPath) return;
           await provider.removeAttachment(document, logicalPath);
-        });
+        }, errorHandler);
       },
     ),
     vscode.commands.registerCommand(
@@ -121,7 +134,7 @@ export function activate(context: vscode.ExtensionContext): void {
           if (!output) return;
           await provider.exportDocument(document, output, mode.selfContained);
           await vscode.window.showInformationMessage(`Exported ${output.fsPath}`);
-        });
+        }, errorHandler);
       },
     ),
     vscode.commands.registerCommand(
@@ -140,7 +153,7 @@ export function activate(context: vscode.ExtensionContext): void {
           if (!output) return;
           await provider.convertDocument(document, output);
           await vscode.commands.executeCommand("vscode.openWith", output, VIEW_TYPE);
-        });
+        }, errorHandler);
       },
     ),
   );
@@ -170,11 +183,56 @@ function defaultSibling(document: TanuMarkdownDocument, extension: string): vsco
   return vscode.Uri.file(`${base}${extension}`);
 }
 
-async function withErrorHandling(operation: () => Promise<void>): Promise<void> {
+async function selectCli(context: vscode.ExtensionContext): Promise<boolean> {
+  const selected = await vscode.window.showOpenDialog({
+    canSelectMany: false,
+    canSelectFiles: true,
+    canSelectFolders: false,
+    title: "Select the TMD CLI executable",
+  });
+  const executable = selected?.[0];
+  if (!executable) {
+    return false;
+  }
+  await vscode.workspace
+    .getConfiguration("tanuMarkdown")
+    .update("cliPath", executable.fsPath, vscode.ConfigurationTarget.Global);
+  await vscode.window.showInformationMessage(
+    "TMD CLI configured. Reopen the document or retry the command.",
+  );
+  return true;
+}
+
+async function showExtensionError(
+  error: unknown,
+  context: vscode.ExtensionContext,
+): Promise<void> {
+  const message = error instanceof Error ? error.message : String(error);
+  if (!(error instanceof CliError) || error.kind !== "missing-executable") {
+    await vscode.window.showErrorMessage(message);
+    return;
+  }
+
+  const action = await vscode.window.showErrorMessage(
+    message,
+    "Select TMD CLI",
+    "Open setup guide",
+  );
+  if (action === "Select TMD CLI") {
+    await selectCli(context);
+  } else if (action === "Open setup guide") {
+    await vscode.env.openExternal(vscode.Uri.parse(CLI_SETUP_URL));
+  }
+}
+
+async function withErrorHandling(
+  operation: () => Promise<void>,
+  errorHandler: (error: unknown) => Promise<void>,
+): Promise<void> {
   try {
     await operation();
   } catch (error) {
-    await vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error));
+    await errorHandler(error);
   }
 }
 
