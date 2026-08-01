@@ -36,7 +36,8 @@ The `tmd-core` test suite covers:
 CLI integration tests exercise full `.tmd` and `.tmdp` lifecycles. Extension
 tests cover its process boundary and safe preview. Repository CI additionally
 checks formatting, Clippy, rustdoc, samples, extension tests, generic VSIX
-packaging, and native CLI staging for platform-specific VSIX artifacts.
+packaging, static Linux CLI verification, and native CLI staging for
+platform-specific VSIX artifacts.
 
 ## Known limitations
 

@@ -143,7 +143,7 @@ jobs:
       - name: Package VSIX
         run: npm run pack
 
-  vscode-platform-packages:
+  vscode-linux-packages:
     name: VSIX (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
@@ -153,10 +153,72 @@ jobs:
         include:
           - runner: ubuntu-24.04
             target: linux-x64
-            binary: tmd
+            rust_target: x86_64-unknown-linux-musl
           - runner: ubuntu-24.04-arm
             target: linux-arm64
-            binary: tmd
+            rust_target: aarch64-unknown-linux-musl
+    defaults:
+      run:
+        working-directory: tmd-vscode
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install musl build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes musl-tools
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.96.0
+          targets: ${{ matrix.rust_target }}
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: tmd-vscode/package-lock.json
+
+      - name: Build static TMD CLI
+        run: cargo build --locked --release -p tmd-cli --manifest-path ../Cargo.toml --target ${{ matrix.rust_target }}
+
+      - name: Verify static CLI
+        run: |
+          binary="../target/${{ matrix.rust_target }}/release/tmd"
+          file "${binary}"
+          if readelf -l "${binary}" | grep --quiet " INTERP "; then
+            echo "Linux CLI unexpectedly requires a dynamic loader." >&2
+            exit 1
+          fi
+          "${binary}" --version
+
+      - name: Install extension dependencies
+        run: npm ci
+
+      - name: Stage native CLI
+        run: npm run stage-cli -- ../target/${{ matrix.rust_target }}/release/tmd ${{ matrix.target }}
+
+      - name: Package platform VSIX
+        run: npm run pack:platform -- --target ${{ matrix.target }} --out dist/tanu-markdown-editor-${{ matrix.target }}.vsix
+
+      - name: Upload VSIX
+        uses: actions/upload-artifact@v4
+        with:
+          name: tanu-markdown-editor-${{ matrix.target }}
+          path: tmd-vscode/dist/tanu-markdown-editor-${{ matrix.target }}.vsix
+          if-no-files-found: error
+
+  vscode-platform-packages:
+    name: VSIX (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
           - runner: macos-13
             target: darwin-x64
             binary: tmd

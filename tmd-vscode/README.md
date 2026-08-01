@@ -63,7 +63,8 @@ npm run pack --prefix tmd-vscode
 The generic development VSIX does not contain a native CLI. CI builds the CLI
 on matching Linux, macOS, and Windows x64/arm64 runners, stages it under
 `tmd-vscode/bin`, and invokes `vsce package --target` to produce six
-platform-specific artifacts.
+platform-specific artifacts. Linux packages use statically linked musl
+binaries so they do not inherit the build runner's glibc requirement.
 
 The extension targets VS Code `^1.90.0` and uses strict TypeScript settings.
 Generated `bin/`, `dist/`, `node_modules/`, and `.vsix` files are not committed.
