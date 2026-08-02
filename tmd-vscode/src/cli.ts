@@ -80,12 +80,12 @@ export class TmdCliClient {
     await this.execute(arguments_);
   }
 
-  async convert(
+  async publish(
     input: string,
     output: string,
     expectedOutputState?: string,
   ): Promise<void> {
-    const arguments_ = ["convert", input, output];
+    const arguments_ = ["publish", input, output];
     if (expectedOutputState !== undefined) {
       arguments_.push("--expected-output-state", expectedOutputState);
     }

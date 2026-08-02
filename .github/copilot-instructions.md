@@ -5,9 +5,7 @@ Follow [`AGENT.md`](../AGENT.md) and
 
 Key constraints:
 
-- `.tmd` is the primary ZIP representation.
-- `.tmdp` is UTF-8 Markdown followed by the ZIP representation and a
-  `TMD1\0<markdown-length-le-u64>` EOCD comment.
+- `.tmd` is the ZIP representation.
 - `tmd-core` owns format logic; do not duplicate parsing in the CLI or editor.
 - Preserve file-format and CLI behavior unless a linked issue explicitly
   changes it.

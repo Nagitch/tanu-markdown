@@ -194,10 +194,9 @@ export class TanuMarkdownEditorProvider
     await this.documentOperations.run(document, async () => {
       const client = this.clientFactory();
       const destinationExtension = path.extname(destination.fsPath).toLowerCase();
-      if (![".tmd", ".tmdp"].includes(destinationExtension)) {
-        throw new Error("Save As destination must use the .tmd or .tmdp extension.");
+      if (destinationExtension !== ".tmd") {
+        throw new Error("Save As destination must use the .tmd extension.");
       }
-      const sourceExtension = document.inspection.format === "tmdp" ? ".tmdp" : ".tmd";
       let expectedDestinationState = diskState(
         await readOptionalFile(destination),
       );
@@ -210,21 +209,14 @@ export class TanuMarkdownEditorProvider
         const stagingDirectory = await fs.mkdtemp(
           path.join(path.dirname(destination.fsPath), ".tmd-save-"),
         );
-        const sourcePath = path.join(stagingDirectory, `source${sourceExtension}`);
-        const stagedPath =
-          sourceExtension === destinationExtension
-            ? sourcePath
-            : path.join(stagingDirectory, `destination${destinationExtension}`);
+        const sourcePath = path.join(stagingDirectory, "source.tmd");
         let stagedRevision = document.contentRevision;
         try {
           await fs.writeFile(sourcePath, document.persistedBytes, { flag: "wx" });
-          if (sourcePath !== stagedPath) {
-            await client.convert(sourcePath, stagedPath);
-          }
           await persistLatestEditorState(
             document,
             async (state) => {
-              await client.update(stagedPath, {
+              await client.update(sourcePath, {
                 schema_version: 1,
                 markdown: state.markdown,
                 title: state.title,
@@ -232,9 +224,9 @@ export class TanuMarkdownEditorProvider
             },
           );
           stagedRevision = document.contentRevision;
-          const publishedState = diskState(await fs.readFile(stagedPath));
-          await client.convert(
-            stagedPath,
+          const publishedState = diskState(await fs.readFile(sourcePath));
+          await client.publish(
+            sourcePath,
             filePath(destination),
             expectedDestinationState,
           );
@@ -273,8 +265,7 @@ export class TanuMarkdownEditorProvider
     document: TanuMarkdownDocument,
     context: vscode.CustomDocumentBackupContext,
   ): Promise<vscode.CustomDocumentBackup> {
-    const extension = path.extname(document.uri.fsPath).toLowerCase() === ".tmdp" ? ".tmdp" : ".tmd";
-    const destination = vscode.Uri.file(`${context.destination.fsPath}${extension}`);
+    const destination = vscode.Uri.file(`${context.destination.fsPath}.tmd`);
     await this.documentOperations.run(document, async () => {
       try {
         await fs.mkdir(path.dirname(destination.fsPath), { recursive: true });
@@ -379,21 +370,6 @@ export class TanuMarkdownEditorProvider
     });
   }
 
-  async convertDocument(
-    document: TanuMarkdownDocument,
-    output: vscode.Uri,
-  ): Promise<void> {
-    const expectedOutputState = diskState(await readOptionalFile(output));
-    await this.documentOperations.run(document, async () => {
-      requirePersistedRevision(document, "convert");
-      await this.clientFactory().convert(
-        filePath(document.uri),
-        filePath(output),
-        expectedOutputState,
-      );
-    });
-  }
-
   private async reloadAfterExternalChange(
     document: TanuMarkdownDocument,
     persistedRevision: number,
@@ -414,10 +390,9 @@ export class TanuMarkdownEditorProvider
     client: TmdCliClient,
     update: DocumentUpdate,
   ): Promise<void> {
-    const sourceExtension = document.inspection.format === "tmdp" ? ".tmdp" : ".tmd";
     const stagingPath = path.join(
       path.dirname(document.uri.fsPath),
-      `.tmd-save-${randomBytes(16).toString("hex")}${sourceExtension}`,
+      `.tmd-save-${randomBytes(16).toString("hex")}.tmd`,
     );
     let stagingCreated = false;
     try {
@@ -426,7 +401,7 @@ export class TanuMarkdownEditorProvider
       await client.update(stagingPath, update);
       const publishedBytes = await fs.readFile(stagingPath);
       try {
-        await client.convert(
+        await client.publish(
           stagingPath,
           filePath(document.uri),
           document.expectedDiskState,
@@ -616,8 +591,8 @@ async function inspectRetainedBytes(
   bytes: Uint8Array,
 ): Promise<DocumentInspection> {
   const extension = path.extname(source.fsPath).toLowerCase();
-  if (![".tmd", ".tmdp"].includes(extension)) {
-    throw new Error("TMD documents must use the .tmd or .tmdp extension.");
+  if (extension !== ".tmd") {
+    throw new Error("TMD documents must use the .tmd extension.");
   }
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "tmd-open-"));
   const snapshotPath = path.join(directory, `snapshot${extension}`);

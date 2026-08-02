@@ -1,9 +1,9 @@
 # Project Status
 
-Last reviewed: 2026-07-31
+Last reviewed: 2026-08-02
 
 Tanu Markdown is an early-stage, pre-1.0 project. The core Rust implementation
-supports document creation, `.tmd` and `.tmdp` round trips, attachment metadata
+supports document creation, `.tmd` round trips, attachment metadata
 and cross-reference validation, atomic file replacement, and embedded SQLite
 operations. The CLI exposes the complete implemented workflow through both
 human-readable commands and a versioned JSON bridge. The VS Code extension is
@@ -13,11 +13,11 @@ a functional custom editor backed exclusively by that bridge.
 
 | Component | Current state |
 | --- | --- |
-| `tmd-core` | Implements the document model, structured validation, safe attachment handling, atomic writes, SQLite import/export/migration, ZIP I/O, polyglot boundary handling, and optional C ABI functions |
-| `tmd-cli` | Installs `tmd`; implements document create/inspect/update/convert/validate, attachment lifecycle, safe HTML export, and embedded database lifecycle/query commands |
+| `tmd-core` | Implements the document model, structured validation, safe attachment handling, atomic writes, SQLite import/export/migration, ZIP I/O, and optional C ABI functions |
+| `tmd-cli` | Installs `tmd`; implements document create/inspect/update/publish/validate, attachment lifecycle, safe HTML export, and embedded database lifecycle/query commands |
 | `tmd-core-ffi` | Builds a `cdylib` wrapper and retains the exported `tmd-core` FFI symbols |
-| `tmd-vscode` | Implements a CSP-restricted custom editor with edit/save/revert/backup, safe live preview, attachment, validation, HTML export, and conversion workflows through `tmd` |
-| `tmd-sample` | Contains equivalent `.tmd` and `.tmdp` samples with an attachment and populated SQLite table |
+| `tmd-vscode` | Implements a CSP-restricted custom editor with edit/save/revert/backup, safe live preview, attachment, validation, and HTML export workflows through `tmd` |
+| `tmd-sample` | Contains a `.tmd` sample with an attachment and populated SQLite table |
 
 ## Verified behavior
 
@@ -28,12 +28,12 @@ The `tmd-core` test suite covers:
 - attachment add, rename, remove, mutation, and SHA-256 refresh;
 - Markdown `attach:` cross-reference and database version reports;
 - failed atomic-write preservation;
-- `.tmd` and `.tmdp` round trips;
+- `.tmd` round trips;
 - embedded SQLite export, import, reset, and migration;
 - path-based read/write helpers;
 - optional FFI null-pointer behavior.
 
-CLI integration tests exercise full `.tmd` and `.tmdp` lifecycles. Extension
+CLI integration tests exercise the full `.tmd` lifecycle. Extension
 tests cover its process boundary and safe preview. Repository CI additionally
 checks formatting, Clippy, rustdoc, samples, extension tests, generic VSIX
 packaging, static Linux CLI verification, and native CLI staging for

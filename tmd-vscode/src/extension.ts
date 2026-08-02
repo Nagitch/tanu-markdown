@@ -39,7 +39,7 @@ export function activate(context: vscode.ExtensionContext): void {
       await withErrorHandling(async () => {
         const uri = await vscode.window.showSaveDialog({
           filters: {
-            "Tanu Markdown": ["tmd", "tmdp"],
+            "Tanu Markdown": ["tmd"],
           },
         });
         if (!uri) return;
@@ -134,25 +134,6 @@ export function activate(context: vscode.ExtensionContext): void {
           if (!output) return;
           await provider.exportDocument(document, output, mode.selfContained);
           await vscode.window.showInformationMessage(`Exported ${output.fsPath}`);
-        }, errorHandler);
-      },
-    ),
-    vscode.commands.registerCommand(
-      "tmd.convert",
-      async (target?: TanuMarkdownDocument) => {
-        await withErrorHandling(async () => {
-          const document = requireDocument(provider, target);
-          await saveDocument(document);
-          const targetExtension = document.uri.fsPath.toLowerCase().endsWith(".tmdp")
-            ? ".tmd"
-            : ".tmdp";
-          const output = await vscode.window.showSaveDialog({
-            filters: { "Tanu Markdown": [targetExtension.slice(1)] },
-            defaultUri: defaultSibling(document, targetExtension),
-          });
-          if (!output) return;
-          await provider.convertDocument(document, output);
-          await vscode.commands.executeCommand("vscode.openWith", output, VIEW_TYPE);
         }, errorHandler);
       },
     ),

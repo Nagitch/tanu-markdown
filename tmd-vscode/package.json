@@ -1,7 +1,7 @@
 {
   "name": "tanu-markdown-editor",
   "displayName": "Tanu Markdown Editor",
-  "description": "Secure custom editor for Tanu Markdown .tmd and .tmdp documents.",
+  "description": "Secure custom editor for Tanu Markdown .tmd documents.",
   "version": "0.0.1",
   "private": true,
   "publisher": "tanu-markdown",
@@ -28,8 +28,7 @@
     "onCommand:tmd.validate",
     "onCommand:tmd.addAttachment",
     "onCommand:tmd.removeAttachment",
-    "onCommand:tmd.exportHtml",
-    "onCommand:tmd.convert"
+    "onCommand:tmd.exportHtml"
   ],
   "capabilities": {
     "untrustedWorkspaces": {
@@ -44,9 +43,6 @@
         "selector": [
           {
             "filenamePattern": "*.tmd"
-          },
-          {
-            "filenamePattern": "*.tmdp"
           }
         ],
         "priority": "default"
@@ -76,10 +72,6 @@
       {
         "command": "tmd.exportHtml",
         "title": "TMD: Export HTML (self-contained)"
-      },
-      {
-        "command": "tmd.convert",
-        "title": "TMD: Convert Container Format"
       }
     ],
     "configuration": {

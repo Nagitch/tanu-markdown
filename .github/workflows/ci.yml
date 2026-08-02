@@ -84,9 +84,7 @@ jobs:
         run: cargo test --locked --workspace --all-features
 
       - name: Validate reference samples
-        run: |
-          cargo run --locked -p tmd-cli -- validate tmd-sample/sample.tmd
-          cargo run --locked -p tmd-cli -- validate tmd-sample/sample.tmdp
+        run: cargo run --locked -p tmd-cli -- validate tmd-sample/sample.tmd
 
   rust-docs:
     name: Rust documentation

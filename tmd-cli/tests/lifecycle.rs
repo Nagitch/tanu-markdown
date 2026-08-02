@@ -7,9 +7,7 @@ use std::process::{Command, Output, Stdio};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tempfile::tempdir;
-use tmd_core::{
-    read_from_path, write_tmd, write_to_path, AttachmentRef, Format, TmdDoc, WriteMode,
-};
+use tmd_core::{read_from_path, write_tmd, write_to_path, AttachmentRef, TmdDoc, WriteMode};
 
 fn argument(path: &Path) -> OsString {
     path.as_os_str().to_owned()
@@ -189,7 +187,7 @@ fn db_exec_synchronizes_and_validates_user_version() {
 }
 
 #[test]
-fn conditional_convert_rejects_stale_and_created_outputs() {
+fn conditional_publish_rejects_stale_and_created_outputs() {
     let directory = tempdir().expect("temporary directory");
     let first = directory.path().join("first.tmd");
     let second = directory.path().join("second.tmd");
@@ -214,7 +212,7 @@ fn conditional_convert_rejects_stale_and_created_outputs() {
         None,
     );
     run(
-        vec![text("convert"), argument(&first), argument(&output)],
+        vec![text("publish"), argument(&first), argument(&output)],
         None,
     );
 
@@ -222,12 +220,12 @@ fn conditional_convert_rejects_stale_and_created_outputs() {
     assert_eq!(
         fs::read(&first).expect("source document"),
         original,
-        "same-format conversion must produce the bytes whose digest is published"
+        "publication must produce the bytes whose digest is published"
     );
     let original_sha256 = hex::encode(Sha256::digest(&original));
     run(
         vec![
-            text("convert"),
+            text("publish"),
             argument(&second),
             argument(&output),
             text("--expected-output-state"),
@@ -240,7 +238,7 @@ fn conditional_convert_rejects_stale_and_created_outputs() {
 
     let stale = run_raw(
         vec![
-            text("convert"),
+            text("publish"),
             argument(&first),
             argument(&output),
             text("--expected-output-state"),
@@ -253,7 +251,7 @@ fn conditional_convert_rejects_stale_and_created_outputs() {
 
     run(
         vec![
-            text("convert"),
+            text("publish"),
             argument(&first),
             argument(&missing_output),
             text("--expected-output-state"),
@@ -264,7 +262,7 @@ fn conditional_convert_rejects_stale_and_created_outputs() {
     let created = fs::read(&missing_output).expect("conditionally created output");
     let created_conflict = run_raw(
         vec![
-            text("convert"),
+            text("publish"),
             argument(&second),
             argument(&missing_output),
             text("--expected-output-state"),
@@ -277,6 +275,42 @@ fn conditional_convert_rejects_stale_and_created_outputs() {
         fs::read(&missing_output).expect("preserved created output"),
         created
     );
+}
+
+#[test]
+fn publish_rejects_invalid_documents_without_changing_outputs() {
+    let directory = tempdir().expect("temporary directory");
+    let invalid = directory.path().join("invalid.tmd");
+    let existing_output = directory.path().join("existing-output.tmd");
+    let missing_output = directory.path().join("missing-output.tmd");
+    run(vec![text("new"), argument(&invalid)], None);
+    run(vec![text("new"), argument(&existing_output)], None);
+
+    let unresolved_reference = json!({
+        "schema_version": 1,
+        "markdown": "[Missing attachment](attach:attachments/missing.txt)\n",
+    });
+    run(
+        vec![text("update"), argument(&invalid), text("--json-stdin")],
+        Some(&unresolved_reference.to_string()),
+    );
+    let existing_bytes = fs::read(&existing_output).expect("existing output");
+
+    for output in [&existing_output, &missing_output] {
+        let publication = run_raw(
+            vec![text("publish"), argument(&invalid), argument(output)],
+            None,
+        );
+        assert!(!publication.status.success());
+        assert!(String::from_utf8_lossy(&publication.stderr)
+            .contains("refusing to publish an invalid document"));
+    }
+
+    assert_eq!(
+        fs::read(&existing_output).expect("preserved output"),
+        existing_bytes
+    );
+    assert!(!missing_output.exists());
 }
 
 #[test]
@@ -347,13 +381,13 @@ fn attachment_mutations_preserve_references_and_cover_metadata() {
         vec![text("update"), argument(&doc_path), text("--json-stdin")],
         Some(&unreferenced.to_string()),
     );
-    let mut doc = read_from_path(&doc_path, Some(Format::Tmd)).expect("document with attachment");
+    let mut doc = read_from_path(&doc_path).expect("document with attachment");
     let cover_id = doc
         .attachment_meta_by_path("images/cover.png")
         .expect("cover attachment")
         .id;
     doc.manifest.cover_image = Some(AttachmentRef { id: cover_id });
-    write_to_path(&doc_path, &doc, Format::Tmd).expect("set cover metadata");
+    write_to_path(&doc_path, &doc).expect("set cover metadata");
 
     run(
         vec![
@@ -365,7 +399,7 @@ fn attachment_mutations_preserve_references_and_cover_metadata() {
         ],
         None,
     );
-    let removed = read_from_path(&doc_path, Some(Format::Tmd)).expect("removed attachment");
+    let removed = read_from_path(&doc_path).expect("removed attachment");
     assert_eq!(removed.manifest.cover_image, None);
     assert_eq!(
         parse_json(&run(
@@ -600,7 +634,7 @@ fn attachment_extract_never_clobbers_targets() {
         b"attachment".to_vec(),
     )
     .expect("add attachment");
-    write_to_path(&doc_path, &doc, Format::Tmd).expect("write document");
+    write_to_path(&doc_path, &doc).expect("write document");
     fs::write(&existing, "preserve me").expect("existing target");
 
     let extraction = run_raw(
@@ -657,18 +691,15 @@ fn only_file_in(directory: &Path) -> PathBuf {
     file
 }
 
-fn exercise_lifecycle(extension: &str) {
+fn exercise_lifecycle() {
     let directory = tempdir().expect("temporary directory");
-    let doc = directory.path().join(format!("document.{extension}"));
-    let converted_extension = if extension == "tmd" { "tmdp" } else { "tmd" };
-    let converted = directory
-        .path()
-        .join(format!("converted.{converted_extension}"));
+    let doc = directory.path().join("document.tmd");
+    let published = directory.path().join("published.tmd");
     let source = directory.path().join("note.txt");
     let extracted = directory.path().join("extracted.txt");
     let schema = directory.path().join("schema.sql");
     let database = directory.path().join("export.sqlite3");
-    let imported = directory.path().join(format!("imported.{extension}"));
+    let imported = directory.path().join("imported.tmd");
     let standalone_html = directory.path().join("standalone.html");
     let linked_html = directory.path().join("linked.html");
 
@@ -832,28 +863,28 @@ fn exercise_lifecycle(extension: &str) {
     );
 
     run(
-        vec![text("convert"), argument(&doc), argument(&converted)],
+        vec![text("publish"), argument(&doc), argument(&published)],
         None,
     );
-    let converted_validation = parse_json(&run(
-        vec![text("validate"), argument(&converted), text("--json")],
+    let published_validation = parse_json(&run(
+        vec![text("validate"), argument(&published), text("--json")],
         None,
     ));
-    assert_eq!(converted_validation["valid"], true);
+    assert_eq!(published_validation["valid"], true);
 
     let rename_update = json!({
         "schema_version": 1,
         "markdown": "# Lifecycle\n\n[Download the note](attach:assets/renamed.txt)\n",
     });
     run(
-        vec![text("update"), argument(&converted), text("--json-stdin")],
+        vec![text("update"), argument(&published), text("--json-stdin")],
         Some(&rename_update.to_string()),
     );
     run(
         vec![
             text("attachment"),
             text("rename"),
-            argument(&converted),
+            argument(&published),
             text("--from"),
             text("assets/note.txt"),
             text("--to"),
@@ -865,7 +896,7 @@ fn exercise_lifecycle(extension: &str) {
         vec![
             text("attachment"),
             text("extract"),
-            argument(&converted),
+            argument(&published),
             text("--path"),
             text("assets/renamed.txt"),
             argument(&extracted),
@@ -882,21 +913,21 @@ fn exercise_lifecycle(extension: &str) {
         "markdown": "# Lifecycle\n\nAttachment removed.\n",
     });
     run(
-        vec![text("update"), argument(&converted), text("--json-stdin")],
+        vec![text("update"), argument(&published), text("--json-stdin")],
         Some(&remove_update.to_string()),
     );
     run(
         vec![
             text("attachment"),
             text("remove"),
-            argument(&converted),
+            argument(&published),
             text("--path"),
             text("assets/renamed.txt"),
         ],
         None,
     );
     run(
-        vec![text("validate"), argument(&converted), text("--json")],
+        vec![text("validate"), argument(&published), text("--json")],
         None,
     );
 
@@ -935,12 +966,7 @@ fn exercise_lifecycle(extension: &str) {
 
 #[test]
 fn complete_tmd_lifecycle() {
-    exercise_lifecycle("tmd");
-}
-
-#[test]
-fn complete_tmdp_lifecycle() {
-    exercise_lifecycle("tmdp");
+    exercise_lifecycle();
 }
 
 #[test]
@@ -992,8 +1018,7 @@ fn machine_interfaces_reject_unsafe_inputs() {
     let mut corrupt_database = vec![0; 512];
     corrupt_database[..16].copy_from_slice(b"SQLite format 3\0");
     fs::write(corrupt_document.db.as_path(), corrupt_database).expect("corrupt embedded database");
-    write_to_path(&corrupt_database_doc, &corrupt_document, Format::Tmd)
-        .expect("corrupt database container");
+    write_to_path(&corrupt_database_doc, &corrupt_document).expect("corrupt database container");
     let database_validation = run_raw(
         vec![
             text("validate"),
@@ -1152,19 +1177,19 @@ fn machine_interfaces_reject_unsafe_inputs() {
     {
         use std::os::unix::fs::symlink;
 
-        let converted_alias = directory.path().join("converted-alias.tmdp");
-        symlink(&safe_html_doc, &converted_alias).expect("conversion symlink");
-        let aliased_conversion = run_raw(
+        let published_alias = directory.path().join("published-alias.tmd");
+        symlink(&safe_html_doc, &published_alias).expect("publication symlink");
+        let aliased_publication = run_raw(
             vec![
-                text("convert"),
+                text("publish"),
                 argument(&safe_html_doc),
-                argument(&converted_alias),
+                argument(&published_alias),
             ],
             None,
         );
-        assert!(!aliased_conversion.status.success());
+        assert!(!aliased_publication.status.success());
         assert_eq!(
-            fs::read(&safe_html_doc).expect("preserved conversion source"),
+            fs::read(&safe_html_doc).expect("preserved publication source"),
             original_document
         );
 

@@ -16,9 +16,9 @@ responsibility boundaries documented in [the architecture](docs/architecture.md)
 ## Compatibility
 
 The project is pre-1.0, but format changes still require explicit review.
-Changes to archive entries, manifest serialization, the `.tmdp` EOCD comment,
-SQLite handling, CLI output, or the C ABI must describe their compatibility
-impact and update the appropriate documentation and fixtures.
+Changes to archive entries, manifest serialization, SQLite handling, CLI
+output, or the C ABI must describe their compatibility impact and update the
+appropriate documentation and fixtures.
 
 ## Commit and pull request guidance
 
@@ -28,7 +28,7 @@ adds clarity, for example:
 ```text
 [tmd-core] Validate attachment paths during reads
 [tmd-vscode] Add document validation command
-[docs] Clarify the polyglot container contract
+[docs] Clarify the container contract
 ```
 
 Pull requests should explain what changed, why it changed, user or developer

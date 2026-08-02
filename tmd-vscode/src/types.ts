@@ -27,7 +27,7 @@ export interface ValidationReport {
 
 export interface DocumentInspection {
   schema_version: 1;
-  format: "tmd" | "tmdp";
+  format: "tmd";
   markdown: string;
   manifest: {
     title?: string | null;

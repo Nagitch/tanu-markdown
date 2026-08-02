@@ -1,8 +1,8 @@
 # tmd CLI
 
-`tmd-cli` installs the `tmd` command for complete Tanu Markdown (`.tmd` /
-`.tmdp`) document workflows. It is also the schema-versioned JSON boundary used
-by the VS Code editor.
+`tmd-cli` installs the `tmd` command for complete Tanu Markdown (`.tmd`)
+document workflows. It is also the schema-versioned JSON boundary used by the
+VS Code editor.
 
 ## Build and install
 
@@ -17,7 +17,6 @@ cargo install --path tmd-cli
 tmd new notes.tmd --title "Project Notes"
 tmd inspect notes.tmd --json
 tmd validate notes.tmd
-tmd convert notes.tmd notes.tmdp
 ```
 
 Validation checks container structure and hashes while loading, then reports
@@ -35,6 +34,17 @@ printf '%s' '{"schema_version":1,"title":"Renamed","markdown":"# Renamed"}' \
 
 `update` preserves attachments, database content, manifest identity, and
 creation time. It writes atomically.
+
+### Atomic publication
+
+```bash
+tmd publish staged.tmd notes.tmd --expected-output-state <sha256-or-missing>
+```
+
+`publish` validates the source document and atomically copies its exact bytes
+to the destination. The optional expected state prevents overwriting a file
+that changed since the caller last read it. The VS Code editor uses this
+compare-and-publish boundary for race-safe saves.
 
 ### Attachments
 
@@ -110,7 +120,7 @@ Database export refuses output paths that resolve to the source container.
 
 ## Contracts
 
-- Input/output format is inferred from `.tmd` or `.tmdp`.
+- Document paths must use the `.tmd` extension.
 - Mutating commands refresh `modified_utc` and replace containers atomically.
 - JSON bridge payloads currently use `schema_version: 1`.
 - Format semantics and validation live in `tmd-core`, not this crate.
