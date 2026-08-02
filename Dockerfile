@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-FROM rust:1.96.0-bookworm
+FROM rust:1.97.1-bookworm
 
 ARG NODE_VERSION=24.17.0
 ARG JUST_VERSION=1.57.0
