@@ -6,11 +6,7 @@ contributors.
 ## Project role
 
 Tanu Markdown provides a self-contained document format and its supporting
-tools. The implementation must keep the two container representations aligned:
-
-- `.tmd` is the primary ZIP container.
-- `.tmdp` is the polyglot representation: UTF-8 Markdown followed by the same
-  ZIP payload, with a `TMD1\0` end-of-central-directory comment.
+tools. `.tmd` is the ZIP container implemented throughout the repository.
 
 The current format is pre-1.0. Preserve existing behavior unless an issue
 explicitly changes the contract, and document compatibility effects when it
@@ -52,7 +48,6 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
 cargo run --locked -p tmd-cli -- validate tmd-sample/sample.tmd
-cargo run --locked -p tmd-cli -- validate tmd-sample/sample.tmdp
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps
 npm ci --prefix tmd-vscode
 npm run check --prefix tmd-vscode

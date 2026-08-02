@@ -5,7 +5,7 @@ container I/O.
 
 It provides:
 
-- `.tmd` ZIP and `.tmdp` polyglot reading and writing;
+- `.tmd` ZIP reading and writing;
 - manifests, safe/unique attachment paths, SHA-256 checks, and Markdown
   `attach:` reference validation;
 - an embedded SQLite handle with import, export, reset, and migration helpers;
@@ -19,7 +19,7 @@ It does not provide terminal or editor user interfaces. Those belong to
 
 ```rust
 use mime::TEXT_PLAIN;
-use tmd_core::{read_from_path, write_to_path, Format, TmdDoc};
+use tmd_core::{read_from_path, write_to_path, TmdDoc};
 
 fn main() -> tmd_core::TmdResult<()> {
     let mut document = TmdDoc::new("# Project notes\n".to_owned())?;
@@ -29,8 +29,8 @@ fn main() -> tmd_core::TmdResult<()> {
         b"Supporting material".to_vec(),
     )?;
 
-    write_to_path("notes.tmd", &document, Format::Tmd)?;
-    let loaded = read_from_path("notes.tmd", None)?;
+    write_to_path("notes.tmd", &document)?;
+    let loaded = read_from_path("notes.tmd")?;
     assert_eq!(loaded.markdown, document.markdown);
     Ok(())
 }

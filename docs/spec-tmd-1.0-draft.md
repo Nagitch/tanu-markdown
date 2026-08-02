@@ -1,8 +1,8 @@
 # Tanu Markdown Container Specification 1.0 (Draft)
 
 Status: implemented draft<br>
-Version: 1.0.0-draft.1<br>
-Last reviewed: 2026-07-31
+Version: 1.0.0-draft.2<br>
+Last reviewed: 2026-08-02
 
 This document defines the container contract implemented by `tmd-core`
 `0.0.1`. It is versioned so implementation and interoperability tests can
@@ -18,11 +18,7 @@ A Tanu Markdown document contains:
 - zero or more attachments with JSON metadata;
 - one SQLite 3 database.
 
-The same logical document has two representations:
-
-- `.tmd`: a ZIP archive;
-- `.tmdp`: UTF-8 Markdown immediately followed by the same ZIP archive, with a
-  TMD marker in its end-of-central-directory (EOCD) comment.
+A logical document is represented as a `.tmd` ZIP archive.
 
 ## 2. Required ZIP entries
 
@@ -79,8 +75,7 @@ value. Unknown top-level manifest fields are not currently preserved.
 
 `index.md` MUST be valid UTF-8.
 
-For `.tmd`, `index.md` is the document Markdown. For `.tmdp`, the leading
-Markdown section is authoritative; writers emit the same bytes in `index.md`.
+`index.md` is the document Markdown.
 
 Links and images may reference an attachment using:
 
@@ -138,25 +133,7 @@ application-defined. TMD uses SQLite `PRAGMA user_version` as its unsigned
 schema-version value and compares it with `manifest.db_schema_version` when
 that manifest field is present.
 
-## 7. `.tmdp` boundary marker
-
-A `.tmdp` byte stream has this layout:
-
-```text
-[Markdown bytes][ZIP bytes]
-```
-
-The ZIP EOCD comment MUST be exactly 13 bytes:
-
-```text
-54 4d 44 31 00 [eight-byte unsigned little-endian Markdown length]
- T  M  D  1 \0
-```
-
-The length counts the UTF-8 Markdown bytes before the ZIP local-file header.
-Data after the complete EOCD comment is invalid.
-
-## 8. Validation and mutation
+## 7. Validation and mutation
 
 Default reads validate structural JSON/ZIP/SQLite requirements, canonical and
 unique attachment identity, byte lengths, and present SHA-256 digests.
@@ -172,9 +149,11 @@ Path-based writes create a temporary file in the destination directory, flush
 and synchronize it, then replace the destination. A failure before replacement
 MUST preserve an existing destination.
 
-## 9. Compatibility policy
+## 8. Compatibility policy
 
 This draft describes `tmd_version` 1.0.0, but repository packages remain
 pre-1.0. Any incompatible change requires a dedicated issue, updated tests and
 documentation, and an explicit migration/compatibility decision. Consumers
 must not infer long-term compatibility until this document is marked stable.
+Draft 2 intentionally narrows the container contract to the single `.tmd` ZIP
+representation and removes alternate-format APIs and tooling.

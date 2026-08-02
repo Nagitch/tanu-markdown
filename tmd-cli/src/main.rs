@@ -18,9 +18,9 @@ use serde::Deserialize;
 use serde_json::{json, Value as JsonValue};
 use sha2::{Digest, Sha256};
 use tmd_core::{
-    attachment_references, export_db, import_db, migrate, read_tmd, read_tmdp, reset_db,
-    validate_document, write_bytes_to_path, write_to_path, AttachmentMeta, Format, ReadMode,
-    TmdDoc, ValidationSeverity, SQLITE_MAX_USER_VERSION,
+    attachment_references, export_db, import_db, migrate, read_tmd, reset_db, validate_document,
+    write_bytes_to_path, write_to_path, AttachmentMeta, ReadMode, TmdDoc, ValidationSeverity,
+    SQLITE_MAX_USER_VERSION,
 };
 
 const JSON_SCHEMA_VERSION: u32 = 1;
@@ -59,14 +59,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Create a new `.tmd` or `.tmdp` document.
+    /// Create a new `.tmd` document.
     New {
         output: PathBuf,
         #[arg(long)]
         title: Option<String>,
     },
-    /// Convert between `.tmd` and `.tmdp` containers.
-    Convert {
+    /// Atomically publish a validated `.tmd` document.
+    Publish {
         input: PathBuf,
         output: PathBuf,
         /// Publish only if the output is still `missing` or has this SHA-256 digest.
@@ -217,11 +217,11 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Commands::New { output, title } => cmd_new(&output, title.as_deref()),
-        Commands::Convert {
+        Commands::Publish {
             input,
             output,
             expected_output_state,
-        } => cmd_convert(&input, &output, expected_output_state.as_ref()),
+        } => cmd_publish(&input, &output, expected_output_state.as_ref()),
         Commands::Validate { input, json } => cmd_validate(&input, json),
         Commands::Inspect { input, json } => cmd_inspect(&input, json),
         Commands::Update { input, json_stdin } => cmd_update(&input, json_stdin),
@@ -275,7 +275,7 @@ fn cmd_new(path: &Path, title: Option<&str>) -> Result<()> {
     ensure!(!path.exists(), "target `{}` already exists", path.display());
     ensure_parent_directory(path)?;
 
-    let format = detect_format(path)?;
+    ensure_tmd_path(path)?;
     let display_title = title.unwrap_or("New TMD Document");
     let markdown =
         format!("# {display_title}\n\nWelcome to **Tanu Markdown**!\n\nThe embedded database is ready for use.\n");
@@ -283,39 +283,27 @@ fn cmd_new(path: &Path, title: Option<&str>) -> Result<()> {
     doc.manifest.title = Some(display_title.to_owned());
     doc.touch();
 
-    write_document_if_expected(path, &doc, format, Some(&ExpectedOutputState::Missing))?;
-    println!(
-        "Created new {} document at {}",
-        format_display(format),
-        path.display()
-    );
+    write_document_if_expected(path, &doc, Some(&ExpectedOutputState::Missing))?;
+    println!("Created new .tmd document at {}", path.display());
     Ok(())
 }
 
-fn cmd_convert(
+fn cmd_publish(
     input: &Path,
     output: &Path,
     expected_output_state: Option<&ExpectedOutputState>,
 ) -> Result<()> {
-    ensure_distinct_existing_paths(input, output, "converted document")?;
-    let (doc, input_format, input_bytes) = read_document_snapshot(input)?;
-    let output_format = detect_format(output)?;
+    ensure_distinct_existing_paths(input, output, "published document")?;
+    let (_, input_bytes) = read_document_snapshot(input)?;
+    ensure_tmd_path(output)?;
     ensure_parent_directory(output)?;
-    if input_format == output_format {
-        write_bytes_if_expected(output, &input_bytes, expected_output_state)?;
-    } else {
-        write_document_if_expected(output, &doc, output_format, expected_output_state)?;
-    }
-    println!(
-        "Converted `{}` into `{}`",
-        input.display(),
-        output.display()
-    );
+    write_bytes_if_expected(output, &input_bytes, expected_output_state)?;
+    println!("Published `{}` to `{}`", input.display(), output.display());
     Ok(())
 }
 
 fn cmd_validate(input: &Path, json_output: bool) -> Result<()> {
-    let (doc, _) = match read_document(input) {
+    let doc = match read_document(input) {
         Ok(result) => result,
         Err(error) => {
             if json_output {
@@ -387,8 +375,8 @@ fn print_validation_error(code: &str, error: &anyhow::Error) -> Result<()> {
 }
 
 fn cmd_inspect(input: &Path, json_output: bool) -> Result<()> {
-    let (doc, format) = read_document(input)?;
-    let value = inspection_value(&doc, format)?;
+    let doc = read_document(input)?;
+    let value = inspection_value(&doc)?;
     if json_output {
         println!("{}", serde_json::to_string_pretty(&value)?);
     } else {
@@ -422,7 +410,7 @@ fn cmd_update(input: &Path, json_stdin: bool) -> Result<()> {
         JSON_SCHEMA_VERSION
     );
 
-    let (mut doc, format, expected) = read_document_for_update(input)?;
+    let (mut doc, expected) = read_document_for_update(input)?;
     if let Some(markdown) = update.markdown {
         doc.markdown = markdown;
     }
@@ -436,17 +424,17 @@ fn cmd_update(input: &Path, json_stdin: bool) -> Result<()> {
         doc.manifest.tags = tags;
     }
     doc.touch();
-    write_document_if_expected(input, &doc, format, Some(&expected))?;
-    let (persisted_doc, persisted_format) = read_document(input)?;
+    write_document_if_expected(input, &doc, Some(&expected))?;
+    let persisted_doc = read_document(input)?;
     println!(
         "{}",
-        serde_json::to_string_pretty(&inspection_value(&persisted_doc, persisted_format)?)?
+        serde_json::to_string_pretty(&inspection_value(&persisted_doc)?)?
     );
     Ok(())
 }
 
 fn cmd_attachment_list(doc_path: &Path, json_output: bool) -> Result<()> {
-    let (doc, _) = read_document(doc_path)?;
+    let doc = read_document(doc_path)?;
     let attachments = sorted_attachment_values(&doc)?;
     if json_output {
         println!(
@@ -487,20 +475,20 @@ fn cmd_attachment_add(
             .with_context(|| format!("invalid MIME type `{value}`"))?,
         None => mime_guess::from_path(source).first_or_octet_stream(),
     };
-    let (mut doc, format, expected) = read_document_for_update(doc_path)?;
+    let (mut doc, expected) = read_document_for_update(doc_path)?;
     let id = doc
         .add_attachment(logical_path, mime, bytes)
         .context("failed to add attachment")?;
     doc.update_attachment_metadata(id, title, alt)
         .context("failed to update attachment metadata")?;
     doc.touch();
-    write_document_if_expected(doc_path, &doc, format, Some(&expected))?;
+    write_document_if_expected(doc_path, &doc, Some(&expected))?;
     println!("Added `{logical_path}` to `{}`", doc_path.display());
     Ok(())
 }
 
 fn cmd_attachment_remove(doc_path: &Path, logical_path: &str) -> Result<()> {
-    let (mut doc, format, expected) = read_document_for_update(doc_path)?;
+    let (mut doc, expected) = read_document_for_update(doc_path)?;
     ensure_attachment_unreferenced(&doc, logical_path, "remove")?;
     let id = attachment_id_by_path(&doc, logical_path)?;
     if doc
@@ -514,19 +502,19 @@ fn cmd_attachment_remove(doc_path: &Path, logical_path: &str) -> Result<()> {
     doc.remove_attachment(id)
         .context("failed to remove attachment")?;
     doc.touch();
-    write_document_if_expected(doc_path, &doc, format, Some(&expected))?;
+    write_document_if_expected(doc_path, &doc, Some(&expected))?;
     println!("Removed `{logical_path}` from `{}`", doc_path.display());
     Ok(())
 }
 
 fn cmd_attachment_rename(doc_path: &Path, from: &str, to: &str) -> Result<()> {
-    let (mut doc, format, expected) = read_document_for_update(doc_path)?;
+    let (mut doc, expected) = read_document_for_update(doc_path)?;
     ensure_attachment_unreferenced(&doc, from, "rename")?;
     let id = attachment_id_by_path(&doc, from)?;
     doc.rename_attachment(id, to)
         .context("failed to rename attachment")?;
     doc.touch();
-    write_document_if_expected(doc_path, &doc, format, Some(&expected))?;
+    write_document_if_expected(doc_path, &doc, Some(&expected))?;
     println!("Renamed `{from}` to `{to}` in `{}`", doc_path.display());
     Ok(())
 }
@@ -542,7 +530,7 @@ fn ensure_attachment_unreferenced(doc: &TmdDoc, logical_path: &str, operation: &
 }
 
 fn cmd_attachment_extract(doc_path: &Path, logical_path: &str, output: &Path) -> Result<()> {
-    let (doc, _) = read_document(doc_path)?;
+    let doc = read_document(doc_path)?;
     let id = attachment_id_by_path(&doc, logical_path)?;
     let data = doc
         .attachments
@@ -614,7 +602,7 @@ fn cmd_export_html(
     expected_output_state: Option<&ExpectedOutputState>,
 ) -> Result<()> {
     ensure_distinct_existing_paths(input, output, "HTML output")?;
-    let (doc, _) = read_document(input)?;
+    let doc = read_document(input)?;
     let validation = validate_document(&doc).context("failed to validate document")?;
     ensure!(
         validation.valid,
@@ -697,7 +685,7 @@ fn cmd_export_html(
 }
 
 fn cmd_db_init(doc_path: &Path, schema_path: Option<&Path>, version: Option<u32>) -> Result<()> {
-    let (mut doc, format, expected) = read_document_for_update(doc_path)?;
+    let (mut doc, expected) = read_document_for_update(doc_path)?;
     let schema_sql = schema_path
         .map(|path| {
             fs::read_to_string(path)
@@ -719,7 +707,7 @@ fn cmd_db_init(doc_path: &Path, schema_path: Option<&Path>, version: Option<u32>
         doc.manifest.db_schema_version = Some(version);
     }
     doc.touch();
-    write_document_if_expected(doc_path, &doc, format, Some(&expected))?;
+    write_document_if_expected(doc_path, &doc, Some(&expected))?;
     println!(
         "Initialised database for `{}` (schema version = {:?})",
         doc_path.display(),
@@ -730,7 +718,7 @@ fn cmd_db_init(doc_path: &Path, schema_path: Option<&Path>, version: Option<u32>
 
 fn cmd_db_exec(doc_path: &Path, sql: &str) -> Result<()> {
     ensure!(!sql.trim().is_empty(), "SQL must not be empty");
-    let (mut doc, format, expected) = read_document_for_update(doc_path)?;
+    let (mut doc, expected) = read_document_for_update(doc_path)?;
     let user_version = doc
         .db_with_conn_mut(|conn| -> Result<u32> {
             conn.execute_batch(sql)?;
@@ -751,14 +739,14 @@ fn cmd_db_exec(doc_path: &Path, sql: &str) -> Result<()> {
         .context("failed to execute SQL against embedded database")?;
     doc.manifest.db_schema_version = Some(user_version);
     doc.touch();
-    write_document_if_expected(doc_path, &doc, format, Some(&expected))?;
+    write_document_if_expected(doc_path, &doc, Some(&expected))?;
     println!("Executed SQL and updated `{}`", doc_path.display());
     Ok(())
 }
 
 fn cmd_db_query(doc_path: &Path, sql: &str, json_output: bool) -> Result<()> {
     ensure!(!sql.trim().is_empty(), "SQL must not be empty");
-    let (doc, _) = read_document(doc_path)?;
+    let doc = read_document(doc_path)?;
     let stdout = io::stdout();
     let mut output = io::BufWriter::new(stdout.lock());
     doc.db_with_conn(|conn| stream_db_query(conn, sql, json_output, &mut output))
@@ -846,11 +834,11 @@ fn stream_db_query(
 
 fn cmd_db_migrate(doc_path: &Path, from: u32, to: u32, sql: &str) -> Result<()> {
     ensure!(to > from, "migration target must be greater than source");
-    let (mut doc, format, expected) = read_document_for_update(doc_path)?;
+    let (mut doc, expected) = read_document_for_update(doc_path)?;
     migrate(&mut doc, sql, from, to).context("failed to migrate embedded database")?;
     doc.manifest.db_schema_version = Some(to);
     doc.touch();
-    write_document_if_expected(doc_path, &doc, format, Some(&expected))?;
+    write_document_if_expected(doc_path, &doc, Some(&expected))?;
     println!(
         "Migrated `{}` from schema version {} to {}",
         doc_path.display(),
@@ -861,12 +849,12 @@ fn cmd_db_migrate(doc_path: &Path, from: u32, to: u32, sql: &str) -> Result<()> 
 }
 
 fn cmd_db_import(doc_path: &Path, source: &Path) -> Result<()> {
-    let (mut doc, format, expected) = read_document_for_update(doc_path)?;
+    let (mut doc, expected) = read_document_for_update(doc_path)?;
     import_db(&mut doc, source).context("failed to import SQLite database")?;
     let user_version = database_user_version(&doc)?;
     doc.manifest.db_schema_version = Some(user_version);
     doc.touch();
-    write_document_if_expected(doc_path, &doc, format, Some(&expected))?;
+    write_document_if_expected(doc_path, &doc, Some(&expected))?;
     println!(
         "Imported database from `{}` into `{}` (user_version = {})",
         source.display(),
@@ -878,7 +866,7 @@ fn cmd_db_import(doc_path: &Path, source: &Path) -> Result<()> {
 
 fn cmd_db_export(doc_path: &Path, output: &Path) -> Result<()> {
     ensure_distinct_existing_paths(doc_path, output, "database export")?;
-    let (doc, _) = read_document(doc_path)?;
+    let doc = read_document(doc_path)?;
     ensure_parent_directory(output)?;
     export_db(&doc, output).context("failed to export embedded database")?;
     println!(
@@ -889,10 +877,10 @@ fn cmd_db_export(doc_path: &Path, output: &Path) -> Result<()> {
     Ok(())
 }
 
-fn inspection_value(doc: &TmdDoc, format: Format) -> Result<JsonValue> {
+fn inspection_value(doc: &TmdDoc) -> Result<JsonValue> {
     Ok(json!({
         "schema_version": JSON_SCHEMA_VERSION,
-        "format": format_name(format),
+        "format": "tmd",
         "markdown": doc.markdown,
         "manifest": doc.manifest,
         "attachments": sorted_attachment_values(doc)?,
@@ -953,37 +941,33 @@ fn database_inspection(doc: &TmdDoc) -> Result<JsonValue> {
     .context("failed to inspect embedded database")
 }
 
-fn read_document(path: &Path) -> Result<(TmdDoc, Format)> {
-    let (doc, format, _) = read_document_snapshot(path)?;
-    Ok((doc, format))
+fn read_document(path: &Path) -> Result<TmdDoc> {
+    let (doc, _) = read_document_snapshot(path)?;
+    Ok(doc)
 }
 
-fn read_document_snapshot(path: &Path) -> Result<(TmdDoc, Format, Vec<u8>)> {
-    let format = detect_format(path)?;
+fn read_document_snapshot(path: &Path) -> Result<(TmdDoc, Vec<u8>)> {
+    ensure_tmd_path(path)?;
     let bytes = fs::read(path).with_context(|| format!("failed to read `{}`", path.display()))?;
     let mut cursor = Cursor::new(bytes.as_slice());
-    let doc = match format {
-        Format::Tmd => read_tmd(&mut cursor, ReadMode::default()),
-        Format::Tmdp => read_tmdp(&mut cursor, ReadMode::default()),
-    }
-    .with_context(|| format!("failed to parse `{}`", path.display()))?;
-    Ok((doc, format, bytes))
+    let doc = read_tmd(&mut cursor, ReadMode::default())
+        .with_context(|| format!("failed to parse `{}`", path.display()))?;
+    Ok((doc, bytes))
 }
 
-fn read_document_for_update(path: &Path) -> Result<(TmdDoc, Format, ExpectedOutputState)> {
-    let (doc, format, bytes) = read_document_snapshot(path)?;
+fn read_document_for_update(path: &Path) -> Result<(TmdDoc, ExpectedOutputState)> {
+    let (doc, bytes) = read_document_snapshot(path)?;
     let digest = Sha256::digest(&bytes).into();
-    Ok((doc, format, ExpectedOutputState::Sha256(digest)))
+    Ok((doc, ExpectedOutputState::Sha256(digest)))
 }
 
 fn write_document_if_expected(
     path: &Path,
     doc: &TmdDoc,
-    format: Format,
     expected: Option<&ExpectedOutputState>,
 ) -> Result<()> {
     write_output_if_expected(path, expected, || {
-        write_to_path(path, doc, format)
+        write_to_path(path, doc)
             .with_context(|| format!("failed to atomically write `{}`", path.display()))
     })
 }
@@ -1149,17 +1133,16 @@ fn output_conflict(path: &Path) -> anyhow::Error {
     )
 }
 
-fn detect_format(path: &Path) -> Result<Format> {
+fn ensure_tmd_path(path: &Path) -> Result<()> {
     match path
         .extension()
         .and_then(|extension| extension.to_str())
         .map(|extension| extension.to_ascii_lowercase())
         .as_deref()
     {
-        Some("tmd") => Ok(Format::Tmd),
-        Some("tmdp") => Ok(Format::Tmdp),
+        Some("tmd") => Ok(()),
         _ => Err(anyhow!(
-            "unsupported path `{}` — expected extension .tmd or .tmdp",
+            "unsupported path `{}` — expected extension .tmd",
             path.display()
         )),
     }
@@ -1615,20 +1598,6 @@ fn escape_table_cell(value: &str) -> String {
         .replace('\n', "\\n")
 }
 
-fn format_display(format: Format) -> &'static str {
-    match format {
-        Format::Tmd => ".tmd",
-        Format::Tmdp => ".tmdp",
-    }
-}
-
-fn format_name(format: Format) -> &'static str {
-    match format {
-        Format::Tmd => "tmd",
-        Format::Tmdp => "tmdp",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1676,25 +1645,22 @@ mod tests {
         let directory = tempfile::tempdir().expect("temporary directory");
         let output = directory.path().join("document.tmd");
         let original = TmdDoc::new("original".to_owned()).expect("original document");
-        write_to_path(&output, &original, Format::Tmd).expect("write original");
-        let (mut stale, format, expected) =
+        write_to_path(&output, &original).expect("write original");
+        let (mut stale, expected) =
             read_document_for_update(&output).expect("read mutation snapshot");
 
         let external = TmdDoc::new("external".to_owned()).expect("external document");
-        write_to_path(&output, &external, Format::Tmd).expect("write external replacement");
+        write_to_path(&output, &external).expect("write external replacement");
         stale.markdown = "stale mutation".to_owned();
 
-        let error = write_document_if_expected(&output, &stale, format, Some(&expected))
+        let error = write_document_if_expected(&output, &stale, Some(&expected))
             .expect_err("stale mutation must be rejected");
 
         assert!(error
             .to_string()
             .contains("refusing to overwrite external changes"));
         assert_eq!(
-            read_document(&output)
-                .expect("preserved document")
-                .0
-                .markdown,
+            read_document(&output).expect("preserved document").markdown,
             "external"
         );
     }

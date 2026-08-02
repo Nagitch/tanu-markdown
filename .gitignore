@@ -19,7 +19,6 @@ Thumbs.db
 
 # Project specific temporary files
 *.tmd.tmp
-*.tmdp.tmp
 *.tmd.backup
 
 # Rust

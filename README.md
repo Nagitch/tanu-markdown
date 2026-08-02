@@ -8,18 +8,11 @@ command-line interface, a C-compatible dynamic library, a VS Code custom
 editor, and executable sample documents. The project is pre-1.0: the
 implementation is usable, but its compatibility contract is not yet frozen.
 
-## Formats
+## Format
 
-Tanu Markdown supports two representations of the same logical document:
-
-| Extension | Representation | Intended use |
-| --- | --- | --- |
-| `.tmd` | ZIP container | Primary editable and machine-oriented format |
-| `.tmdp` | UTF-8 Markdown followed by a ZIP container | Polyglot format for readable previews and portable sharing |
-
-Both variants contain `manifest.json`, `index.md`, `attachments.json`,
-`db/main.sqlite3`, and attachment entries. A `.tmdp` file also stores the
-Markdown length in the ZIP end-of-central-directory comment.
+A Tanu Markdown document uses the `.tmd` extension and is stored as a ZIP
+container. It contains `manifest.json`, `index.md`, `attachments.json`,
+`db/main.sqlite3`, and attachment entries.
 
 See the [TMD 1.0 draft specification](docs/spec-tmd-1.0-draft.md) for the
 normative implemented contract and the
@@ -29,11 +22,11 @@ normative implemented contract and the
 
 | Path | Responsibility |
 | --- | --- |
-| `tmd-core/` | Rust document model, attachment handling, SQLite lifecycle, and `.tmd`/`.tmdp` I/O |
-| `tmd-cli/` | CLI for creating, converting, validating, exporting, and editing documents |
+| `tmd-core/` | Rust document model, attachment handling, SQLite lifecycle, and `.tmd` I/O |
+| `tmd-cli/` | CLI for creating, validating, publishing, exporting, and editing documents |
 | `tmd-core-ffi/` | C ABI dynamic-library wrapper around the optional `tmd-core` FFI surface |
 | `tmd-vscode/` | VS Code custom editor using the `tmd` JSON bridge |
-| `tmd-sample/` | Reference `.tmd` and `.tmdp` files |
+| `tmd-sample/` | Reference `.tmd` file |
 | `docs/` | Architecture, format, workflow, and release-readiness documentation |
 
 The Rust packages form one Cargo workspace and share the root `Cargo.lock`.
@@ -63,7 +56,6 @@ cargo install --path tmd-cli
 tmd new notes.tmd --title "Project Notes"
 tmd inspect notes.tmd --json
 tmd validate notes.tmd
-tmd convert notes.tmd notes.tmdp
 tmd export-html notes.tmd notes.html --self-contained
 ```
 

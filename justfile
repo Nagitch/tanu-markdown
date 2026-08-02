@@ -14,7 +14,6 @@ test:
 
 samples:
     cargo run --locked -p tmd-cli -- validate tmd-sample/sample.tmd
-    cargo run --locked -p tmd-cli -- validate tmd-sample/sample.tmdp
 
 doc:
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps

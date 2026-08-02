@@ -2,14 +2,14 @@
 
 This directory contains the VS Code custom editor for Tanu Markdown.
 
-It opens `.tmd` and `.tmdp` files through `tmd inspect --json` and provides:
+It opens `.tmd` files through `tmd inspect --json` and provides:
 
 - Markdown and title editing with undo/redo;
 - save, save as, revert, and hot-exit backup support;
 - attachment and database summaries;
 - document validation with actionable issues;
 - a live, non-executable safe Markdown preview;
-- document creation, attachment add/remove, HTML export, and format conversion.
+- document creation, attachment add/remove, and HTML export.
 
 Container parsing remains exclusively in Rust. Platform-specific VSIX packages
 contain the matching native CLI, and the extension passes argument arrays
@@ -19,7 +19,7 @@ asynchronous saves. Saves, reads, exports, and attachment mutations are
 serialized per document so concurrent CLI read-modify-write operations cannot
 overwrite each other. Validation results are applied only when the checked
 editor revision is still current and known to have reached disk. Validation,
-attachment mutation, HTML export, and format conversion reject an editor
+attachment mutation and HTML export reject an editor
 revision that a racing save has not persisted. Any edit immediately marks the
 displayed validation report stale until the current revision is validated.
 Edits received while a revert is loading cancel that revert and remain dirty.

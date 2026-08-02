@@ -5,8 +5,8 @@ pub use db::{
     export_db, import_db, migrate, reset_db, with_conn, with_conn_mut, DbHandle, DbOptions,
 };
 pub use format::{
-    read_from_path, read_tmd, read_tmdp, sniff_format, write_bytes_to_path, write_tmd, write_tmdp,
-    write_to_path, Format, ReadMode, Reader, WriteMode, Writer,
+    read_from_path, read_tmd, write_bytes_to_path, write_tmd, write_to_path, ReadMode, Reader,
+    WriteMode, Writer,
 };
 pub use manifest::{AttachmentMeta, AttachmentRef, LinkRef, Manifest, Semver};
 pub use util::{normalize_logical_path, now_utc};
@@ -813,31 +813,12 @@ mod format {
     use zip::write::SimpleFileOptions;
     use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
-    const EOCD_SIGNATURE: [u8; 4] = [0x50, 0x4b, 0x05, 0x06];
-    const MAX_COMMENT_SEARCH: usize = 0xFFFF + 22;
-    const TMD_COMMENT_PREFIX: &[u8] = b"TMD1\0";
     const REQUIRED_ENTRY_NAMES: [&str; 4] = [
         "manifest.json",
         "index.md",
         "attachments.json",
         "db/main.sqlite3",
     ];
-
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub enum Format {
-        Tmd,
-        Tmdp,
-    }
-
-    pub fn sniff_format(header: &[u8]) -> Option<Format> {
-        if header.len() >= 4 && &header[0..4] == b"PK\x03\x04" {
-            Some(Format::Tmd)
-        } else if !header.is_empty() {
-            Some(Format::Tmdp)
-        } else {
-            None
-        }
-    }
 
     #[derive(Clone, Copy, Debug)]
     pub struct ReadMode {
@@ -867,61 +848,41 @@ mod format {
 
     pub struct Reader<'a, R: Read + Seek> {
         inner: R,
-        format: Format,
         mode: ReadMode,
         _marker: std::marker::PhantomData<&'a ()>,
     }
 
     impl<'a, R: Read + Seek> Reader<'a, R> {
-        pub fn new(mut inner: R, assumed: Option<Format>, mode: ReadMode) -> TmdResult<Self> {
-            let format = if let Some(format) = assumed {
-                format
-            } else {
-                let mut header = [0u8; 8];
-                let read = inner.read(&mut header)?;
-                inner.seek(SeekFrom::Start(0))?;
-                sniff_format(&header[..read])
-                    .ok_or_else(|| TmdError::InvalidFormat("unable to sniff format".into()))?
-            };
-
+        pub fn new(inner: R, mode: ReadMode) -> TmdResult<Self> {
             Ok(Self {
                 inner,
-                format,
                 mode,
                 _marker: std::marker::PhantomData,
             })
         }
 
         pub fn read_doc(&mut self) -> TmdResult<TmdDoc> {
-            match self.format {
-                Format::Tmd => read_tmd(&mut self.inner, self.mode),
-                Format::Tmdp => read_tmdp(&mut self.inner, self.mode),
-            }
+            read_tmd(&mut self.inner, self.mode)
         }
     }
 
     pub struct Writer<'a, W: Write + Seek> {
         inner: W,
-        format: Format,
         mode: WriteMode,
         _marker: std::marker::PhantomData<&'a ()>,
     }
 
     impl<'a, W: Write + Seek> Writer<'a, W> {
-        pub fn new(inner: W, format: Format, mode: WriteMode) -> TmdResult<Self> {
+        pub fn new(inner: W, mode: WriteMode) -> TmdResult<Self> {
             Ok(Self {
                 inner,
-                format,
                 mode,
                 _marker: std::marker::PhantomData,
             })
         }
 
         pub fn write_doc(&mut self, doc: &TmdDoc) -> TmdResult<()> {
-            match self.format {
-                Format::Tmd => write_tmd(&mut self.inner, doc, self.mode),
-                Format::Tmdp => write_tmdp(&mut self.inner, doc, self.mode),
-            }
+            write_tmd(&mut self.inner, doc, self.mode)
         }
 
         pub fn finish(mut self) -> TmdResult<()> {
@@ -933,81 +894,6 @@ mod format {
     #[derive(Serialize, Deserialize)]
     struct AttachmentManifest {
         attachments: Vec<AttachmentMeta>,
-    }
-
-    fn find_eocd_offset(data: &[u8]) -> TmdResult<usize> {
-        let min_len = 22;
-        if data.len() < min_len {
-            return Err(TmdError::InvalidFormat(
-                "input too small to contain EOCD".into(),
-            ));
-        }
-        let search_start = if data.len() > MAX_COMMENT_SEARCH {
-            data.len() - MAX_COMMENT_SEARCH
-        } else {
-            0
-        };
-
-        for idx in (search_start..=data.len() - min_len).rev() {
-            if data[idx..idx + 4] == EOCD_SIGNATURE {
-                return Ok(idx);
-            }
-        }
-
-        Err(TmdError::InvalidFormat(
-            "ZIP EOCD signature not found".into(),
-        ))
-    }
-
-    fn extract_markdown_len_from_comment(comment: &[u8]) -> TmdResult<u64> {
-        if !comment.starts_with(TMD_COMMENT_PREFIX) {
-            return Err(TmdError::InvalidFormat(
-                "missing TMD comment signature".into(),
-            ));
-        }
-        let expected_len = TMD_COMMENT_PREFIX.len() + 8;
-        if comment.len() != expected_len {
-            return Err(TmdError::InvalidFormat(format!(
-                "unexpected TMD comment length: expected {} bytes, got {}",
-                expected_len,
-                comment.len()
-            )));
-        }
-        let mut len_bytes = [0u8; 8];
-        len_bytes.copy_from_slice(&comment[TMD_COMMENT_PREFIX.len()..]);
-        Ok(u64::from_le_bytes(len_bytes))
-    }
-
-    fn split_tmd_bytes(bytes: &[u8]) -> TmdResult<(&[u8], &[u8])> {
-        let eocd_offset = find_eocd_offset(bytes)?;
-        if eocd_offset + 22 > bytes.len() {
-            return Err(TmdError::InvalidFormat(
-                "EOCD extends past end of buffer".into(),
-            ));
-        }
-        let comment_len_start = eocd_offset + 20;
-        let comment_len =
-            u16::from_le_bytes([bytes[comment_len_start], bytes[comment_len_start + 1]]) as usize;
-        let comment_start = eocd_offset + 22;
-        if comment_start + comment_len > bytes.len() {
-            return Err(TmdError::InvalidFormat(
-                "EOCD comment length exceeds buffer".into(),
-            ));
-        }
-        if comment_start + comment_len != bytes.len() {
-            return Err(TmdError::InvalidFormat(
-                "unexpected data follows the ZIP EOCD comment".into(),
-            ));
-        }
-        let comment = &bytes[comment_start..comment_start + comment_len];
-        let markdown_len = extract_markdown_len_from_comment(comment)? as usize;
-        if markdown_len > bytes.len() {
-            return Err(TmdError::InvalidFormat(
-                "markdown length exceeds buffer".into(),
-            ));
-        }
-        let (markdown, zip_bytes) = bytes.split_at(markdown_len);
-        Ok((markdown, zip_bytes))
     }
 
     fn read_manifest_from_zip<R: Read + Seek>(zip: &mut ZipArchive<R>) -> TmdResult<Manifest> {
@@ -1110,20 +996,6 @@ mod format {
         })
     }
 
-    pub fn read_tmdp<R: Read + Seek>(reader: &mut R, mode: ReadMode) -> TmdResult<TmdDoc> {
-        reader.seek(SeekFrom::Start(0))?;
-        let mut bytes = Vec::new();
-        reader.read_to_end(&mut bytes)?;
-        let (markdown_bytes, zip_bytes) = split_tmd_bytes(&bytes)?;
-        let markdown = String::from_utf8(markdown_bytes.to_vec())
-            .map_err(|_| TmdError::InvalidFormat("markdown section is not valid UTF-8".into()))?;
-        let cursor = std::io::Cursor::new(zip_bytes.to_vec());
-        let mut zip = ZipArchive::new(cursor)?;
-        let mut doc = read_doc_from_zip(&mut zip, mode)?;
-        doc.markdown = markdown;
-        Ok(doc)
-    }
-
     pub fn read_tmd<R: Read + Seek>(reader: &mut R, mode: ReadMode) -> TmdResult<TmdDoc> {
         reader.seek(SeekFrom::Start(0))?;
         let mut bytes = Vec::new();
@@ -1131,34 +1003,6 @@ mod format {
         let cursor = std::io::Cursor::new(bytes);
         let mut zip = ZipArchive::new(cursor)?;
         read_doc_from_zip(&mut zip, mode)
-    }
-
-    fn set_tmd_comment(zip_bytes: &mut Vec<u8>, markdown_len: u64) -> TmdResult<()> {
-        let eocd_offset = find_eocd_offset(zip_bytes)?;
-        if eocd_offset + 22 > zip_bytes.len() {
-            return Err(TmdError::InvalidFormat(
-                "EOCD extends past end of ZIP buffer".into(),
-            ));
-        }
-        let comment_data = {
-            let mut buf = Vec::with_capacity(TMD_COMMENT_PREFIX.len() + 8);
-            buf.extend_from_slice(TMD_COMMENT_PREFIX);
-            buf.extend_from_slice(&markdown_len.to_le_bytes());
-            buf
-        };
-        if comment_data.len() > u16::MAX as usize {
-            return Err(TmdError::InvalidFormat(
-                "TMD comment would exceed ZIP comment limit".into(),
-            ));
-        }
-        let comment_len_pos = eocd_offset + 20;
-        let comment_start = eocd_offset + 22;
-        let comment_len_bytes = (comment_data.len() as u16).to_le_bytes();
-        zip_bytes[comment_len_pos] = comment_len_bytes[0];
-        zip_bytes[comment_len_pos + 1] = comment_len_bytes[1];
-        zip_bytes.truncate(comment_start);
-        zip_bytes.extend_from_slice(&comment_data);
-        Ok(())
     }
 
     fn build_zip(doc: &TmdDoc, mode: WriteMode) -> TmdResult<Vec<u8>> {
@@ -1223,21 +1067,6 @@ mod format {
         Ok(zip_bytes)
     }
 
-    pub fn write_tmdp<W: Write + Seek>(
-        writer: &mut W,
-        doc: &TmdDoc,
-        mode: WriteMode,
-    ) -> TmdResult<()> {
-        let markdown_bytes = doc.markdown.as_bytes();
-        let mut zip_bytes = build_zip(doc, mode)?;
-        let markdown_len = u64::try_from(markdown_bytes.len())
-            .map_err(|_| TmdError::InvalidFormat("markdown length exceeds u64 range".into()))?;
-        set_tmd_comment(&mut zip_bytes, markdown_len)?;
-        writer.write_all(markdown_bytes)?;
-        writer.write_all(&zip_bytes)?;
-        Ok(())
-    }
-
     pub fn write_tmd<W: Write + Seek>(
         writer: &mut W,
         doc: &TmdDoc,
@@ -1248,16 +1077,15 @@ mod format {
         Ok(())
     }
 
-    pub fn read_from_path(path: impl AsRef<Path>, assumed: Option<Format>) -> TmdResult<TmdDoc> {
+    pub fn read_from_path(path: impl AsRef<Path>) -> TmdResult<TmdDoc> {
         let file = File::open(path.as_ref())?;
-        let mut reader = Reader::new(std::io::BufReader::new(file), assumed, ReadMode::default())?;
+        let mut reader = Reader::new(std::io::BufReader::new(file), ReadMode::default())?;
         reader.read_doc()
     }
 
-    pub fn write_to_path(path: impl AsRef<Path>, doc: &TmdDoc, format: Format) -> TmdResult<()> {
+    pub fn write_to_path(path: impl AsRef<Path>, doc: &TmdDoc) -> TmdResult<()> {
         replace_path_atomically(path.as_ref(), |file| {
-            let mut writer =
-                Writer::new(std::io::BufWriter::new(file), format, WriteMode::default())?;
+            let mut writer = Writer::new(std::io::BufWriter::new(file), WriteMode::default())?;
             writer.write_doc(doc)?;
             writer.finish()
         })
@@ -1514,7 +1342,7 @@ mod format {
 pub mod ffi {
     //! C-compatible bindings for `tmd-core` exposed when the `ffi` feature is enabled.
 
-    use super::{read_from_path, write_to_path, Format, TmdDoc, TmdError};
+    use super::{read_from_path, write_to_path, TmdDoc, TmdError};
     use std::cell::RefCell;
     use std::ffi::{CStr, CString};
     use std::os::raw::c_char;
@@ -1559,18 +1387,19 @@ pub mod ffi {
         Ok(PathBuf::from(utf8))
     }
 
-    fn parse_optional_format(value: i32) -> Result<Option<Format>, String> {
+    fn validate_read_format(value: i32) -> Result<(), String> {
         match value {
-            0 => Ok(None),
-            1 => Ok(Some(Format::Tmd)),
-            2 => Ok(Some(Format::Tmdp)),
+            0 | 1 => Ok(()),
             other => Err(format!("unknown format value: {}", other)),
         }
     }
 
-    fn parse_required_format(value: i32) -> Result<Format, String> {
-        parse_optional_format(value)?
-            .ok_or_else(|| "format must not be Auto when writing".to_string())
+    fn validate_write_format(value: i32) -> Result<(), String> {
+        match value {
+            1 => Ok(()),
+            0 => Err("format must not be Auto when writing".to_string()),
+            other => Err(format!("unknown format value: {}", other)),
+        }
     }
 
     fn string_from_ptr(ptr: *const c_char) -> Result<String, String> {
@@ -1629,7 +1458,7 @@ pub mod ffi {
 
     /// Load a document from disk, optionally specifying the expected format.
     ///
-    /// Pass `0` for automatic format detection, `1` for `.tmd`, and `2` for `.tmdp`.
+    /// Pass `0` for the default format or `1` for `.tmd`.
     ///
     /// # Safety
     ///
@@ -1640,13 +1469,10 @@ pub mod ffi {
         path: *const c_char,
         format: i32,
     ) -> *mut TmdDoc {
-        let assumed = match parse_optional_format(format) {
-            Ok(value) => value,
-            Err(message) => {
-                set_last_error_message(message);
-                return ptr::null_mut();
-            }
-        };
+        if let Err(message) = validate_read_format(format) {
+            set_last_error_message(message);
+            return ptr::null_mut();
+        }
 
         let path_buf = match path_from_ptr(path) {
             Ok(path) => path,
@@ -1656,7 +1482,7 @@ pub mod ffi {
             }
         };
 
-        match read_from_path(&path_buf, assumed) {
+        match read_from_path(&path_buf) {
             Ok(doc) => {
                 clear_last_error();
                 Box::into_raw(Box::new(doc))
@@ -1670,7 +1496,7 @@ pub mod ffi {
 
     /// Persist the document to disk using the specified format.
     ///
-    /// Pass `1` for `.tmd` or `2` for `.tmdp`.
+    /// Pass `1` for `.tmd`.
     ///
     /// # Safety
     ///
@@ -1688,13 +1514,10 @@ pub mod ffi {
             return -1;
         }
 
-        let format = match parse_required_format(format) {
-            Ok(value) => value,
-            Err(message) => {
-                set_last_error_message(message);
-                return -1;
-            }
-        };
+        if let Err(message) = validate_write_format(format) {
+            set_last_error_message(message);
+            return -1;
+        }
 
         let path_buf = match path_from_ptr(path) {
             Ok(path) => path,
@@ -1705,7 +1528,7 @@ pub mod ffi {
         };
 
         let doc_ref = unsafe { &*doc };
-        match write_to_path(&path_buf, doc_ref, format) {
+        match write_to_path(&path_buf, doc_ref) {
             Ok(()) => {
                 clear_last_error();
                 0
@@ -2021,10 +1844,9 @@ mod tests {
         }
 
         let mut buffer = Cursor::new(Vec::new());
-        write_tmdp(&mut buffer, &doc, WriteMode::default()).expect("write");
+        write_tmd(&mut buffer, &doc, WriteMode::default()).expect("write");
         buffer.seek(SeekFrom::Start(0)).unwrap();
-        let mut reader =
-            Reader::new(buffer, Some(Format::Tmdp), ReadMode::default()).expect("reader");
+        let mut reader = Reader::new(buffer, ReadMode::default()).expect("reader");
         let rebuilt = reader.read_doc().expect("read");
 
         let rebuilt_meta = rebuilt
@@ -2061,13 +1883,12 @@ mod tests {
     }
 
     #[test]
-    fn tmdp_roundtrip_preserves_content() {
+    fn tmd_roundtrip_preserves_content() {
         let doc = build_doc_with_attachment();
         let mut buffer = Cursor::new(Vec::new());
-        write_tmdp(&mut buffer, &doc, WriteMode::default()).expect("write");
+        write_tmd(&mut buffer, &doc, WriteMode::default()).expect("write");
         buffer.seek(SeekFrom::Start(0)).unwrap();
-        let mut reader =
-            Reader::new(buffer, Some(Format::Tmdp), ReadMode::default()).expect("reader");
+        let mut reader = Reader::new(buffer, ReadMode::default()).expect("reader");
         let rebuilt = reader.read_doc().expect("read");
 
         assert_eq!(rebuilt.markdown, doc.markdown);
@@ -2102,19 +1923,6 @@ mod tests {
     }
 
     #[test]
-    fn tmd_roundtrip_preserves_content() {
-        let doc = build_doc_with_attachment();
-        let mut buffer = Cursor::new(Vec::new());
-        write_tmd(&mut buffer, &doc, WriteMode::default()).expect("write");
-        buffer.seek(SeekFrom::Start(0)).unwrap();
-        let mut reader =
-            Reader::new(buffer, Some(Format::Tmd), ReadMode::default()).expect("reader");
-        let rebuilt = reader.read_doc().expect("read");
-        assert_eq!(rebuilt.markdown, doc.markdown);
-        assert_eq!(rebuilt.manifest.title, doc.manifest.title);
-    }
-
-    #[test]
     fn writer_rejects_unsupported_major_version() {
         let mut doc = sample_doc();
         doc.manifest.tmd_version.major = 2;
@@ -2130,13 +1938,6 @@ mod tests {
             "unexpected error: {error}"
         );
         assert!(buffer.into_inner().is_empty());
-    }
-
-    #[test]
-    fn sniff_format_detects_variants() {
-        assert_eq!(sniff_format(b"PK\x03\x04"), Some(Format::Tmd));
-        assert_eq!(sniff_format(b"#"), Some(Format::Tmdp));
-        assert_eq!(sniff_format(b""), None);
     }
 
     #[test]
@@ -2441,8 +2242,8 @@ mod tests {
         let doc = build_doc_with_attachment();
         let dir = tempdir().unwrap();
         let path = dir.path().join("sample.tmd");
-        write_to_path(&path, &doc, Format::Tmd).expect("write path");
-        let loaded = read_from_path(&path, Some(Format::Tmd)).expect("read path");
+        write_to_path(&path, &doc).expect("write path");
+        let loaded = read_from_path(&path).expect("read path");
         assert_eq!(loaded.markdown, doc.markdown);
         assert_eq!(loaded.list_attachments().count(), 1);
     }
@@ -2463,7 +2264,7 @@ mod tests {
             .mode()
             & 0o777;
 
-        write_to_path(&path, &doc, Format::Tmd).expect("write path");
+        write_to_path(&path, &doc).expect("write path");
 
         let actual = std::fs::metadata(path)
             .expect("document metadata")
@@ -2485,7 +2286,7 @@ mod tests {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640))
             .expect("set permissions");
 
-        write_to_path(&path, &doc, Format::Tmd).expect("replace path");
+        write_to_path(&path, &doc).expect("replace path");
 
         let actual = std::fs::metadata(path)
             .expect("document metadata")
@@ -2505,18 +2306,18 @@ mod tests {
         let link = dir.path().join("linked.tmd");
         let mut original = sample_doc();
         original.markdown = "# Original".to_owned();
-        write_to_path(&target, &original, Format::Tmd).expect("write target");
+        write_to_path(&target, &original).expect("write target");
         symlink(&target, &link).expect("create symlink");
 
         let mut replacement = sample_doc();
         replacement.markdown = "# Replacement".to_owned();
-        write_to_path(&link, &replacement, Format::Tmd).expect("write through symlink");
+        write_to_path(&link, &replacement).expect("write through symlink");
 
         assert!(std::fs::symlink_metadata(&link)
             .expect("symlink metadata")
             .file_type()
             .is_symlink());
-        let loaded = read_from_path(&target, Some(Format::Tmd)).expect("read target");
+        let loaded = read_from_path(&target).expect("read target");
         assert_eq!(loaded.markdown, "# Replacement");
     }
 
@@ -2526,12 +2327,12 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("document.tmd");
         let alias = dir.path().join("alias.tmd");
-        write_to_path(&path, &sample_doc(), Format::Tmd).expect("write original");
+        write_to_path(&path, &sample_doc()).expect("write original");
         std::fs::hard_link(&path, &alias).expect("create hard link");
         let original_bytes = std::fs::read(&path).expect("read original");
 
-        let error = write_to_path(&path, &sample_doc(), Format::Tmd)
-            .expect_err("reject multiply linked destination");
+        let error =
+            write_to_path(&path, &sample_doc()).expect_err("reject multiply linked destination");
 
         assert!(error.to_string().contains("has 2 hard links"));
         assert_eq!(
@@ -2549,12 +2350,11 @@ mod tests {
     fn atomic_write_rejects_acl_metadata_loss() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("acl.tmd");
-        write_to_path(&path, &sample_doc(), Format::Tmd).expect("write original");
+        write_to_path(&path, &sample_doc()).expect("write original");
         xattr::set(&path, "user.tanu-test-acl", b"preserve").expect("set security metadata");
         let original_bytes = std::fs::read(&path).expect("read original");
 
-        let error =
-            write_to_path(&path, &sample_doc(), Format::Tmd).expect_err("reject ACL metadata loss");
+        let error = write_to_path(&path, &sample_doc()).expect_err("reject ACL metadata loss");
 
         assert!(error
             .to_string()
@@ -2575,7 +2375,7 @@ mod tests {
         let link = dir.path().join("dangling.tmd");
         symlink(&target, &link).expect("create dangling symlink");
 
-        write_to_path(&link, &sample_doc(), Format::Tmd).expect_err("reject dangling symlink");
+        write_to_path(&link, &sample_doc()).expect_err("reject dangling symlink");
 
         assert!(std::fs::symlink_metadata(&link)
             .expect("symlink metadata")
@@ -2592,7 +2392,7 @@ mod tests {
         std::fs::write(&path, b"original bytes").expect("write original");
         std::fs::remove_file(doc.db.as_path()).expect("invalidate source database");
 
-        write_to_path(&path, &doc, Format::Tmd).expect_err("write must fail");
+        write_to_path(&path, &doc).expect_err("write must fail");
         assert_eq!(
             std::fs::read(&path).expect("read original"),
             b"original bytes"
@@ -2630,6 +2430,34 @@ mod tests {
             );
 
             tmd_string_free(markdown);
+            tmd_doc_free(doc);
+        }
+    }
+
+    #[cfg(feature = "ffi")]
+    #[test]
+    fn ffi_rejects_unknown_format_values() {
+        use crate::ffi::{
+            tmd_doc_free, tmd_doc_new, tmd_doc_read_from_path, tmd_doc_write_to_path,
+            tmd_last_error_message,
+        };
+        use std::ffi::CStr;
+        use std::ptr;
+
+        unsafe {
+            let doc = tmd_doc_new(ptr::null());
+            assert!(!doc.is_null());
+            assert_eq!(tmd_doc_write_to_path(doc, ptr::null(), 2), -1);
+            let write_error = CStr::from_ptr(tmd_last_error_message())
+                .to_str()
+                .expect("UTF-8 error");
+            assert!(write_error.contains("unknown format value: 2"));
+
+            assert!(tmd_doc_read_from_path(ptr::null(), 2).is_null());
+            let read_error = CStr::from_ptr(tmd_last_error_message())
+                .to_str()
+                .expect("UTF-8 error");
+            assert!(read_error.contains("unknown format value: 2"));
             tmd_doc_free(doc);
         }
     }
