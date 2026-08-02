@@ -1,8 +1,8 @@
 # Tanu Markdown Container Specification 1.0 (Draft)
 
 Status: implemented draft<br>
-Version: 1.0.0-draft.2<br>
-Last reviewed: 2026-08-02
+Version: 1.0.0-draft.3<br>
+Last reviewed: 2026-08-03
 
 This document defines the container contract implemented by `tmd-core`
 `0.0.1`. It is versioned so implementation and interoperability tests can
@@ -69,7 +69,9 @@ major version 1. This implementation refuses to rewrite documents with an
 unsupported major version because unknown manifest fields cannot be preserved.
 
 `extras` is reserved for application data that can be represented by any JSON
-value. Unknown top-level manifest fields are not currently preserved.
+value. When `extras` is an object, the optional `tmd_data_sources` member has
+the implemented meaning described in section 4. Unknown top-level manifest
+fields are not currently preserved.
 
 ## 4. Markdown
 
@@ -86,6 +88,62 @@ Links and images may reference an attachment using:
 
 The substring after `attach:` is an exact logical-path reference. It MUST be a
 canonical attachment logical path and MUST resolve to one declared attachment.
+
+### 4.1 Dynamic SQLite data views
+
+Markdown may select a named SQLite source inline or in a fenced block:
+
+````markdown
+The first note is **{{tmd-view:first-note}}**.
+
+```tmd-view:table
+source = "sample-notes"
+```
+````
+
+An inline reference always requests `scalar`. A block info string requests one
+of `scalar`, `table`, `list`, or `code`; this draft implements `scalar` and
+`table`, while `list` and `code` are reserved and produce an unsupported-view
+diagnostic. The block body accepts `source = "name"`; the reserved `code`
+renderer may also accept `format = "name"`. Names are case-sensitive and MUST
+contain 1 to 128 ASCII letters, digits, `.`, `_`, or `-`.
+
+Source definitions are stored in a versioned registry inside
+`manifest.extras`:
+
+```json
+{
+  "tmd_data_sources": {
+    "schema_version": 1,
+    "sources": {
+      "first-note": {
+        "type": "sqlite",
+        "query": "SELECT body FROM sample_notes WHERE id = 1"
+      },
+      "sample-notes": {
+        "type": "sqlite",
+        "query": "SELECT id, body FROM sample_notes ORDER BY id"
+      }
+    }
+  }
+}
+```
+
+Registry schema version 1 implements only `type = "sqlite"`. A SQLite source
+MUST contain one non-empty, read-only statement. Query output is normalized to
+an ordered table of column labels and scalar cells. A `scalar` view requires
+exactly one row and one column; a `table` view preserves query column and row
+order. Authors MUST use `ORDER BY` when stable row order is required.
+
+SQLite `NULL`, integer, finite real, and UTF-8 text values are supported.
+SQLite BLOB values, non-finite real values, invalid UTF-8 text, and incompatible
+result shapes produce diagnostics. Implementations bound source names, query
+size, row count, column count, cell count, and text size. Renderers MUST escape
+all source-produced values and MUST NOT reparse them as Markdown or HTML.
+
+These references use ordinary Markdown text and fenced blocks, so unaware
+readers retain passive placeholders rather than executing a query. The source
+registry is namespaced in `extras` so it does not add a ZIP entry.
 
 ## 5. `attachments.json`
 
@@ -143,6 +201,9 @@ unique attachment identity, byte lengths, and present SHA-256 digests.
 - manifest/database schema-version mismatch;
 - missing cover-image IDs;
 - unresolved or invalid Markdown `attach:` references;
+- invalid dynamic-data registries and references;
+- unresolved sources, unsupported renderers, failed source evaluation, and
+  incompatible result shapes;
 - missing attachment hashes as warnings.
 
 Path-based writes create a temporary file in the destination directory, flush
@@ -155,5 +216,7 @@ This draft describes `tmd_version` 1.0.0, but repository packages remain
 pre-1.0. Any incompatible change requires a dedicated issue, updated tests and
 documentation, and an explicit migration/compatibility decision. Consumers
 must not infer long-term compatibility until this document is marked stable.
-Draft 2 intentionally narrows the container contract to the single `.tmd` ZIP
-representation and removes alternate-format APIs and tooling.
+Draft 2 intentionally narrowed the container contract to the single `.tmd` ZIP
+representation and removed alternate-format APIs and tooling. Draft 3 defines
+the implemented, backward-readable SQLite `scalar` and `table` dynamic-view
+extension under `manifest.extras.tmd_data_sources`.

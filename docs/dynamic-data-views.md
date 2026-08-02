@@ -1,16 +1,14 @@
-# Dynamic Data Views Design Proposal
+# Dynamic Data Views
 
-Status: proposed, not implemented  
+Status: SQLite `scalar` and `table` implemented; additional adapters and
+renderers proposed
 Tracking issue: [#35](https://github.com/Nagitch/tanu-markdown/issues/35)
 
-This document proposes a TMD extension for rendering data from the embedded
-SQLite database and declared structured-data attachments inside document
-Markdown. It also defines an extension point for sandboxed Rhai evaluation.
-
-The proposal is deliberately separate from the implemented
-[TMD 1.0 draft specification](spec-tmd-1.0-draft.md). Current readers treat
-the examples below as ordinary Markdown text or fenced code blocks and do not
-evaluate them.
+This document defines the implemented first slice of a TMD extension for
+rendering data from the embedded SQLite database inside document Markdown. It
+also records the planned extension points for declared JSON, YAML, and TOML
+attachments and sandboxed Rhai evaluation. The implemented contract is
+summarized in the [TMD 1.0 draft specification](spec-tmd-1.0-draft.md).
 
 ## Goals
 
@@ -26,7 +24,7 @@ evaluate them.
 - Keep evaluation read-only, bounded, deterministic where practical, and safe
   for HTML and editor previews.
 
-The initial implementation should target SQLite `scalar` and `table` output.
+The initial implementation targets SQLite `scalar` and `table` output.
 Structured attachments and Rhai are planned extensions of the same contract,
 not requirements for the first implementation slice.
 
@@ -76,7 +74,7 @@ source = "sample-notes"
 ```
 ````
 
-The proposed render kinds are:
+The render kinds are:
 
 ````markdown
 ```tmd-view:scalar
@@ -105,11 +103,12 @@ render-kind = "scalar" | "table" | "list" | "code"
 body        = TOML key-value document
 ```
 
-`source` is required. Render-specific options such as `format`, column
-selection, or presentation style belong in the fence body instead of adding
-more colon-separated info-string segments. Render kinds are lowercase and
-case-sensitive. Unknown kinds, missing required options, and invalid fence
-bodies produce structured diagnostics.
+`source` is required. `format` is reserved for `code`; future render-specific
+options such as column selection or presentation style belong in the fence
+body instead of adding more colon-separated info-string segments. Render kinds
+are lowercase and case-sensitive. Unknown kinds, missing required options, and
+invalid fence bodies produce structured diagnostics. The current parser
+implements a strict TOML-compatible subset of `key = "string"` entries.
 
 ## Unsupported-viewer fallback
 
@@ -125,10 +124,9 @@ renderers do not execute it.
 
 ## Data-source definitions
 
-The proposal uses names so Markdown does not contain SQL, attachment selectors,
-or executable code. During the experimental phase, definitions can be stored
-under a versioned, namespaced `manifest.extras` value without changing the ZIP
-entry set:
+The design uses names so Markdown does not contain SQL, attachment selectors,
+or executable code. Definitions are stored under a versioned, namespaced
+`manifest.extras` value without changing the ZIP entry set:
 
 ```json
 {
@@ -151,14 +149,15 @@ entry set:
 }
 ```
 
-This location is provisional. Stabilization must decide whether data sources
-remain namespaced application data, become a first-class manifest field, or
-move to a separate versioned container entry. A separate entry changes the
-current compatibility contract because implemented readers reject undeclared
-ZIP entries.
+This location remains experimental. Stabilization must decide whether data
+sources remain namespaced application data, become a first-class manifest
+field, or move to a separate versioned container entry. A separate entry
+changes the current compatibility contract because implemented readers reject
+undeclared ZIP entries.
 
-Source names are case-sensitive identifiers. A name must resolve to exactly one
-definition in the current document.
+Source names are case-sensitive identifiers of 1 to 128 ASCII letters, digits,
+`.`, `_`, and `-`. A name must resolve to exactly one definition in the current
+document.
 
 ### SQLite
 
@@ -175,7 +174,7 @@ A one-row, one-column result may be consumed by `scalar`. General query results
 produce the table value described below. Authors are responsible for an
 explicit `ORDER BY` when row order matters.
 
-### JSON, YAML, and TOML
+### JSON, YAML, and TOML (proposed)
 
 Structured-data sources address a declared attachment and select part of its
 normalized value:
@@ -194,7 +193,7 @@ Arbitrary host filesystem paths are not valid sources. YAML custom tags and
 external references are outside the initial contract; TOML date/time values
 require an explicit normalization decision before implementation.
 
-### Rhai
+### Rhai (proposed)
 
 A Rhai source refers to a declared script attachment:
 
@@ -211,7 +210,7 @@ filesystem, process, or network access.
 
 ## Common typed value
 
-Every source returns one of these logical values:
+The complete design allows every source to return one of these logical values:
 
 - `null`;
 - boolean;
@@ -222,8 +221,12 @@ Every source returns one of these logical values:
 - object with string keys and typed values; or
 - table with ordered column names and rows of scalar cells.
 
-Binary values are not part of the initial render contract. SQLite BLOB values
-must produce a diagnostic until a representation and output limit are defined.
+The implemented SQLite adapter currently returns a table containing scalar
+`null`, signed integer, finite floating-point, and UTF-8 string cells. Boolean,
+array, and object representations are part of the common model design needed
+by future structured-data and Rhai adapters. Binary values are not part of the
+initial render contract. SQLite BLOB values produce a diagnostic until a
+representation and output limit are defined.
 
 Typed values are passed directly to renderers. They are not interpolated as raw
 Markdown or HTML.
@@ -249,13 +252,13 @@ of objects to a table when its column-order rules are explicitly defined.
 Cells are scalar typed values. They are escaped as cells rather than reparsed
 as Markdown.
 
-### `list`
+### `list` (reserved)
 
 `list` accepts an array. Each scalar item becomes a list item. Object and nested
 array rendering requires an explicit mapping option and is not inferred in the
 initial contract.
 
-### `code`
+### `code` (reserved)
 
 `code` serializes a typed value into a passive code block. `format` selects a
 supported serializer such as `json`, `yaml`, or `toml`. Serialization never
@@ -280,35 +283,35 @@ to the native CLI/core boundary instead of implementing a second TMD parser.
 
 ## Safety and resource limits
 
-Implementations must enforce at least these boundaries:
+The implementation enforces these boundaries for the SQLite slice, and future
+adapters must preserve equivalent boundaries:
 
 - exactly one read-only SQLite statement;
 - declared attachment paths only for structured data and Rhai scripts;
 - no arbitrary filesystem, process, environment, or network access;
-- maximum input bytes, output bytes, rows, columns, cells, nesting depth, and
-  string length;
-- bounded SQLite and Rhai execution time or instruction count;
+- bounded source-name and query bytes, rows, columns, cells, and string length;
+- bounded Rhai execution time or instruction count when Rhai is implemented;
 - safe YAML parsing without custom constructors or external resolution;
 - escaped scalar, table-cell, list-item, and code output; and
 - visible diagnostics for missing sources, selector failures, shape mismatch,
   resource limits, and evaluation errors.
 
-Limits and exact diagnostic codes remain implementation decisions tracked by
-issue #35.
+The current SQLite limits are 64 KiB per query, 1,000 rows, 128 columns, 10,000
+cells, and 1 MiB per text cell. Source evaluation rejects mutation statements,
+multiple statements, BLOBs, non-finite reals, and invalid UTF-8.
 
 ## Compatibility and rollout
 
-This proposal does not change the currently implemented TMD 1.0 draft. The
-first implementation should add parsing and validation together with SQLite
-`scalar` and `table` evaluation in HTML export and VS Code preview. JSON, YAML,
-TOML, additional renderers, and sandboxed Rhai can then use the same source and
-typed-value boundaries.
+The first slice implements parsing and validation together with SQLite
+`scalar` and `table` evaluation in HTML export, the CLI preview bridge, and VS
+Code preview. JSON, YAML, TOML, additional renderers, and sandboxed Rhai can use
+the same source and typed-value boundaries in later slices.
 
-Before the feature becomes normative, the implementation must define:
+Before the experimental feature becomes stable, the implementation must define:
 
 - the persisted location and schema-version rules for source definitions;
-- behavior for missing values and empty SQLite results;
+- any additional behavior for missing values and empty SQLite results;
 - structured-data normalization details;
-- resource-limit defaults;
+- whether current resource-limit defaults become stable;
 - cache and refresh behavior for editor previews; and
 - the TMD version or capability signal understood by compatible readers.

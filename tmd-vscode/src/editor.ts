@@ -507,11 +507,20 @@ export class TanuMarkdownEditorProvider
         ) {
           return;
         }
+        const contentRevision = document.contentRevision;
+        const previewHtml = await this.renderPreview(document, message.markdown);
+        if (
+          message.clientRevision !== this.panelClientRevisions.latest(panel) ||
+          message.markdown !== document.snapshot().markdown ||
+          contentRevision !== document.contentRevision
+        ) {
+          return;
+        }
         await panel.webview.postMessage({
           type: "preview",
           clientRevision: message.clientRevision,
-          contentRevision: document.contentRevision,
-          previewHtml: renderSafeMarkdown(message.markdown),
+          contentRevision,
+          previewHtml,
         });
         break;
       }
@@ -538,6 +547,7 @@ export class TanuMarkdownEditorProvider
 
   private async postModel(document: TanuMarkdownDocument): Promise<void> {
     const state = document.snapshot();
+    const previewHtml = await this.renderPreview(document, state.markdown);
     const model = {
       type: "model",
       contentRevision: document.contentRevision,
@@ -545,7 +555,7 @@ export class TanuMarkdownEditorProvider
       validationCurrent: document.isValidationCurrent,
       markdown: state.markdown,
       title: state.title,
-      previewHtml: renderSafeMarkdown(state.markdown),
+      previewHtml,
       editingLocked: this.editLocks.has(document),
     };
     const panels = this.panels.get(document);
@@ -560,6 +570,24 @@ export class TanuMarkdownEditorProvider
         }),
       ),
     );
+  }
+
+  private async renderPreview(
+    document: TanuMarkdownDocument,
+    markdown: string,
+  ): Promise<string> {
+    try {
+      return await previewRetainedBytes(
+        this.clientFactory(),
+        document.uri,
+        document.persistedBytes,
+        markdown,
+      );
+    } catch {
+      // Older external CLIs do not expose the preview bridge. Preserve the
+      // non-executable local fallback so the editor remains usable.
+      return renderSafeMarkdown(markdown);
+    }
   }
 }
 
@@ -599,6 +627,26 @@ async function inspectRetainedBytes(
   try {
     await fs.writeFile(snapshotPath, bytes, { flag: "wx" });
     return await client.inspect(snapshotPath);
+  } finally {
+    await fs.rm(directory, { force: true, recursive: true });
+  }
+}
+
+async function previewRetainedBytes(
+  client: TmdCliClient,
+  source: vscode.Uri,
+  bytes: Uint8Array,
+  markdown: string,
+): Promise<string> {
+  const extension = path.extname(source.fsPath).toLowerCase();
+  if (extension !== ".tmd") {
+    throw new Error("TMD documents must use the .tmd extension.");
+  }
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "tmd-preview-"));
+  const snapshotPath = path.join(directory, `snapshot${extension}`);
+  try {
+    await fs.writeFile(snapshotPath, bytes, { flag: "wx" });
+    return await client.preview(snapshotPath, markdown);
   } finally {
     await fs.rm(directory, { force: true, recursive: true });
   }
@@ -672,6 +720,9 @@ function editorHtml(_webview: vscode.Webview): string {
     .attachment { display: flex; justify-content: space-between; gap: .5rem; align-items: center; }
     .preview { line-height: 1.6; }
     .preview pre { overflow: auto; padding: .75rem; background: var(--vscode-textCodeBlock-background); }
+    .preview table { border-collapse: collapse; margin: .75rem 0; }
+    .preview th, .preview td { border: 1px solid var(--vscode-panel-border); padding: .25rem .5rem; text-align: left; }
+    .preview .tmd-view-error { color: var(--vscode-testing-iconFailed); border: 1px solid currentColor; padding: .25rem .5rem; }
     .image-placeholder { display: inline-block; padding: .25rem .5rem; border: 1px dashed var(--vscode-panel-border); }
     @media (max-width: 850px) { .layout { grid-template-columns: 1fr; } .pane + .pane { border-left: 0; border-top: 1px solid var(--vscode-panel-border); } }
   </style>

@@ -114,6 +114,94 @@ fn query_table_output_preserves_cell_boundaries() {
 }
 
 #[test]
+fn renders_dynamic_sqlite_scalar_and_table_views() {
+    let directory = tempdir().expect("temporary directory");
+    let doc_path = directory.path().join("dynamic-views.tmd");
+    let html_path = directory.path().join("dynamic-views.html");
+    let markdown = concat!(
+        "# Dynamic views\n\n",
+        "First note: **{{tmd-view:first-note}}**.\n\n",
+        "```tmd-view:scalar\n",
+        "source = \"first-note\"\n",
+        "```\n\n",
+        "```tmd-view:table\n",
+        "source = \"sample-notes\"\n",
+        "```\n",
+    );
+    let mut doc = TmdDoc::new(markdown.to_owned()).expect("document");
+    doc.manifest.extras = json!({
+        "tmd_data_sources": {
+            "schema_version": 1,
+            "sources": {
+                "first-note": {
+                    "type": "sqlite",
+                    "query": "SELECT body FROM sample_notes WHERE id = 1"
+                },
+                "sample-notes": {
+                    "type": "sqlite",
+                    "query": "SELECT id, body FROM sample_notes ORDER BY id"
+                }
+            }
+        }
+    });
+    doc.db_with_conn_mut(|connection| {
+        connection.execute_batch(
+            "CREATE TABLE sample_notes(id INTEGER PRIMARY KEY, body TEXT NOT NULL);\
+             INSERT INTO sample_notes(body) VALUES\
+               ('Hello from SQLite'),\
+               ('<script>alert(1)</script>');",
+        )
+    })
+    .expect("database access")
+    .expect("database fixture");
+    write_to_path(&doc_path, &doc).expect("write fixture");
+
+    let preview = parse_json(&run(
+        vec![text("preview"), argument(&doc_path), text("--json-stdin")],
+        Some(
+            &json!({
+                "schema_version": 1,
+                "markdown": markdown,
+            })
+            .to_string(),
+        ),
+    ));
+    let preview_html = preview["preview_html"].as_str().expect("preview HTML");
+    assert!(preview_html.contains("<strong>Hello from SQLite</strong>"));
+    assert!(preview_html.contains("<p class=\"tmd-view-scalar\">Hello from SQLite</p>"));
+    assert!(preview_html.contains("<table class=\"tmd-view-table\">"));
+    assert!(preview_html.contains("<td>2</td>"));
+    assert!(preview_html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
+    assert!(!preview_html.contains("{{tmd-view:"));
+    assert!(!preview_html.contains("<script>"));
+
+    run(
+        vec![
+            text("export-html"),
+            argument(&doc_path),
+            argument(&html_path),
+            text("--self-contained"),
+        ],
+        None,
+    );
+    let exported = fs::read_to_string(&html_path).expect("exported HTML");
+    assert!(exported.contains("<strong>Hello from SQLite</strong>"));
+    assert!(exported.contains("<p class=\"tmd-view-scalar\">Hello from SQLite</p>"));
+    assert!(exported.contains("<table class=\"tmd-view-table\">"));
+    assert!(exported.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
+
+    let validation = parse_json(&run(
+        vec![text("validate"), argument(&doc_path), text("--json")],
+        None,
+    ));
+    assert_eq!(validation["valid"], true);
+    assert_eq!(
+        validation["data_view_references"].as_array().map(Vec::len),
+        Some(3)
+    );
+}
+
+#[test]
 fn db_exec_rejects_scripts_that_leave_transactions_open() {
     let directory = tempdir().expect("temporary directory");
     let doc = directory.path().join("open-transaction.tmd");

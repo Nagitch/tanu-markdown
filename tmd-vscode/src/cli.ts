@@ -31,6 +31,11 @@ interface ProcessResult {
   stderr: string;
 }
 
+interface PreviewResponse {
+  schema_version: number;
+  preview_html: string;
+}
+
 export class TmdCliClient {
   constructor(
     private readonly executable: string,
@@ -49,6 +54,32 @@ export class TmdCliClient {
       update,
     );
     return this.assertInspectionSchema(inspection);
+  }
+
+  async preview(path: string, markdown: string): Promise<string> {
+    const preview = await this.runJson<PreviewResponse>(
+      ["preview", path, "--json-stdin"],
+      { schema_version: 1, markdown },
+    );
+    if (preview.schema_version !== 1) {
+      throw new CliError(
+        `Unsupported TMD CLI preview schema_version ${String(preview.schema_version)}; expected 1.`,
+        0,
+        JSON.stringify(preview),
+        "",
+        "incompatible-schema",
+      );
+    }
+    if (typeof preview.preview_html !== "string") {
+      throw new CliError(
+        "The TMD CLI preview response did not contain preview_html.",
+        0,
+        JSON.stringify(preview),
+        "",
+        "invalid-output",
+      );
+    }
+    return preview.preview_html;
   }
 
   async validate(path: string): Promise<ValidationReport> {

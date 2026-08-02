@@ -22,6 +22,11 @@ export interface ValidationReport {
     logical_path: string;
     resolved: boolean;
   }>;
+  data_view_references?: Array<{
+    source: string;
+    render: "scalar" | "table" | "list" | "code";
+    resolved: boolean;
+  }>;
   database_user_version: number;
 }
 

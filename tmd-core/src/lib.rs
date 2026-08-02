@@ -11,11 +11,18 @@ pub use format::{
 pub use manifest::{AttachmentMeta, AttachmentRef, LinkRef, Manifest, Semver};
 pub use util::{normalize_logical_path, now_utc};
 pub use validation::{
-    attachment_references, validate_document, AttachmentReference, ValidationIssue,
-    ValidationReport, ValidationSeverity,
+    attachment_references, validate_document, AttachmentReference, DataViewReferenceValidation,
+    ValidationIssue, ValidationReport, ValidationSeverity,
+};
+pub use views::{
+    data_view_references, evaluate_data_source, inline_data_view_references, parse_data_view_block,
+    DataScalar, DataSourceDefinition, DataSourceRegistry, DataTable, DataValue,
+    DataViewParseReport, DataViewReference, DataViewRenderKind, InlineDataViewReference,
+    DATA_SOURCES_EXTRAS_KEY,
 };
 
 mod validation;
+mod views;
 
 use mime::Mime;
 use rusqlite::Connection;
@@ -49,6 +56,9 @@ pub enum TmdError {
     /// Indicates invalid TMD formatting or structure.
     #[error("invalid format: {0}")]
     InvalidFormat(String),
+    /// Indicates an invalid or failed dynamic-data view.
+    #[error("data view: {0}")]
+    DataView(String),
     /// Wrapper for SQLite related errors.
     #[error("sqlite: {0}")]
     Db(String),
