@@ -294,7 +294,13 @@ fn cmd_publish(
     expected_output_state: Option<&ExpectedOutputState>,
 ) -> Result<()> {
     ensure_distinct_existing_paths(input, output, "published document")?;
-    let (_, input_bytes) = read_document_snapshot(input)?;
+    let (doc, input_bytes) = read_document_snapshot(input)?;
+    let validation = validate_document(&doc).context("failed to validate document")?;
+    ensure!(
+        validation.valid,
+        "refusing to publish an invalid document; run `tmd validate {}`",
+        input.display()
+    );
     ensure_tmd_path(output)?;
     ensure_parent_directory(output)?;
     write_bytes_if_expected(output, &input_bytes, expected_output_state)?;

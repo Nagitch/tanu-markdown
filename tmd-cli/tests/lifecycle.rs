@@ -278,6 +278,42 @@ fn conditional_publish_rejects_stale_and_created_outputs() {
 }
 
 #[test]
+fn publish_rejects_invalid_documents_without_changing_outputs() {
+    let directory = tempdir().expect("temporary directory");
+    let invalid = directory.path().join("invalid.tmd");
+    let existing_output = directory.path().join("existing-output.tmd");
+    let missing_output = directory.path().join("missing-output.tmd");
+    run(vec![text("new"), argument(&invalid)], None);
+    run(vec![text("new"), argument(&existing_output)], None);
+
+    let unresolved_reference = json!({
+        "schema_version": 1,
+        "markdown": "[Missing attachment](attach:attachments/missing.txt)\n",
+    });
+    run(
+        vec![text("update"), argument(&invalid), text("--json-stdin")],
+        Some(&unresolved_reference.to_string()),
+    );
+    let existing_bytes = fs::read(&existing_output).expect("existing output");
+
+    for output in [&existing_output, &missing_output] {
+        let publication = run_raw(
+            vec![text("publish"), argument(&invalid), argument(output)],
+            None,
+        );
+        assert!(!publication.status.success());
+        assert!(String::from_utf8_lossy(&publication.stderr)
+            .contains("refusing to publish an invalid document"));
+    }
+
+    assert_eq!(
+        fs::read(&existing_output).expect("preserved output"),
+        existing_bytes
+    );
+    assert!(!missing_output.exists());
+}
+
+#[test]
 fn attachment_mutations_preserve_references_and_cover_metadata() {
     let directory = tempdir().expect("temporary directory");
     let doc_path = directory.path().join("attachments.tmd");
