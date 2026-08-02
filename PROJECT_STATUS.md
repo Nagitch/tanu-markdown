@@ -17,7 +17,7 @@ a functional custom editor backed exclusively by that bridge.
 | `tmd-cli` | Installs `tmd`; implements document create/inspect/update/publish/validate, attachment lifecycle, safe HTML export, and embedded database lifecycle/query commands |
 | `tmd-core-ffi` | Builds a `cdylib` wrapper and retains the exported `tmd-core` FFI symbols |
 | `tmd-vscode` | Implements a CSP-restricted custom editor with edit/save/revert/backup, safe live preview, attachment, validation, and HTML export workflows through `tmd` |
-| `tmd-sample` | Contains a `.tmd` sample with an attachment and populated SQLite table |
+| `tmd-sample` | Contains a `.tmd` sample with text and image attachments plus a populated SQLite table; database values are currently copied into Markdown as a static snapshot |
 
 ## Verified behavior
 
@@ -46,6 +46,9 @@ platform-specific VSIX artifacts.
 - Core reads still buffer complete containers and attachment data in memory.
 - The extension currently supports local `file:` documents only and its live
   preview intentionally renders a safe Markdown subset.
+- Markdown cannot currently select and render values from the embedded database
+  or structured-data attachments. The proposed design is tracked in
+  [issue #35](https://github.com/Nagitch/tanu-markdown/issues/35).
 - The C ABI does not ship generated headers or a stable ABI compatibility
   policy.
 - Malformed containers are generated in tests rather than retained as binary

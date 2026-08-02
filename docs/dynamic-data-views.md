@@ -1,0 +1,314 @@
+# Dynamic Data Views Design Proposal
+
+Status: proposed, not implemented  
+Tracking issue: [#35](https://github.com/Nagitch/tanu-markdown/issues/35)
+
+This document proposes a TMD extension for rendering data from the embedded
+SQLite database and declared structured-data attachments inside document
+Markdown. It also defines an extension point for sandboxed Rhai evaluation.
+
+The proposal is deliberately separate from the implemented
+[TMD 1.0 draft specification](spec-tmd-1.0-draft.md). Current readers treat
+the examples below as ordinary Markdown text or fenced code blocks and do not
+evaluate them.
+
+## Goals
+
+- Keep data selection separate from presentation.
+- Let Markdown select a named data source without embedding SQL or scripts in
+  prose.
+- Support inline scalar values and block-level table, list, scalar, and code
+  rendering.
+- Normalize SQLite, JSON, YAML, TOML, and Rhai results into one typed value
+  model.
+- Preserve a readable fallback in Markdown viewers that do not implement the
+  extension.
+- Keep evaluation read-only, bounded, deterministic where practical, and safe
+  for HTML and editor previews.
+
+The initial implementation should target SQLite `scalar` and `table` output.
+Structured attachments and Rhai are planned extensions of the same contract,
+not requirements for the first implementation slice.
+
+## Layered model
+
+Dynamic views have three independent layers:
+
+```text
+Markdown reference
+        |
+        v
+named data source (sqlite, json, yaml, toml, or rhai)
+        |
+        v
+common typed value
+        |
+        v
+renderer (scalar, table, list, or code)
+```
+
+Named data sources own acquisition and selection. Markdown owns presentation.
+Changing a source from SQLite to Rhai therefore does not require changing every
+Markdown reference to that source.
+
+## Markdown syntax
+
+### Inline scalar
+
+An inline reference has this form:
+
+```markdown
+The owner is **{{tmd-view:profile-name}}**.
+```
+
+Inline position implies `render = "scalar"`. The source must return a scalar
+value. A table, array, or object result is a shape error rather than an implicit
+string conversion.
+
+### Block views
+
+A block view uses a fenced-code info string with the render kind after a
+colon. The fence body is a TOML key-value document.
+
+````markdown
+```tmd-view:table
+source = "sample-notes"
+```
+````
+
+The proposed render kinds are:
+
+````markdown
+```tmd-view:scalar
+source = "document-title"
+```
+
+```tmd-view:table
+source = "sample-notes"
+```
+
+```tmd-view:list
+source = "recent-items"
+```
+
+```tmd-view:code
+source = "application-settings"
+format = "toml"
+```
+````
+
+The block grammar is:
+
+```text
+info string = "tmd-view:" render-kind
+render-kind = "scalar" | "table" | "list" | "code"
+body        = TOML key-value document
+```
+
+`source` is required. Render-specific options such as `format`, column
+selection, or presentation style belong in the fence body instead of adding
+more colon-separated info-string segments. Render kinds are lowercase and
+case-sensitive. Unknown kinds, missing required options, and invalid fence
+bodies produce structured diagnostics.
+
+## Unsupported-viewer fallback
+
+The syntax uses ordinary Markdown constructs:
+
+- an unsupported viewer retains an inline reference as readable placeholder
+  text; and
+- an unsupported viewer retains a block view as an ordinary fenced code block.
+
+The `tmd-view:<render-kind>` info string is a TMD convention rather than a new
+general Markdown rule. TMD-aware renderers replace the construct; other
+renderers do not execute it.
+
+## Data-source definitions
+
+The proposal uses names so Markdown does not contain SQL, attachment selectors,
+or executable code. During the experimental phase, definitions can be stored
+under a versioned, namespaced `manifest.extras` value without changing the ZIP
+entry set:
+
+```json
+{
+  "extras": {
+    "tmd_data_sources": {
+      "schema_version": 1,
+      "sources": {
+        "profile-name": {
+          "type": "json",
+          "attachment": "data/profile.json",
+          "selector": "/user/displayName"
+        },
+        "sample-notes": {
+          "type": "sqlite",
+          "query": "SELECT id, body FROM sample_notes ORDER BY id"
+        }
+      }
+    }
+  }
+}
+```
+
+This location is provisional. Stabilization must decide whether data sources
+remain namespaced application data, become a first-class manifest field, or
+move to a separate versioned container entry. A separate entry changes the
+current compatibility contract because implemented readers reject undeclared
+ZIP entries.
+
+Source names are case-sensitive identifiers. A name must resolve to exactly one
+definition in the current document.
+
+### SQLite
+
+SQLite sources execute one read-only statement against `db/main.sqlite3`:
+
+```json
+{
+  "type": "sqlite",
+  "query": "SELECT id, body FROM sample_notes ORDER BY id"
+}
+```
+
+A one-row, one-column result may be consumed by `scalar`. General query results
+produce the table value described below. Authors are responsible for an
+explicit `ORDER BY` when row order matters.
+
+### JSON, YAML, and TOML
+
+Structured-data sources address a declared attachment and select part of its
+normalized value:
+
+```json
+{
+  "type": "json",
+  "attachment": "data/profile.json",
+  "selector": "/user/displayName"
+}
+```
+
+JSON Pointer syntax is the proposed common selector language. YAML and TOML
+values are normalized to the common typed value before applying the selector.
+Arbitrary host filesystem paths are not valid sources. YAML custom tags and
+external references are outside the initial contract; TOML date/time values
+require an explicit normalization decision before implementation.
+
+### Rhai
+
+A Rhai source refers to a declared script attachment:
+
+```json
+{
+  "type": "rhai",
+  "script": "views/dashboard.rhai"
+}
+```
+
+The script returns one common typed value. A future Rhai host API may read other
+named sources and compose or transform them, but it must not expose arbitrary
+filesystem, process, or network access.
+
+## Common typed value
+
+Every source returns one of these logical values:
+
+- `null`;
+- boolean;
+- signed integer;
+- floating-point number;
+- UTF-8 string;
+- array of typed values;
+- object with string keys and typed values; or
+- table with ordered column names and rows of scalar cells.
+
+Binary values are not part of the initial render contract. SQLite BLOB values
+must produce a diagnostic until a representation and output limit are defined.
+
+Typed values are passed directly to renderers. They are not interpolated as raw
+Markdown or HTML.
+
+## Render semantics
+
+### `scalar`
+
+`scalar` accepts `null`, boolean, integer, floating-point, or string values. An
+inline source must produce exactly one scalar. For SQLite this means exactly one
+row and one column; zero or multiple rows are diagnostics unless a future
+fallback policy explicitly says otherwise.
+
+A block scalar renders the same value as a standalone block. Renderers escape
+the value while preserving surrounding author-written Markdown formatting.
+
+### `table`
+
+`table` accepts a table value. SQLite column labels and result order become the
+ordered headers and rows. A future structured-data adapter may convert an array
+of objects to a table when its column-order rules are explicitly defined.
+
+Cells are scalar typed values. They are escaped as cells rather than reparsed
+as Markdown.
+
+### `list`
+
+`list` accepts an array. Each scalar item becomes a list item. Object and nested
+array rendering requires an explicit mapping option and is not inferred in the
+initial contract.
+
+### `code`
+
+`code` serializes a typed value into a passive code block. `format` selects a
+supported serializer such as `json`, `yaml`, or `toml`. Serialization never
+creates an executable HTML block.
+
+## Evaluation and rendering pipeline
+
+An aware renderer performs these steps:
+
+1. Parse ordinary Markdown and recognize TMD inline references and fenced view
+   blocks.
+2. Resolve each unique named source definition.
+3. Evaluate the source through a type-specific, read-only adapter.
+4. Normalize the result to the common typed value.
+5. Validate that the value shape is compatible with the requested renderer.
+6. Insert escaped renderer events or DOM nodes, not generated raw Markdown.
+7. Return visible per-view errors and structured validation diagnostics.
+
+HTML export and VS Code preview must share the same evaluation semantics. The
+TypeScript extension should continue to delegate container and database access
+to the native CLI/core boundary instead of implementing a second TMD parser.
+
+## Safety and resource limits
+
+Implementations must enforce at least these boundaries:
+
+- exactly one read-only SQLite statement;
+- declared attachment paths only for structured data and Rhai scripts;
+- no arbitrary filesystem, process, environment, or network access;
+- maximum input bytes, output bytes, rows, columns, cells, nesting depth, and
+  string length;
+- bounded SQLite and Rhai execution time or instruction count;
+- safe YAML parsing without custom constructors or external resolution;
+- escaped scalar, table-cell, list-item, and code output; and
+- visible diagnostics for missing sources, selector failures, shape mismatch,
+  resource limits, and evaluation errors.
+
+Limits and exact diagnostic codes remain implementation decisions tracked by
+issue #35.
+
+## Compatibility and rollout
+
+This proposal does not change the currently implemented TMD 1.0 draft. The
+first implementation should add parsing and validation together with SQLite
+`scalar` and `table` evaluation in HTML export and VS Code preview. JSON, YAML,
+TOML, additional renderers, and sandboxed Rhai can then use the same source and
+typed-value boundaries.
+
+Before the feature becomes normative, the implementation must define:
+
+- the persisted location and schema-version rules for source definitions;
+- behavior for missing values and empty SQLite results;
+- structured-data normalization details;
+- resource-limit defaults;
+- cache and refresh behavior for editor previews; and
+- the TMD version or capability signal understood by compatible readers.

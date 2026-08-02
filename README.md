@@ -82,6 +82,7 @@ Clippy, tests, rustdoc, reference samples, extension tests, and VSIX packaging.
 - [Architecture](docs/architecture.md)
 - [TMD 1.0 draft specification](docs/spec-tmd-1.0-draft.md)
 - [Format overview](docs/format-overview.md)
+- [Dynamic data views proposal](docs/dynamic-data-views.md)
 - [Development workflow](docs/dev-workflow.md)
 - [Publish readiness](docs/publish-readiness.md)
 - [Current project status](PROJECT_STATUS.md)

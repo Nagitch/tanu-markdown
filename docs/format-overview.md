@@ -62,3 +62,8 @@ but not a stable compatibility promise. Changes require:
 
 The current draft intentionally defines only the `.tmd` ZIP representation;
 alternate-format APIs and tooling are outside the implemented contract.
+
+Dynamic SQLite and structured-attachment views are not implemented in this
+draft. See the non-normative
+[dynamic data views design proposal](dynamic-data-views.md) and its tracking
+[issue #35](https://github.com/Nagitch/tanu-markdown/issues/35).
