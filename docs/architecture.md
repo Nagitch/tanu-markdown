@@ -25,8 +25,8 @@ so that the Rust core remains the single source of truth.
 ```
 
 `tmd-cli` and `tmd-core-ffi` depend on `tmd-core`. The VS Code extension calls
-the installed `tmd` binary through its schema-versioned JSON bridge and never
-parses `.tmd`/`.tmdp` containers in TypeScript.
+the bundled or explicitly configured `tmd` binary through its schema-versioned
+JSON bridge and never parses `.tmd`/`.tmdp` containers in TypeScript.
 
 ## `tmd-core`
 
@@ -69,8 +69,10 @@ ABI version negotiation, or cross-language packaging policy.
 ## `tmd-vscode`
 
 The extension owns custom-document state, undo/redo, save/revert/backup,
-commands, safe live preview, and VS Code user experience. It invokes the CLI
-with argument arrays and no shell. The webview uses a restrictive content
+commands, safe live preview, and VS Code user experience. Platform-specific
+VSIX packages carry the matching native CLI. A machine-level setting may select
+an external CLI, while generic development packages fall back to `PATH`. The
+extension invokes the selected CLI with argument arrays and no shell. The webview uses a restrictive content
 security policy, nonce-bound scripts/styles, DOM text APIs, and escaped preview
 HTML. Edit state is sent immediately so closing a panel cannot strand input;
 only preview rendering is debounced. Commands remain bound to their originating

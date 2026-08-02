@@ -25,6 +25,7 @@ test("CLI client returns an actionable executable error", async () => {
   await assert.rejects(client.inspect("/tmp/document.tmd"), (error: unknown) => {
     assert.ok(error instanceof CliError);
     assert.match(error.message, /tanuMarkdown\.cliPath/);
+    assert.equal(error.kind, "missing-executable");
     return true;
   });
 });

@@ -23,6 +23,7 @@
   ],
   "activationEvents": [
     "onCustomEditor:tanuMarkdown.editor",
+    "onCommand:tmd.selectCli",
     "onCommand:tmd.newDocument",
     "onCommand:tmd.validate",
     "onCommand:tmd.addAttachment",
@@ -30,6 +31,11 @@
     "onCommand:tmd.exportHtml",
     "onCommand:tmd.convert"
   ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true
+    }
+  },
   "contributes": {
     "customEditors": [
       {
@@ -47,6 +53,10 @@
       }
     ],
     "commands": [
+      {
+        "command": "tmd.selectCli",
+        "title": "TMD: Select CLI Executable"
+      },
       {
         "command": "tmd.newDocument",
         "title": "TMD: New Document"
@@ -77,8 +87,9 @@
       "properties": {
         "tanuMarkdown.cliPath": {
           "type": "string",
-          "default": "tmd",
-          "description": "Path to the installed Tanu Markdown CLI executable."
+          "default": "",
+          "scope": "machine",
+          "description": "Optional absolute path to an external Tanu Markdown CLI executable. Leave empty to use the bundled CLI or PATH fallback."
         },
         "tanuMarkdown.timeoutMs": {
           "type": "number",
@@ -92,6 +103,7 @@
   },
   "main": "./dist/extension.js",
   "files": [
+    "bin/**",
     "dist/*.js",
     "README.md",
     "LICENCE"
@@ -101,7 +113,9 @@
     "watch": "tsc -w -p .",
     "check": "tsc -p . --noEmit",
     "test": "npm run compile && node --test dist/test/*.test.js",
-    "pack": "npm run compile && vsce package --no-dependencies"
+    "stage-cli": "node scripts/stage-cli.mjs",
+    "pack": "npm run compile && vsce package --no-dependencies --allow-unused-files-pattern",
+    "pack:platform": "npm run compile && vsce package --no-dependencies"
   },
   "devDependencies": {
     "@types/vscode": "1.90.0",

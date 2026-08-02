@@ -107,7 +107,10 @@ export class TanuMarkdownEditorProvider
   private readonly editLocks = new Set<TanuMarkdownDocument>();
   private activeDocumentValue: TanuMarkdownDocument | undefined;
 
-  constructor(private readonly clientFactory: () => TmdCliClient) {}
+  constructor(
+    private readonly clientFactory: () => TmdCliClient,
+    private readonly errorHandler: (error: unknown) => Promise<void> = showError,
+  ) {}
 
   get activeDocument(): TanuMarkdownDocument | undefined {
     return this.activeDocumentValue;
@@ -117,15 +120,20 @@ export class TanuMarkdownEditorProvider
     uri: vscode.Uri,
     openContext: vscode.CustomDocumentOpenContext,
   ): Promise<TanuMarkdownDocument> {
-    const source = openContext.backupId ? vscode.Uri.parse(openContext.backupId) : uri;
-    const { inspection, persistedBytes } = await readAndInspectDocument(
-      this.clientFactory(),
-      source,
-    );
-    const diskBytes = openContext.backupId
-      ? await readOptionalFile(uri)
-      : persistedBytes;
-    return new TanuMarkdownDocument(uri, inspection, persistedBytes, diskBytes);
+    try {
+      const source = openContext.backupId ? vscode.Uri.parse(openContext.backupId) : uri;
+      const { inspection, persistedBytes } = await readAndInspectDocument(
+        this.clientFactory(),
+        source,
+      );
+      const diskBytes = openContext.backupId
+        ? await readOptionalFile(uri)
+        : persistedBytes;
+      return new TanuMarkdownDocument(uri, inspection, persistedBytes, diskBytes);
+    } catch (error) {
+      await this.errorHandler(error);
+      throw error;
+    }
   }
 
   async resolveCustomEditor(
@@ -153,7 +161,7 @@ export class TanuMarkdownEditorProvider
       try {
         await this.handleMessage(document, panel, message);
       } catch (error) {
-        await showError(error);
+        await this.errorHandler(error);
       }
     });
   }

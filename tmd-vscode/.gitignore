@@ -10,6 +10,7 @@ yarn.lock
 # Build outputs
 out/
 dist/
+bin/
 
 # VS Code extension package
 *.vsix

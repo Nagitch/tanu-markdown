@@ -3,12 +3,22 @@ import type { DocumentInspection, DocumentUpdate, ValidationReport } from "./typ
 
 const MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
 
+export type CliErrorKind =
+  | "command"
+  | "incompatible-schema"
+  | "invalid-output"
+  | "missing-executable"
+  | "output-limit"
+  | "start-failed"
+  | "timeout";
+
 export class CliError extends Error {
   constructor(
     message: string,
     readonly exitCode: number | null,
     readonly stdout: string,
     readonly stderr: string,
+    readonly kind: CliErrorKind = "command",
   ) {
     super(message);
     this.name = "CliError";
@@ -53,6 +63,7 @@ export class TmdCliClient {
         result.exitCode,
         result.stdout,
         result.stderr,
+        "incompatible-schema",
       );
     }
     if (result.exitCode !== 0 && parsed.valid) {
@@ -129,6 +140,7 @@ export class TmdCliClient {
         0,
         stdout,
         "",
+        "invalid-output",
       );
     }
   }
@@ -140,6 +152,7 @@ export class TmdCliClient {
         0,
         JSON.stringify(inspection),
         "",
+        "incompatible-schema",
       );
     }
     return inspection;
@@ -184,6 +197,7 @@ export class TmdCliClient {
             null,
             stdout,
             stderr,
+            "timeout",
           ),
         );
       }, this.timeoutMs);
@@ -195,13 +209,14 @@ export class TmdCliClient {
         }
         const hint =
           error.code === "ENOENT"
-            ? ` Configure tanuMarkdown.cliPath with the installed \`tmd\` executable.`
+            ? ` Install a compatible TMD CLI or configure tanuMarkdown.cliPath.`
             : "";
         terminationError = new CliError(
           `Could not start TMD CLI \`${this.executable}\`: ${error.message}.${hint}`,
           null,
           stdout,
           stderr,
+          error.code === "ENOENT" ? "missing-executable" : "start-failed",
         );
       });
       child.stdout.setEncoding("utf8");
@@ -210,7 +225,13 @@ export class TmdCliClient {
         stdout += chunk;
         if (stdout.length > MAX_OUTPUT_BYTES) {
           terminateAfterClose(
-            new CliError("TMD CLI output exceeded the 16 MiB safety limit.", null, stdout, stderr),
+            new CliError(
+              "TMD CLI output exceeded the 16 MiB safety limit.",
+              null,
+              stdout,
+              stderr,
+              "output-limit",
+            ),
           );
         }
       });
@@ -218,7 +239,13 @@ export class TmdCliClient {
         stderr += chunk;
         if (stderr.length > MAX_OUTPUT_BYTES) {
           terminateAfterClose(
-            new CliError("TMD CLI error output exceeded the 16 MiB safety limit.", null, stdout, stderr),
+            new CliError(
+              "TMD CLI error output exceeded the 16 MiB safety limit.",
+              null,
+              stdout,
+              stderr,
+              "output-limit",
+            ),
           );
         }
       });
