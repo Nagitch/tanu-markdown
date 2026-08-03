@@ -175,6 +175,33 @@ fn renders_dynamic_sqlite_scalar_and_table_views() {
     assert!(!preview_html.contains("{{tmd-view:"));
     assert!(!preview_html.contains("<script>"));
 
+    let edited_source_preview = parse_json(&run(
+        vec![text("preview"), argument(&doc_path), text("--json-stdin")],
+        Some(
+            &json!({
+                "schema_version": 1,
+                "markdown": "Edited source: {{tmd-view:first-note}}",
+                "extras": {
+                    "tmd_data_sources": {
+                        "schema_version": 1,
+                        "sources": {
+                            "first-note": {
+                                "type": "sqlite",
+                                "query": "SELECT body FROM sample_notes WHERE id = 2"
+                            }
+                        }
+                    }
+                }
+            })
+            .to_string(),
+        ),
+    ));
+    let edited_source_html = edited_source_preview["preview_html"]
+        .as_str()
+        .expect("edited-source preview HTML");
+    assert!(edited_source_html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
+    assert!(!edited_source_html.contains("<script>"));
+
     run(
         vec![
             text("export-html"),

@@ -135,6 +135,62 @@ test("editor ignores input until the initial model is applied", () => {
   assert.deepEqual(messages, []);
 });
 
+test("applying data sources participates in revision and preview flow", () => {
+  const title = inputControl("Title");
+  const markdown = inputControl("{{tmd-view:count}}");
+  const messages: unknown[] = [];
+  const timers: Array<() => void> = [];
+  const results: Record<string, unknown> = {};
+
+  runInNewContext(
+    `${editInputScript()}
+     ${authoritativeStateScript()}
+     applyAuthoritativeState(initialModel);
+     results.revision = sendDataSourceEdit(dataSources);`,
+    {
+      clearTimeout() {},
+      dataSources: [
+        { name: "count", type: "sqlite", query: "SELECT count(*) FROM notes" },
+      ],
+      initialModel: {
+        acknowledgedClientRevision: 0,
+        contentRevision: 0,
+        title: "Title",
+        markdown: "{{tmd-view:count}}",
+      },
+      markdown: markdown.control,
+      renderValidation() {},
+      results,
+      setTimeout(callback: () => void) {
+        timers.push(callback);
+        return timers.length;
+      },
+      title: title.control,
+      vscode: {
+        postMessage(message: unknown) {
+          messages.push(JSON.parse(JSON.stringify(message)));
+        },
+      },
+    },
+  );
+
+  assert.equal(results.revision, 1);
+  assert.deepEqual(messages[0], {
+    type: "editDataSources",
+    clientRevision: 1,
+    dataSources: [
+      { name: "count", type: "sqlite", query: "SELECT count(*) FROM notes" },
+    ],
+  });
+  assert.equal(timers.length, 1);
+  timers[0]?.();
+  assert.deepEqual(messages[1], {
+    type: "preview",
+    clientRevision: 1,
+    markdown: "{{tmd-view:count}}",
+  });
+});
+
 test("authoritative model state replaces focused control values", () => {
   const title = { value: "stale title", disabled: true };
   const markdown = { value: "stale markdown", disabled: true };

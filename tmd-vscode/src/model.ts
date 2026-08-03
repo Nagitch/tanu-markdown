@@ -1,6 +1,16 @@
-import type { DocumentInspection, ValidationReport } from "./types.js";
+import {
+  extrasWithDataSources,
+  inspectDataSourceRegistry,
+  sameDataSources,
+} from "./data-sources.js";
+import type {
+  DocumentInspection,
+  SqliteDataSource,
+  ValidationReport,
+} from "./types.js";
 
 export interface EditorState {
+  dataSources: SqliteDataSource[];
   markdown: string;
   title: string;
 }
@@ -37,6 +47,7 @@ export class TanuMarkdownModel {
 
   snapshot(): EditorState {
     return {
+      dataSources: inspectDataSourceRegistry(this.inspectionValue.manifest.extras).sources,
       markdown: this.inspectionValue.markdown,
       title: this.inspectionValue.manifest.title ?? "",
     };
@@ -99,13 +110,21 @@ export class TanuMarkdownModel {
   }
 
   private setState(state: EditorState): void {
+    this.inspectionValue.manifest.extras = extrasWithDataSources(
+      this.inspectionValue.manifest.extras,
+      state.dataSources,
+    );
     this.inspectionValue.markdown = state.markdown;
     this.inspectionValue.manifest.title = state.title || null;
   }
 }
 
 function sameEditorState(left: EditorState, right: EditorState): boolean {
-  return left.markdown === right.markdown && left.title === right.title;
+  return (
+    sameDataSources(left.dataSources, right.dataSources) &&
+    left.markdown === right.markdown &&
+    left.title === right.title
+  );
 }
 
 export interface RevisionedEditorState {

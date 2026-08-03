@@ -222,6 +222,7 @@ struct DocumentUpdate {
 struct PreviewRequest {
     schema_version: u32,
     markdown: String,
+    extras: Option<JsonValue>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -478,7 +479,10 @@ fn cmd_preview(input: &Path, json_stdin: bool) -> Result<()> {
         request.schema_version,
         JSON_SCHEMA_VERSION
     );
-    let doc = read_document(input)?;
+    let mut doc = read_document(input)?;
+    if let Some(extras) = request.extras {
+        doc.manifest.extras = extras;
+    }
     let attachment_urls = embedded_attachment_urls(&doc);
     let preview_html = render_markdown_body(&doc, &request.markdown, &attachment_urls)?;
     println!(

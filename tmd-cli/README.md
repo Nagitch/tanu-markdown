@@ -44,8 +44,10 @@ printf '%s' '{"schema_version":1,"markdown":"{{tmd-view:first-note}}"}' \
 ```
 
 `preview` renders the supplied current Markdown against the document's retained
-database and attachments. It returns escaped HTML in `preview_html` and is the
-same rendering boundary used by HTML export and the VS Code editor.
+database and attachments. The request may include `extras` to preview unsaved
+data-source edits without persisting them. It returns escaped HTML in
+`preview_html` and is the same rendering boundary used by HTML export and the
+VS Code editor.
 
 ### Atomic publication
 

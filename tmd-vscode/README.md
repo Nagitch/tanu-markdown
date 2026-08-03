@@ -10,6 +10,8 @@ It opens `.tmd` files through `tmd inspect --json` and provides:
 - document validation with actionable issues;
 - a live, non-executable safe Markdown preview with attached images and dynamic
   SQLite `scalar`/`table` views;
+- dynamic-view reference inspection plus SQLite source name/query
+  add, edit, remove, undo/redo, and save workflows;
 - document creation, attachment add/remove, and HTML export.
 
 Container parsing remains exclusively in Rust. Platform-specific VSIX packages
@@ -17,7 +19,9 @@ contain the matching native CLI, and the extension passes argument arrays
 directly to that executable without invoking a shell.
 The preview bridge sends current unsaved Markdown together with the last
 retained `.tmd` bytes, so the CLI can resolve attachments and query the embedded
-database without the extension implementing either format. An older configured
+database without the extension implementing either format. Unsaved SQLite
+source edits are passed as a preview-only `extras` override and are not written
+until the document is saved. An older configured
 external CLI falls back to the local safe Markdown renderer.
 The preview displays a diagnostic banner when that fallback is active,
 distinguishing a missing, outdated, incompatible, or timed-out CLI and directing

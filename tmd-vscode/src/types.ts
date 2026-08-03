@@ -1,3 +1,26 @@
+export type JsonValue =
+  | null
+  | boolean
+  | number
+  | string
+  | JsonValue[]
+  | { [key: string]: JsonValue };
+
+export type DataViewRenderKind = "scalar" | "table" | "list" | "code";
+
+export interface SqliteDataSource {
+  name: string;
+  type: "sqlite";
+  query: string;
+}
+
+export interface DataSourceRegistryView {
+  editable: boolean;
+  sources: SqliteDataSource[];
+  issue?: string;
+  rawRegistry?: string;
+}
+
 export interface AttachmentMetadata {
   id: string;
   logical_path: string;
@@ -24,7 +47,7 @@ export interface ValidationReport {
   }>;
   data_view_references?: Array<{
     source: string;
-    render: "scalar" | "table" | "list" | "code";
+    render: DataViewRenderKind;
     resolved: boolean;
   }>;
   database_user_version: number;
@@ -39,6 +62,7 @@ export interface DocumentInspection {
     authors: string[];
     tags: string[];
     db_schema_version?: number | null;
+    extras: JsonValue;
     [key: string]: unknown;
   };
   attachments: AttachmentMetadata[];
@@ -58,4 +82,5 @@ export interface DocumentUpdate {
   schema_version: 1;
   markdown: string;
   title: string;
+  extras: JsonValue;
 }

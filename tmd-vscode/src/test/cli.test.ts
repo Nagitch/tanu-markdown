@@ -50,7 +50,9 @@ test("CLI client requests schema-versioned dynamic preview HTML", async () => {
   ]);
 
   assert.equal(
-    await client.preview("/tmp/document.tmd", "dynamic value"),
+    await client.preview("/tmp/document.tmd", "dynamic value", {
+      tmd_data_sources: { schema_version: 1, sources: {} },
+    }),
     "<p>dynamic value</p>",
   );
 });

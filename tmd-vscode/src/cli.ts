@@ -1,5 +1,10 @@
 import { spawn } from "node:child_process";
-import type { DocumentInspection, DocumentUpdate, ValidationReport } from "./types.js";
+import type {
+  DocumentInspection,
+  DocumentUpdate,
+  JsonValue,
+  ValidationReport,
+} from "./types.js";
 
 const MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
 
@@ -56,10 +61,10 @@ export class TmdCliClient {
     return this.assertInspectionSchema(inspection);
   }
 
-  async preview(path: string, markdown: string): Promise<string> {
+  async preview(path: string, markdown: string, extras: JsonValue): Promise<string> {
     const preview = await this.runJson<PreviewResponse>(
       ["preview", path, "--json-stdin"],
-      { schema_version: 1, markdown },
+      { schema_version: 1, markdown, extras },
     );
     if (preview.schema_version !== 1) {
       throw new CliError(
