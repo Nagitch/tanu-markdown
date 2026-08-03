@@ -114,7 +114,7 @@ fn query_table_output_preserves_cell_boundaries() {
 }
 
 #[test]
-fn renders_dynamic_sqlite_scalar_and_table_views() {
+fn renders_dynamic_sqlite_and_rhai_views() {
     let directory = tempdir().expect("temporary directory");
     let doc_path = directory.path().join("dynamic-views.tmd");
     let html_path = directory.path().join("dynamic-views.html");
@@ -126,12 +126,15 @@ fn renders_dynamic_sqlite_scalar_and_table_views() {
         "```\n\n",
         "```tmd-view:table\n",
         "source = \"sample-notes\"\n",
+        "```\n\n",
+        "```tmd-view:table\n",
+        "source = \"category-summary\"\n",
         "```\n",
     );
     let mut doc = TmdDoc::new(markdown.to_owned()).expect("document");
     doc.manifest.extras = json!({
         "tmd_data_sources": {
-            "schema_version": 1,
+            "schema_version": 2,
             "sources": {
                 "first-note": {
                     "type": "sqlite",
@@ -140,6 +143,19 @@ fn renders_dynamic_sqlite_scalar_and_table_views() {
                 "sample-notes": {
                     "type": "sqlite",
                     "query": "SELECT id, body FROM sample_notes ORDER BY id"
+                },
+                "sales": {
+                    "type": "sqlite",
+                    "query": "SELECT category, amount_cents FROM sample_sales ORDER BY id"
+                },
+                "category-summary": {
+                    "type": "rhai",
+                    "script": "views/category-summary.rhai",
+                    "inputs": { "sales": "sales" },
+                    "output": {
+                        "type": "table",
+                        "columns": ["category", "total_cents"]
+                    }
                 }
             }
         }
@@ -149,11 +165,44 @@ fn renders_dynamic_sqlite_scalar_and_table_views() {
             "CREATE TABLE sample_notes(id INTEGER PRIMARY KEY, body TEXT NOT NULL);\
              INSERT INTO sample_notes(body) VALUES\
                ('Hello from SQLite'),\
-               ('<script>alert(1)</script>');",
+               ('<script>alert(1)</script>');\
+             CREATE TABLE sample_sales(\
+               id INTEGER PRIMARY KEY,\
+               category TEXT NOT NULL,\
+               amount_cents INTEGER NOT NULL\
+             );\
+             INSERT INTO sample_sales(category, amount_cents) VALUES\
+               ('books', 1200), ('games', 3500), ('books', 800);",
         )
     })
     .expect("database access")
     .expect("database fixture");
+    doc.add_attachment(
+        "views/category-summary.rhai",
+        "text/x-rhai".parse().expect("Rhai MIME type"),
+        br#"
+            let totals = #{};
+            for row in inputs.sales {
+                if row.category in totals {
+                    totals[row.category] += row.amount_cents;
+                } else {
+                    totals[row.category] = row.amount_cents;
+                }
+            }
+            let categories = totals.keys();
+            categories.sort();
+            let output = [];
+            for category in categories {
+                output.push(#{
+                    category: category,
+                    total_cents: totals[category]
+                });
+            }
+            output
+        "#
+        .to_vec(),
+    )
+    .expect("Rhai script attachment");
     write_to_path(&doc_path, &doc).expect("write fixture");
 
     let preview = parse_json(&run(
@@ -172,6 +221,8 @@ fn renders_dynamic_sqlite_scalar_and_table_views() {
     assert!(preview_html.contains("<table class=\"tmd-view-table\">"));
     assert!(preview_html.contains("<td>2</td>"));
     assert!(preview_html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
+    assert!(preview_html.contains("<td>books</td>"));
+    assert!(preview_html.contains("<td>2000</td>"));
     assert!(!preview_html.contains("{{tmd-view:"));
     assert!(!preview_html.contains("<script>"));
 
@@ -216,6 +267,8 @@ fn renders_dynamic_sqlite_scalar_and_table_views() {
     assert!(exported.contains("<p class=\"tmd-view-scalar\">Hello from SQLite</p>"));
     assert!(exported.contains("<table class=\"tmd-view-table\">"));
     assert!(exported.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
+    assert!(exported.contains("<td>books</td>"));
+    assert!(exported.contains("<td>2000</td>"));
 
     let validation = parse_json(&run(
         vec![text("validate"), argument(&doc_path), text("--json")],
@@ -224,7 +277,7 @@ fn renders_dynamic_sqlite_scalar_and_table_views() {
     assert_eq!(validation["valid"], true);
     assert_eq!(
         validation["data_view_references"].as_array().map(Vec::len),
-        Some(3)
+        Some(4)
     );
 }
 

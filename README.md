@@ -2,7 +2,8 @@
 
 Tanu Markdown (TMD) is a self-contained document format that keeps Markdown,
 metadata, attachments, and a SQLite database in one portable file. Markdown
-can render named, read-only SQLite sources as inline scalars or block tables.
+can render named, read-only SQLite sources as inline scalars or block tables,
+and sandboxed Rhai scripts can transform declared SQLite inputs into tables.
 
 This repository contains the Rust document library, the installed `tmd`
 command-line interface, a C-compatible dynamic library, a VS Code custom
@@ -35,7 +36,13 @@ The Rust packages form one Cargo workspace and share the root `Cargo.lock`.
 ## Quick start
 
 The supported development environment is the Dev Container. In VS Code, open
-the repository with the Dev Containers extension. From a terminal with Docker:
+the repository with the Dev Containers extension, run **Dev Containers: Reopen
+in Container** (or **Rebuild and Reopen in Container** for an existing setup),
+then press **F5** with **Run Tanu Markdown Editor (sample)** selected. The
+container setup builds and stages the CLI automatically and the debug host
+opens the Rhai-enabled reference sample.
+
+From a terminal with Docker:
 
 ```bash
 docker compose build
@@ -63,7 +70,8 @@ tmd export-html notes.tmd notes.html --self-contained
 The CLI also exposes schema-versioned JSON updates and previews, complete
 attachment lifecycle commands, read-only JSON database queries, migrations,
 and database import/export. HTML export and VS Code preview share the same safe
-Rust renderer for attachments and dynamic data. Configure
+Rust renderer for attachments, read-only SQLite sources, and sandboxed
+Rhai-to-table transformations. Configure
 `tanuMarkdown.cliPath` if `tmd` is not on the VS Code process `PATH`.
 
 ## Validation

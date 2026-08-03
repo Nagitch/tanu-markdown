@@ -7,6 +7,9 @@
   "remoteUser": "vscode",
   "workspaceFolder": "/workspace/tanu-markdown",
   "features": {},
+  "remoteEnv": {
+    "PATH": "${containerEnv:PATH}:/workspace/tanu-markdown/target/debug"
+  },
   "mounts": [
     "source=${localWorkspaceFolder},target=/workspace/tanu-markdown,type=bind,consistency=cached"
   ],
@@ -26,5 +29,5 @@
       }
     }
   },
-  "postCreateCommand": "rustup show && cargo --version && node --version && npm --version && npm ci --prefix tmd-vscode"
+  "postCreateCommand": "bash .devcontainer/post-create.sh"
 }

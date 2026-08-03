@@ -14,6 +14,31 @@ The Dev Container is authoritative. Host installations are optional.
 
 ## Start the environment
 
+In VS Code, run **Dev Containers: Reopen in Container**. If this repository was
+already open in an older container, use **Dev Containers: Rebuild and Reopen in
+Container** once so the updated environment and post-create hook take effect.
+The post-create hook installs extension dependencies, builds the debug `tmd`
+CLI, compiles the extension, stages the CLI at `tmd-vscode/bin/tmd`, and
+validates the reference sample. The container also adds `target/debug` to the
+VS Code environment's `PATH`, so `tmd` is available from a new integrated
+terminal.
+
+To exercise the custom editor:
+
+1. Open **Run and Debug**.
+2. Select **Run Tanu Markdown Editor (sample)**.
+3. Press **F5**.
+
+The pre-launch task incrementally rebuilds Rust and TypeScript, restages the
+CLI, validates `tmd-sample/sample.tmd`, and opens that file in an Extension
+Development Host window. Its Preview tab evaluates the SQLite-to-Rhai category
+summary through the same CLI/core path used by packaged extensions. The Data
+Sources form remains read-only for the schema-version-2 Rhai registry until its
+editing UI is implemented.
+
+The default build task (**Terminal: Run Build Task**) runs the same preparation
+script without starting an Extension Development Host.
+
 With the Dev Container CLI:
 
 ```bash
