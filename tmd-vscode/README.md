@@ -19,6 +19,9 @@ The preview bridge sends current unsaved Markdown together with the last
 retained `.tmd` bytes, so the CLI can resolve attachments and query the embedded
 database without the extension implementing either format. An older configured
 external CLI falls back to the local safe Markdown renderer.
+The preview displays a diagnostic banner when that fallback is active,
+distinguishing a missing, outdated, incompatible, or timed-out CLI and directing
+the user to `TMD: Select CLI Executable` without interrupting editing.
 Commands retain the document that originated the action across dialogs and
 asynchronous saves. Saves, reads, exports, and attachment mutations are
 serialized per document so concurrent CLI read-modify-write operations cannot

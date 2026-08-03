@@ -6,13 +6,13 @@ import * as vscode from "vscode";
 import { findActiveDocument } from "./activity.js";
 import { TmdCliClient } from "./cli.js";
 import { authoritativeStateScript, editInputScript } from "./input.js";
-import { renderSafeMarkdown } from "./markdown.js";
 import {
   persistRetainedDocument,
   persistLatestEditorState,
   TanuMarkdownModel,
   type EditorState,
 } from "./model.js";
+import { renderPreviewFallback } from "./preview.js";
 import { SerialTaskQueue } from "./queue.js";
 import { ClientRevisionTracker } from "./revision.js";
 import type { DocumentInspection, DocumentUpdate, ValidationReport } from "./types.js";
@@ -583,10 +583,10 @@ export class TanuMarkdownEditorProvider
         document.persistedBytes,
         markdown,
       );
-    } catch {
-      // Older external CLIs do not expose the preview bridge. Preserve the
-      // non-executable local fallback so the editor remains usable.
-      return renderSafeMarkdown(markdown);
+    } catch (error) {
+      // Keep editing usable, but make an old or missing CLI visible instead of
+      // silently hiding why dynamic data and attachments were not rendered.
+      return renderPreviewFallback(markdown, error);
     }
   }
 }
@@ -723,6 +723,10 @@ function editorHtml(_webview: vscode.Webview): string {
     .preview table { border-collapse: collapse; margin: .75rem 0; }
     .preview th, .preview td { border: 1px solid var(--vscode-panel-border); padding: .25rem .5rem; text-align: left; }
     .preview .tmd-view-error { color: var(--vscode-testing-iconFailed); border: 1px solid currentColor; padding: .25rem .5rem; }
+    .preview .preview-diagnostic { border: 1px solid var(--vscode-inputValidation-warningBorder, #cca700); background: var(--vscode-inputValidation-warningBackground, transparent); padding: .5rem .75rem; margin: 0 0 1rem; }
+    .preview .preview-diagnostic p { margin: .25rem 0; }
+    .preview .preview-diagnostic details { margin-top: .5rem; }
+    .preview .preview-diagnostic details code { display: block; margin-top: .25rem; overflow-wrap: anywhere; white-space: pre-wrap; }
     .image-placeholder { display: inline-block; padding: .25rem .5rem; border: 1px dashed var(--vscode-panel-border); }
     @media (max-width: 850px) { .layout { grid-template-columns: 1fr; } .pane + .pane { border-left: 0; border-top: 1px solid var(--vscode-panel-border); } }
   </style>

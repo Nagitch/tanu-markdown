@@ -122,3 +122,23 @@ export function renderSafeMarkdown(markdown: string): string {
   }
   return output.join("\n");
 }
+
+/**
+ * Render the basic safe preview together with an escaped explanation of why
+ * the CLI-backed dynamic preview is unavailable.
+ */
+export function renderSafeMarkdownFallback(
+  markdown: string,
+  reason: string,
+  detail: string,
+): string {
+  const diagnostic = [
+    '<aside class="preview-diagnostic" role="status">',
+    `<p><strong>Dynamic preview unavailable.</strong> ${escapeHtml(reason)}</p>`,
+    "<p>Showing the basic safe Markdown preview. Install or update the TMD CLI, then run <code>TMD: Select CLI Executable</code>.</p>",
+    "<details><summary>Technical details</summary>",
+    `<code>${escapeHtml(detail)}</code>`,
+    "</details></aside>",
+  ].join("");
+  return `${diagnostic}\n${renderSafeMarkdown(markdown)}`;
+}

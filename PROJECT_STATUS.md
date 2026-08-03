@@ -47,7 +47,8 @@ platform-specific VSIX artifacts.
 - Core reads still buffer complete containers and attachment data in memory.
 - The extension currently supports local `file:` documents only. Preview uses
   the safe Rust renderer and falls back to its previous safe Markdown subset
-  when configured with an older external CLI.
+  with a visible diagnostic when the CLI is missing, outdated, incompatible,
+  or unavailable.
 - Dynamic data currently supports only named SQLite sources and the `scalar`
   and `table` renderers. Structured JSON/YAML/TOML attachments, Rhai, `list`,
   and `code` remain planned in
