@@ -365,10 +365,11 @@ defaults for the experimental schema and may be tuned before stabilization.
 
 The current slice implements parsing and validation together with SQLite and
 Rhai table evaluation in HTML export, the CLI preview bridge, and VS Code
-preview. The VS Code source-management form still edits SQLite definitions;
-Rhai definitions and script attachments currently use the persisted document
-contract and CLI/core path. JSON, YAML, TOML, and additional renderers can use
-the same source and typed-value boundaries in later slices.
+preview. The VS Code source-management form edits SQLite definitions together
+with Rhai script attachment paths, SQLite input mappings, and ordered table
+output columns. Script bodies remain TMD attachments and use the persisted
+document contract and CLI/core path. JSON, YAML, TOML, and additional renderers
+can use the same source and typed-value boundaries in later slices.
 
 Before the experimental feature becomes stable, the implementation must define:
 

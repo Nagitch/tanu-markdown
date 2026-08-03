@@ -23,9 +23,9 @@ import { SerialTaskQueue } from "./queue.js";
 import { ClientRevisionTracker } from "./revision.js";
 import { editorTabScript } from "./tabs.js";
 import type {
+  DataSource,
   DocumentInspection,
   DocumentUpdate,
-  SqliteDataSource,
   ValidationReport,
 } from "./types.js";
 
@@ -652,25 +652,59 @@ function isMessage(value: unknown): value is Record<string, unknown> & { type: s
   return typeof value === "object" && value !== null && "type" in value;
 }
 
-function parseDataSources(value: unknown): SqliteDataSource[] | undefined {
+function parseDataSources(value: unknown): DataSource[] | undefined {
   if (!Array.isArray(value)) {
     return undefined;
   }
-  const sources: SqliteDataSource[] = [];
+  const sources: DataSource[] = [];
   for (const source of value) {
     if (
       typeof source !== "object" ||
       source === null ||
       !("name" in source) ||
       typeof source.name !== "string" ||
-      !("type" in source) ||
-      source.type !== "sqlite" ||
-      !("query" in source) ||
-      typeof source.query !== "string"
+      !("type" in source)
     ) {
       return undefined;
     }
-    sources.push({ name: source.name, type: "sqlite", query: source.query });
+    if (source.type === "sqlite" && "query" in source && typeof source.query === "string") {
+      sources.push({ name: source.name, type: "sqlite", query: source.query });
+      continue;
+    }
+    if (
+      source.type !== "rhai" ||
+      !("script" in source) ||
+      typeof source.script !== "string" ||
+      !("inputs" in source) ||
+      !Array.isArray(source.inputs) ||
+      !("outputColumns" in source) ||
+      !Array.isArray(source.outputColumns) ||
+      !source.outputColumns.every((column: unknown) => typeof column === "string")
+    ) {
+      return undefined;
+    }
+    const inputs: Array<{ alias: string; source: string }> = [];
+    for (const input of source.inputs) {
+      if (
+        typeof input !== "object" ||
+        input === null ||
+        !("alias" in input) ||
+        typeof input.alias !== "string" ||
+        !("source" in input) ||
+        typeof input.source !== "string"
+      ) {
+        return undefined;
+      }
+      inputs.push({ alias: input.alias, source: input.source });
+    }
+    inputs.sort((left, right) => left.alias.localeCompare(right.alias));
+    sources.push({
+      name: source.name,
+      type: "rhai",
+      script: source.script,
+      inputs,
+      outputColumns: [...source.outputColumns],
+    });
   }
   return sources;
 }
@@ -787,7 +821,7 @@ async function showError(error: unknown): Promise<void> {
   await vscode.window.showErrorMessage(message);
 }
 
-function editorHtml(
+export function editorHtml(
   webview: vscode.Webview,
   markdownEditorUri: vscode.Uri,
 ): string {
@@ -840,6 +874,7 @@ function editorHtml(
     .data-source-heading { display: flex; justify-content: space-between; gap: .5rem; align-items: center; }
     .data-source-type { color: var(--vscode-descriptionForeground); }
     .source-query { min-height: 7rem; }
+    .source-definition { min-height: 5rem; }
     .registry-raw { overflow: auto; padding: .5rem; background: var(--vscode-textCodeBlock-background); white-space: pre-wrap; }
     .preview { line-height: 1.6; }
     .preview pre { overflow: auto; padding: .75rem; background: var(--vscode-textCodeBlock-background); }
@@ -894,12 +929,13 @@ function editorHtml(
         <p class="section-description">Define named sources that Markdown views can render in the document preview.</p>
         <h3>Markdown view references</h3>
         <ul id="data-view-references"></ul>
-        <h3>SQLite sources</h3>
+        <h3>Source definitions</h3>
         <div id="data-source-registry-issue" class="invalid"></div>
         <pre id="data-source-registry-raw" class="registry-raw" hidden></pre>
         <div id="data-sources"></div>
         <div class="data-source-actions">
-          <button id="add-data-source" type="button">Add SQLite source</button>
+          <button id="add-sqlite-data-source" type="button">Add SQLite source</button>
+          <button id="add-rhai-data-source" type="button">Add Rhai source</button>
           <button id="apply-data-sources" type="button">Apply source changes</button>
         </div>
         <p id="data-source-status" class="stale"></p>
@@ -936,7 +972,8 @@ function editorHtml(
     const dataSources = document.getElementById("data-sources");
     const dataSourceRegistryIssue = document.getElementById("data-source-registry-issue");
     const dataSourceRegistryRaw = document.getElementById("data-source-registry-raw");
-    const addDataSource = document.getElementById("add-data-source");
+    const addSqliteDataSource = document.getElementById("add-sqlite-data-source");
+    const addRhaiDataSource = document.getElementById("add-rhai-data-source");
     const applyDataSources = document.getElementById("apply-data-sources");
     const dataSourceStatus = document.getElementById("data-source-status");
     const validation = document.getElementById("validation");
@@ -956,6 +993,31 @@ function editorHtml(
       dataSourceStatus.className = "stale";
       dataSourceStatus.textContent = "Source changes are not applied to the document yet.";
     };
+    const cloneDataSourceDraft = (source) =>
+      source.type === "rhai"
+        ? {
+            ...source,
+            inputs: source.inputs.map((input) => ({ ...input })),
+            outputColumns: [...source.outputColumns],
+          }
+        : { ...source };
+    const parseRhaiInputMappings = (value) =>
+      value
+        .split(/\\r?\\n/)
+        .filter((line) => line.trim() !== "")
+        .map((line) => {
+          const separator = line.indexOf("=");
+          return separator < 0
+            ? { alias: line.trim(), source: "" }
+            : {
+                alias: line.slice(0, separator).trim(),
+                source: line.slice(separator + 1).trim(),
+              };
+        });
+    const rhaiInputMappingsText = (inputs) =>
+      inputs.map((input) => input.alias + " = " + input.source).join("\\n");
+    const parseOutputColumns = (value) =>
+      value.split(/\\r?\\n/).filter((column) => column.length > 0);
     const renderDataSourceDrafts = () => {
       dataSources.replaceChildren();
       for (const [index, source] of dataSourceDrafts.entries()) {
@@ -965,7 +1027,7 @@ function editorHtml(
         heading.className = "data-source-heading";
         const type = document.createElement("span");
         type.className = "data-source-type";
-        type.textContent = "type: sqlite";
+        type.textContent = "type: " + source.type;
         const remove = document.createElement("button");
         remove.type = "button";
         remove.textContent = "Remove";
@@ -986,24 +1048,61 @@ function editorHtml(
           source.name = name.value;
           markDataSourceDraftChanged();
         });
-        const queryLabel = document.createElement("label");
-        queryLabel.textContent = "SQL query";
-        const query = document.createElement("textarea");
-        query.className = "source-query";
-        query.spellcheck = false;
-        query.value = source.query;
-        query.disabled = !dataSourcesEditable || dataSourceEditingLocked;
-        query.addEventListener("input", () => {
-          source.query = query.value;
-          markDataSourceDraftChanged();
-        });
-        card.append(heading, nameLabel, name, queryLabel, query);
+        card.append(heading, nameLabel, name);
+        if (source.type === "sqlite") {
+          const queryLabel = document.createElement("label");
+          queryLabel.textContent = "SQL query";
+          const query = document.createElement("textarea");
+          query.className = "source-query";
+          query.spellcheck = false;
+          query.value = source.query;
+          query.disabled = !dataSourcesEditable || dataSourceEditingLocked;
+          query.addEventListener("input", () => {
+            source.query = query.value;
+            markDataSourceDraftChanged();
+          });
+          card.append(queryLabel, query);
+        } else {
+          const scriptLabel = document.createElement("label");
+          scriptLabel.textContent = "Rhai script attachment path";
+          const script = document.createElement("input");
+          script.type = "text";
+          script.value = source.script;
+          script.disabled = !dataSourcesEditable || dataSourceEditingLocked;
+          script.addEventListener("input", () => {
+            source.script = script.value;
+            markDataSourceDraftChanged();
+          });
+          const inputsLabel = document.createElement("label");
+          inputsLabel.textContent = "SQLite inputs (one alias = source mapping per line)";
+          const inputs = document.createElement("textarea");
+          inputs.className = "source-definition";
+          inputs.spellcheck = false;
+          inputs.value = rhaiInputMappingsText(source.inputs);
+          inputs.disabled = !dataSourcesEditable || dataSourceEditingLocked;
+          inputs.addEventListener("input", () => {
+            source.inputs = parseRhaiInputMappings(inputs.value);
+            markDataSourceDraftChanged();
+          });
+          const outputLabel = document.createElement("label");
+          outputLabel.textContent = "Table output columns (one per line, in display order)";
+          const output = document.createElement("textarea");
+          output.className = "source-definition";
+          output.spellcheck = false;
+          output.value = source.outputColumns.join("\\n");
+          output.disabled = !dataSourcesEditable || dataSourceEditingLocked;
+          output.addEventListener("input", () => {
+            source.outputColumns = parseOutputColumns(output.value);
+            markDataSourceDraftChanged();
+          });
+          card.append(scriptLabel, script, inputsLabel, inputs, outputLabel, output);
+        }
         dataSources.append(card);
       }
       if (dataSourceDrafts.length === 0 && dataSourcesEditable) {
         const empty = document.createElement("p");
         empty.className = "stale";
-        empty.textContent = "No SQLite sources are defined.";
+        empty.textContent = "No data sources are defined.";
         dataSources.append(empty);
       }
     };
@@ -1011,12 +1110,13 @@ function editorHtml(
       dataSourcesEditable = registry?.editable === true;
       dataSourceEditingLocked = editingLocked === true;
       dataSourceDrafts = Array.isArray(registry?.sources)
-        ? registry.sources.map((source) => ({ ...source }))
+        ? registry.sources.map(cloneDataSourceDraft)
         : [];
       dataSourceRegistryIssue.textContent = registry?.issue ?? "";
       dataSourceRegistryRaw.hidden = typeof registry?.rawRegistry !== "string";
       dataSourceRegistryRaw.textContent = registry?.rawRegistry ?? "";
-      addDataSource.disabled = !dataSourcesEditable || dataSourceEditingLocked;
+      addSqliteDataSource.disabled = !dataSourcesEditable || dataSourceEditingLocked;
+      addRhaiDataSource.disabled = !dataSourcesEditable || dataSourceEditingLocked;
       applyDataSources.disabled = !dataSourcesEditable || dataSourceEditingLocked;
       dataSourceStatus.textContent = dataSourcesEditable
         ? "Edit a source, then apply the changes to make the document dirty."
@@ -1024,11 +1124,11 @@ function editorHtml(
       dataSourceStatus.className = dataSourcesEditable ? "stale" : "invalid";
       renderDataSourceDrafts();
     };
-    const nextDataSourceName = () => {
+    const nextDataSourceName = (prefix) => {
       const names = new Set(dataSourceDrafts.map((source) => source.name));
       let suffix = 1;
-      while (names.has("source-" + String(suffix))) suffix += 1;
-      return "source-" + String(suffix);
+      while (names.has(prefix + "-" + String(suffix))) suffix += 1;
+      return prefix + "-" + String(suffix);
     };
     const validateDataSourceDrafts = () => {
       const names = new Set();
@@ -1038,15 +1138,80 @@ function editorHtml(
         }
         if (names.has(source.name)) return "Source names must be unique.";
         names.add(source.name);
-        if (source.query.trim() === "") return "SQLite queries cannot be empty.";
+      }
+      const definitions = new Map(dataSourceDrafts.map((source) => [source.name, source]));
+      for (const source of dataSourceDrafts) {
+        if (source.type === "sqlite") {
+          if (source.query.trim() === "") return "SQLite queries cannot be empty.";
+          if (new TextEncoder().encode(source.query).length > 65536) {
+            return "SQLite queries must be at most 65536 UTF-8 bytes.";
+          }
+          continue;
+        }
+        if (source.script === "") return "Rhai script attachment paths cannot be empty.";
+        if (source.script.includes("\\\\") || source.script.startsWith("/")) {
+          return "Rhai script paths must be relative canonical paths using '/'.";
+        }
+        const scriptParts = source.script.split("/");
+        if (
+          scriptParts.some((part) => part === "" || part === "." || part === ".." || part.includes(":")) ||
+          /[\\u0000-\\u001f\\u007f]/.test(source.script)
+        ) {
+          return "Rhai script paths must be canonical attachment paths without '.', '..', ':' or control characters.";
+        }
+        if (["manifest.json", "index.md", "attachments.json", "db/main.sqlite3"].includes(source.script)) {
+          return "The selected Rhai script path is reserved by the TMD container.";
+        }
+        if (source.inputs.length === 0 || source.inputs.length > 16) {
+          return "Rhai sources require 1-16 SQLite input mappings.";
+        }
+        const aliases = new Set();
+        for (const input of source.inputs) {
+          if (!/^[A-Za-z0-9._-]{1,128}$/.test(input.alias)) {
+            return "Rhai input aliases use the same characters as source names.";
+          }
+          if (aliases.has(input.alias)) return "Rhai input aliases must be unique.";
+          aliases.add(input.alias);
+          if (!/^[A-Za-z0-9._-]{1,128}$/.test(input.source)) {
+            return "Each Rhai input must name a SQLite source.";
+          }
+          const target = definitions.get(input.source);
+          if (!target) return "Each Rhai input must reference an existing source.";
+          if (target.type !== "sqlite") return "Rhai inputs can reference SQLite sources only.";
+        }
+        if (source.outputColumns.length === 0 || source.outputColumns.length > 128) {
+          return "Rhai table outputs require 1-128 columns.";
+        }
+        const columns = new Set();
+        for (const column of source.outputColumns) {
+          const length = new TextEncoder().encode(column).length;
+          if (length === 0 || length > 256) {
+            return "Rhai output columns must use 1-256 UTF-8 bytes.";
+          }
+          if (columns.has(column)) return "Rhai output columns must be unique.";
+          columns.add(column);
+        }
       }
       return undefined;
     };
-    addDataSource.addEventListener("click", () => {
+    addSqliteDataSource.addEventListener("click", () => {
       dataSourceDrafts.push({
-        name: nextDataSourceName(),
+        name: nextDataSourceName("source"),
         type: "sqlite",
         query: "SELECT 1 AS value",
+      });
+      renderDataSourceDrafts();
+      markDataSourceDraftChanged();
+    });
+    addRhaiDataSource.addEventListener("click", () => {
+      const name = nextDataSourceName("view");
+      const sqliteSource = dataSourceDrafts.find((source) => source.type === "sqlite");
+      dataSourceDrafts.push({
+        name,
+        type: "rhai",
+        script: "views/" + name + ".rhai",
+        inputs: [{ alias: "rows", source: sqliteSource?.name ?? "" }],
+        outputColumns: ["value"],
       });
       renderDataSourceDrafts();
       markDataSourceDraftChanged();
@@ -1059,7 +1224,7 @@ function editorHtml(
         return;
       }
       pendingDataSourceRevision = sendDataSourceEdit(
-        dataSourceDrafts.map((source) => ({ ...source })),
+        dataSourceDrafts.map(cloneDataSourceDraft),
       );
       dataSourceStatus.className = "stale";
       dataSourceStatus.textContent = "Applying source changes…";

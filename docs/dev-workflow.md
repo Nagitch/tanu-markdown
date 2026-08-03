@@ -32,9 +32,10 @@ To exercise the custom editor:
 The pre-launch task incrementally rebuilds Rust and TypeScript, restages the
 CLI, validates `tmd-sample/sample.tmd`, and opens that file in an Extension
 Development Host window. Its Preview tab evaluates the SQLite-to-Rhai category
-summary through the same CLI/core path used by packaged extensions. The Data
-Sources form remains read-only for the schema-version-2 Rhai registry until its
-editing UI is implemented.
+summary through the same CLI/core path used by packaged extensions. The Sources
+tab edits both SQLite queries and schema-version-2 Rhai table definitions. Rhai
+script bodies remain attachments and are resolved from the retained sample while
+unsaved definition changes are previewed.
 
 The default build task (**Terminal: Run Build Task**) runs the same preparation
 script without starting an Extension Development Host.

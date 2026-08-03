@@ -6,7 +6,7 @@ import {
   TanuMarkdownModel,
   type EditorState,
 } from "../model.js";
-import type { DocumentInspection, SqliteDataSource } from "../types.js";
+import type { DataSource, DocumentInspection } from "../types.js";
 
 function inspection(
   markdown: string,
@@ -41,7 +41,7 @@ function inspection(
 function state(
   markdown: string,
   title: string,
-  dataSources: SqliteDataSource[] = [],
+  dataSources: DataSource[] = [],
 ): EditorState {
   return { dataSources, markdown, title };
 }
@@ -151,6 +151,48 @@ test("SQLite source edits participate in document dirty state and undo", () => {
   model.applyState(initial);
   assert.equal(model.isCurrentRevisionPersisted, true);
   assert.deepEqual(model.snapshot().dataSources, initial.dataSources);
+});
+
+test("Rhai source edits preserve schema version 2 and ordered output columns", () => {
+  const document = inspection("{{tmd-table:summary}}", "Summary", 0);
+  document.manifest.extras = {
+    tmd_data_sources: {
+      schema_version: 2,
+      sources: {
+        sales: { type: "sqlite", query: "SELECT category, amount FROM sales" },
+        summary: {
+          type: "rhai",
+          script: "views/summary.rhai",
+          inputs: { rows: "sales" },
+          output: { type: "table", columns: ["category", "total"] },
+        },
+      },
+    },
+  };
+  const model = new TanuMarkdownModel(document);
+  const edited = model.snapshot();
+  const summary = edited.dataSources.find((source) => source.name === "summary");
+  assert.equal(summary?.type, "rhai");
+  if (summary?.type !== "rhai") throw new Error("missing Rhai source");
+  summary.outputColumns = ["total", "category"];
+
+  model.applyState(edited);
+
+  assert.equal(model.isCurrentRevisionPersisted, false);
+  assert.deepEqual(model.inspection.manifest.extras, {
+    tmd_data_sources: {
+      schema_version: 2,
+      sources: {
+        sales: { type: "sqlite", query: "SELECT category, amount FROM sales" },
+        summary: {
+          type: "rhai",
+          script: "views/summary.rhai",
+          inputs: { rows: "sales" },
+          output: { type: "table", columns: ["total", "category"] },
+        },
+      },
+    },
+  });
 });
 
 test("inspection replacement is rejected after a newer edit", () => {
