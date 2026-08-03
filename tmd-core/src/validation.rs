@@ -1,4 +1,7 @@
-use crate::{normalize_logical_path, AttachmentId, TmdDoc, TmdResult};
+use crate::{
+    data_view_references, evaluate_data_source, normalize_logical_path, AttachmentId,
+    DataSourceRegistry, DataValue, DataViewRenderKind, TmdDoc, TmdResult,
+};
 use pulldown_cmark::{Event, Options, Parser, Tag};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -29,12 +32,24 @@ pub struct AttachmentReference {
     pub resolved: bool,
 }
 
+/// Resolution state for one dynamic-data view reference found in Markdown.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DataViewReferenceValidation {
+    /// Named source selected by the Markdown reference.
+    pub source: String,
+    /// Renderer requested at the Markdown use site.
+    pub render: DataViewRenderKind,
+    /// Whether the source name resolves in the document registry.
+    pub resolved: bool,
+}
+
 /// Complete validation result for a loaded document.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ValidationReport {
     pub valid: bool,
     pub issues: Vec<ValidationIssue>,
     pub attachment_references: Vec<AttachmentReference>,
+    pub data_view_references: Vec<DataViewReferenceValidation>,
     pub database_user_version: u32,
 }
 
@@ -190,6 +205,94 @@ pub fn validate_document(doc: &TmdDoc) -> TmdResult<ValidationReport> {
         });
     }
 
+    let registry = match DataSourceRegistry::from_manifest_extras(&doc.manifest.extras) {
+        Ok(registry) => Some(registry),
+        Err(error) => {
+            issues.push(issue(
+                ValidationSeverity::Error,
+                "invalid_data_source_registry",
+                error.to_string(),
+                Some("manifest.extras.tmd_data_sources".to_owned()),
+            ));
+            None
+        }
+    };
+    let parsed_views = data_view_references(&doc.markdown);
+    for error in parsed_views.errors {
+        issues.push(issue(
+            ValidationSeverity::Error,
+            "invalid_data_view_reference",
+            error,
+            Some("index.md".to_owned()),
+        ));
+    }
+    let mut evaluated = std::collections::BTreeMap::<String, Result<DataValue, String>>::new();
+    let mut view_references = Vec::new();
+    for reference in parsed_views.references {
+        let resolved = registry
+            .as_ref()
+            .is_some_and(|registry| registry.sources.contains_key(&reference.source));
+        if !resolved {
+            issues.push(issue(
+                ValidationSeverity::Error,
+                "unresolved_data_view_source",
+                format!(
+                    "Markdown references undefined data source `{}`",
+                    reference.source
+                ),
+                Some(reference.source.clone()),
+            ));
+        } else if matches!(
+            reference.render,
+            DataViewRenderKind::List | DataViewRenderKind::Code
+        ) {
+            issues.push(issue(
+                ValidationSeverity::Error,
+                "unsupported_data_view_renderer",
+                format!(
+                    "data-view renderer `{:?}` is reserved but not implemented",
+                    reference.render
+                )
+                .to_ascii_lowercase(),
+                Some(reference.source.clone()),
+            ));
+        } else {
+            let result = evaluated
+                .entry(reference.source.clone())
+                .or_insert_with(|| {
+                    evaluate_data_source(doc, &reference.source).map_err(|error| error.to_string())
+                });
+            match result {
+                Err(error) => issues.push(issue(
+                    ValidationSeverity::Error,
+                    "data_source_evaluation_failed",
+                    error.clone(),
+                    Some(reference.source.clone()),
+                )),
+                Ok(value) => {
+                    let shape = match reference.render {
+                        DataViewRenderKind::Scalar => value.as_scalar().map(|_| ()),
+                        DataViewRenderKind::Table => value.as_table().map(|_| ()),
+                        DataViewRenderKind::List | DataViewRenderKind::Code => unreachable!(),
+                    };
+                    if let Err(error) = shape {
+                        issues.push(issue(
+                            ValidationSeverity::Error,
+                            "data_view_shape_mismatch",
+                            error.to_string(),
+                            Some(reference.source.clone()),
+                        ));
+                    }
+                }
+            }
+        }
+        view_references.push(DataViewReferenceValidation {
+            source: reference.source,
+            render: reference.render,
+            resolved,
+        });
+    }
+
     let valid = !issues
         .iter()
         .any(|entry| entry.severity == ValidationSeverity::Error);
@@ -197,6 +300,7 @@ pub fn validate_document(doc: &TmdDoc) -> TmdResult<ValidationReport> {
         valid,
         issues,
         attachment_references: references,
+        data_view_references: view_references,
         database_user_version,
     })
 }

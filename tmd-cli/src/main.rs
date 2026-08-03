@@ -11,16 +11,19 @@ use base64::Engine;
 use clap::{Parser, Subcommand};
 use html_escape::{encode_double_quoted_attribute, encode_text};
 use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
-use pulldown_cmark::{html, CowStr, Event, Options, Parser as MdParser, Tag, TagEnd};
+use pulldown_cmark::{
+    html, CodeBlockKind, CowStr, Event, Options, Parser as MdParser, Tag, TagEnd,
+};
 use rusqlite::types::Value as SqlValue;
 use same_file::Handle;
 use serde::Deserialize;
 use serde_json::{json, Value as JsonValue};
 use sha2::{Digest, Sha256};
 use tmd_core::{
-    attachment_references, export_db, import_db, migrate, read_tmd, reset_db, validate_document,
-    write_bytes_to_path, write_to_path, AttachmentMeta, ReadMode, TmdDoc, ValidationSeverity,
-    SQLITE_MAX_USER_VERSION,
+    attachment_references, evaluate_data_source, export_db, import_db, inline_data_view_references,
+    migrate, parse_data_view_block, read_tmd, reset_db, validate_document, write_bytes_to_path,
+    write_to_path, AttachmentMeta, DataValue, DataViewRenderKind, ReadMode, TmdDoc,
+    ValidationSeverity, SQLITE_MAX_USER_VERSION,
 };
 
 const JSON_SCHEMA_VERSION: u32 = 1;
@@ -87,6 +90,12 @@ enum Commands {
     },
     /// Apply a schema-versioned JSON update read from stdin.
     Update {
+        input: PathBuf,
+        #[arg(long)]
+        json_stdin: bool,
+    },
+    /// Render safe preview HTML using the document data and Markdown from JSON stdin.
+    Preview {
         input: PathBuf,
         #[arg(long)]
         json_stdin: bool,
@@ -205,6 +214,15 @@ struct DocumentUpdate {
     title: Option<String>,
     authors: Option<Vec<String>>,
     tags: Option<Vec<String>>,
+    extras: Option<JsonValue>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PreviewRequest {
+    schema_version: u32,
+    markdown: String,
+    extras: Option<JsonValue>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -225,6 +243,7 @@ fn main() -> Result<()> {
         Commands::Validate { input, json } => cmd_validate(&input, json),
         Commands::Inspect { input, json } => cmd_inspect(&input, json),
         Commands::Update { input, json_stdin } => cmd_update(&input, json_stdin),
+        Commands::Preview { input, json_stdin } => cmd_preview(&input, json_stdin),
         Commands::Attachment { command } => match command {
             AttachmentCommands::List { doc, json } => cmd_attachment_list(&doc, json),
             AttachmentCommands::Add {
@@ -374,6 +393,7 @@ fn print_validation_error(code: &str, error: &anyhow::Error) -> Result<()> {
                 "message": format!("{error:#}"),
             }],
             "attachment_references": [],
+            "data_view_references": [],
             "database_user_version": null,
         }))?
     );
@@ -429,12 +449,48 @@ fn cmd_update(input: &Path, json_stdin: bool) -> Result<()> {
     if let Some(tags) = update.tags {
         doc.manifest.tags = tags;
     }
+    if let Some(extras) = update.extras {
+        doc.manifest.extras = extras;
+    }
     doc.touch();
     write_document_if_expected(input, &doc, Some(&expected))?;
     let persisted_doc = read_document(input)?;
     println!(
         "{}",
         serde_json::to_string_pretty(&inspection_value(&persisted_doc)?)?
+    );
+    Ok(())
+}
+
+fn cmd_preview(input: &Path, json_stdin: bool) -> Result<()> {
+    ensure!(
+        json_stdin,
+        "`preview` requires --json-stdin to make the input contract explicit"
+    );
+    let mut payload = String::new();
+    io::stdin()
+        .read_to_string(&mut payload)
+        .context("failed to read JSON preview request from stdin")?;
+    let request: PreviewRequest =
+        serde_json::from_str(&payload).context("failed to parse preview request JSON")?;
+    ensure!(
+        request.schema_version == JSON_SCHEMA_VERSION,
+        "unsupported preview schema_version {}; expected {}",
+        request.schema_version,
+        JSON_SCHEMA_VERSION
+    );
+    let mut doc = read_document(input)?;
+    if let Some(extras) = request.extras {
+        doc.manifest.extras = extras;
+    }
+    let attachment_urls = embedded_attachment_urls(&doc);
+    let preview_html = render_markdown_body(&doc, &request.markdown, &attachment_urls)?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({
+            "schema_version": JSON_SCHEMA_VERSION,
+            "preview_html": preview_html,
+        }))?
     );
     Ok(())
 }
@@ -624,14 +680,7 @@ fn cmd_export_html(
     };
     let attachment_urls = attachment_export.urls();
 
-    let mut options = Options::empty();
-    options.insert(Options::ENABLE_TABLES);
-    options.insert(Options::ENABLE_TASKLISTS);
-    let mut attachment_link_open = false;
-    let parser = MdParser::new_ext(&doc.markdown, options)
-        .map(|event| rewrite_attachment_event(event, attachment_urls, &mut attachment_link_open));
-    let mut body_html = String::new();
-    html::push_html(&mut body_html, parser);
+    let body_html = render_markdown_body(&doc, &doc.markdown, attachment_urls)?;
 
     let title = doc
         .manifest
@@ -652,6 +701,7 @@ fn cmd_export_html(
       code {{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }}
       table {{ border-collapse: collapse; }}
       th, td {{ border: 1px solid #ccc; padding: 0.25rem 0.5rem; }}
+      .tmd-view-error {{ color: #b42318; border: 1px solid currentColor; padding: 0.25rem 0.5rem; }}
     </style>
   </head>
   <body>
@@ -688,6 +738,164 @@ fn cmd_export_html(
         output.display()
     );
     Ok(())
+}
+
+fn render_markdown_body(
+    doc: &TmdDoc,
+    markdown: &str,
+    attachment_urls: &HashMap<String, AttachmentExportUrls>,
+) -> Result<String> {
+    let mut options = Options::empty();
+    options.insert(Options::ENABLE_TABLES);
+    options.insert(Options::ENABLE_TASKLISTS);
+    let mut parser = MdParser::new_ext(markdown, options);
+    let mut output_events = Vec::new();
+    let mut evaluated = HashMap::<String, std::result::Result<DataValue, String>>::new();
+    let mut attachment_link_open = false;
+
+    while let Some(event) = parser.next() {
+        match event {
+            Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(info)))
+                if info.starts_with("tmd-view:") =>
+            {
+                let mut body = String::new();
+                for inner in parser.by_ref() {
+                    match inner {
+                        Event::End(TagEnd::CodeBlock) => break,
+                        Event::Text(value) | Event::Code(value) => body.push_str(&value),
+                        _ => {}
+                    }
+                }
+                let rendered = match parse_data_view_block(&info, &body) {
+                    Some(Ok(reference)) => render_block_data_view(doc, &reference, &mut evaluated),
+                    Some(Err(error)) => render_view_error(&error.to_string(), true),
+                    None => unreachable!("guard accepts only tmd-view fences"),
+                };
+                output_events.push(Event::Html(CowStr::from(rendered)));
+            }
+            Event::Text(text) => {
+                append_inline_data_views(doc, text, &mut evaluated, &mut output_events)
+            }
+            other => output_events.push(rewrite_attachment_event(
+                other,
+                attachment_urls,
+                &mut attachment_link_open,
+            )),
+        }
+    }
+
+    let mut body_html = String::new();
+    html::push_html(&mut body_html, output_events.into_iter());
+    Ok(body_html)
+}
+
+fn append_inline_data_views<'a>(
+    doc: &TmdDoc,
+    text: CowStr<'a>,
+    evaluated: &mut HashMap<String, std::result::Result<DataValue, String>>,
+    output: &mut Vec<Event<'a>>,
+) {
+    let text = text.to_string();
+    let references = inline_data_view_references(&text);
+    if references.is_empty() {
+        output.push(Event::Text(CowStr::from(text)));
+        return;
+    }
+
+    let mut cursor = 0;
+    for reference in references {
+        if reference.range.start > cursor {
+            output.push(Event::Text(CowStr::from(
+                text[cursor..reference.range.start].to_owned(),
+            )));
+        }
+        let value = evaluated
+            .entry(reference.source.clone())
+            .or_insert_with(|| {
+                evaluate_data_source(doc, &reference.source).map_err(|error| error.to_string())
+            });
+        match value {
+            Ok(value) => match value.as_scalar() {
+                Ok(value) => output.push(Event::Text(CowStr::from(value.display_text()))),
+                Err(error) => output.push(Event::Html(CowStr::from(render_view_error(
+                    &error.to_string(),
+                    false,
+                )))),
+            },
+            Err(error) => output.push(Event::Html(CowStr::from(render_view_error(error, false)))),
+        }
+        cursor = reference.range.end;
+    }
+    if cursor < text.len() {
+        output.push(Event::Text(CowStr::from(text[cursor..].to_owned())));
+    }
+}
+
+fn render_block_data_view(
+    doc: &TmdDoc,
+    reference: &tmd_core::DataViewReference,
+    evaluated: &mut HashMap<String, std::result::Result<DataValue, String>>,
+) -> String {
+    let value = evaluated
+        .entry(reference.source.clone())
+        .or_insert_with(|| {
+            evaluate_data_source(doc, &reference.source).map_err(|error| error.to_string())
+        });
+    let value = match value {
+        Ok(value) => value,
+        Err(error) => return render_view_error(error, true),
+    };
+
+    match reference.render {
+        DataViewRenderKind::Scalar => match value.as_scalar() {
+            Ok(value) => format!(
+                "<p class=\"tmd-view-scalar\">{}</p>",
+                encode_text(&value.display_text())
+            ),
+            Err(error) => render_view_error(&error.to_string(), true),
+        },
+        DataViewRenderKind::Table => match value.as_table() {
+            Ok(table) => render_data_table(table),
+            Err(error) => render_view_error(&error.to_string(), true),
+        },
+        DataViewRenderKind::List | DataViewRenderKind::Code => render_view_error(
+            &format!(
+                "data-view renderer `{:?}` is reserved but not implemented",
+                reference.render
+            )
+            .to_ascii_lowercase(),
+            true,
+        ),
+    }
+}
+
+fn render_data_table(table: &tmd_core::DataTable) -> String {
+    let mut output = String::from("<table class=\"tmd-view-table\"><thead><tr>");
+    for column in &table.columns {
+        output.push_str("<th>");
+        output.push_str(&encode_text(column));
+        output.push_str("</th>");
+    }
+    output.push_str("</tr></thead><tbody>");
+    for row in &table.rows {
+        output.push_str("<tr>");
+        for value in row {
+            output.push_str("<td>");
+            output.push_str(&encode_text(&value.display_text()));
+            output.push_str("</td>");
+        }
+        output.push_str("</tr>");
+    }
+    output.push_str("</tbody></table>");
+    output
+}
+
+fn render_view_error(message: &str, block: bool) -> String {
+    let tag = if block { "div" } else { "span" };
+    format!(
+        "<{tag} class=\"tmd-view-error\">Data view error: {}</{tag}>",
+        encode_text(message)
+    )
 }
 
 fn cmd_db_init(doc_path: &Path, schema_path: Option<&Path>, version: Option<u32>) -> Result<()> {

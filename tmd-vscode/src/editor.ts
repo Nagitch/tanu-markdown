@@ -5,17 +5,28 @@ import * as path from "node:path";
 import * as vscode from "vscode";
 import { findActiveDocument } from "./activity.js";
 import { TmdCliClient } from "./cli.js";
+import {
+  extrasWithDataSources,
+  inspectDataSourceRegistry,
+  sameDataSources,
+  validateDataSources,
+} from "./data-sources.js";
 import { authoritativeStateScript, editInputScript } from "./input.js";
-import { renderSafeMarkdown } from "./markdown.js";
 import {
   persistRetainedDocument,
   persistLatestEditorState,
   TanuMarkdownModel,
   type EditorState,
 } from "./model.js";
+import { renderPreviewFallback } from "./preview.js";
 import { SerialTaskQueue } from "./queue.js";
 import { ClientRevisionTracker } from "./revision.js";
-import type { DocumentInspection, DocumentUpdate, ValidationReport } from "./types.js";
+import type {
+  DocumentInspection,
+  DocumentUpdate,
+  SqliteDataSource,
+  ValidationReport,
+} from "./types.js";
 
 export const VIEW_TYPE = "tanuMarkdown.editor";
 
@@ -170,11 +181,7 @@ export class TanuMarkdownEditorProvider
     await this.documentOperations.run(document, async () => {
       const state = document.snapshot();
       const savedRevision = document.contentRevision;
-      const update: DocumentUpdate = {
-        schema_version: 1,
-        markdown: state.markdown,
-        title: state.title,
-      };
+      const update = documentUpdate(document, state);
       const client = this.clientFactory();
       await this.saveRetainedState(document, client, update);
       const { inspection, persistedBytes } = await readAndInspectDocument(
@@ -216,11 +223,7 @@ export class TanuMarkdownEditorProvider
           await persistLatestEditorState(
             document,
             async (state) => {
-              await client.update(sourcePath, {
-                schema_version: 1,
-                markdown: state.markdown,
-                title: state.title,
-              });
+              await client.update(sourcePath, documentUpdate(document, state));
             },
           );
           stagedRevision = document.contentRevision;
@@ -274,11 +277,10 @@ export class TanuMarkdownEditorProvider
           document,
           async (bytes) => vscode.workspace.fs.writeFile(destination, bytes),
           async (state) => {
-            await client.update(filePath(destination), {
-              schema_version: 1,
-              markdown: state.markdown,
-              title: state.title,
-            });
+            await client.update(
+              filePath(destination),
+              documentUpdate(document, state),
+            );
           },
         );
       } catch (error) {
@@ -448,52 +450,42 @@ export class TanuMarkdownEditorProvider
         ) {
           return;
         }
-        const clientRevision = message.clientRevision;
-        if (this.editLocks.has(document)) {
-          this.panelClientRevisions.accept(panel, clientRevision);
-          await this.postModel(document);
-          return;
-        }
-        if (!this.panelClientRevisions.accept(panel, clientRevision)) {
-          await panel.webview.postMessage({
-            type: "editAck",
-            clientRevision,
-            contentRevision: document.contentRevision,
-          });
-          return;
-        }
         const before = document.snapshot();
-        const after = { markdown: message.markdown, title: message.title };
-        if (before.markdown !== after.markdown || before.title !== after.title) {
-          document.applyState(after);
-          this.changeEmitter.fire({
-            document,
-            label: "Edit Tanu Markdown",
-            undo: async () => {
-              if (this.editLocks.has(document)) {
-                throw new Error(
-                  "Cannot undo while an attachment operation is in progress.",
-                );
-              }
-              document.applyState(before);
-              await this.postModel(document);
-            },
-            redo: async () => {
-              if (this.editLocks.has(document)) {
-                throw new Error(
-                  "Cannot redo while an attachment operation is in progress.",
-                );
-              }
-              document.applyState(after);
-              await this.postModel(document);
-            },
-          });
+        await this.applyEditorState(
+          document,
+          panel,
+          message.clientRevision,
+          {
+            ...before,
+            markdown: message.markdown,
+            title: message.title,
+          },
+          "Edit Tanu Markdown",
+        );
+        break;
+      }
+      case "editDataSources": {
+        if (
+          typeof message.clientRevision !== "number" ||
+          !Number.isSafeInteger(message.clientRevision) ||
+          message.clientRevision <= 0
+        ) {
+          return;
         }
-        await panel.webview.postMessage({
-          type: "editAck",
-          clientRevision,
-          contentRevision: document.contentRevision,
-        });
+        const dataSources = parseDataSources(message.dataSources);
+        if (!dataSources) {
+          return;
+        }
+        validateDataSources(dataSources);
+        dataSources.sort((left, right) => left.name.localeCompare(right.name));
+        const before = document.snapshot();
+        await this.applyEditorState(
+          document,
+          panel,
+          message.clientRevision,
+          { ...before, dataSources },
+          "Edit TMD data sources",
+        );
         break;
       }
       case "preview": {
@@ -507,11 +499,21 @@ export class TanuMarkdownEditorProvider
         ) {
           return;
         }
+        const contentRevision = document.contentRevision;
+        const state = document.snapshot();
+        const previewHtml = await this.renderPreview(document, state);
+        if (
+          message.clientRevision !== this.panelClientRevisions.latest(panel) ||
+          message.markdown !== document.snapshot().markdown ||
+          contentRevision !== document.contentRevision
+        ) {
+          return;
+        }
         await panel.webview.postMessage({
           type: "preview",
           clientRevision: message.clientRevision,
-          contentRevision: document.contentRevision,
-          previewHtml: renderSafeMarkdown(message.markdown),
+          contentRevision,
+          previewHtml,
         });
         break;
       }
@@ -536,8 +538,58 @@ export class TanuMarkdownEditorProvider
     }
   }
 
+  private async applyEditorState(
+    document: TanuMarkdownDocument,
+    panel: vscode.WebviewPanel,
+    clientRevision: number,
+    after: EditorState,
+    label: string,
+  ): Promise<void> {
+    if (this.editLocks.has(document)) {
+      this.panelClientRevisions.accept(panel, clientRevision);
+      await this.postModel(document);
+      return;
+    }
+    if (!this.panelClientRevisions.accept(panel, clientRevision)) {
+      await panel.webview.postMessage({
+        type: "editAck",
+        clientRevision,
+        contentRevision: document.contentRevision,
+      });
+      return;
+    }
+    const before = document.snapshot();
+    if (!sameEditorStates(before, after)) {
+      document.applyState(after);
+      this.changeEmitter.fire({
+        document,
+        label,
+        undo: async () => {
+          if (this.editLocks.has(document)) {
+            throw new Error("Cannot undo while an attachment operation is in progress.");
+          }
+          document.applyState(before);
+          await this.postModel(document);
+        },
+        redo: async () => {
+          if (this.editLocks.has(document)) {
+            throw new Error("Cannot redo while an attachment operation is in progress.");
+          }
+          document.applyState(after);
+          await this.postModel(document);
+        },
+      });
+    }
+    await panel.webview.postMessage({
+      type: "editAck",
+      clientRevision,
+      contentRevision: document.contentRevision,
+    });
+  }
+
   private async postModel(document: TanuMarkdownDocument): Promise<void> {
     const state = document.snapshot();
+    const previewHtml = await this.renderPreview(document, state);
     const model = {
       type: "model",
       contentRevision: document.contentRevision,
@@ -545,7 +597,10 @@ export class TanuMarkdownEditorProvider
       validationCurrent: document.isValidationCurrent,
       markdown: state.markdown,
       title: state.title,
-      previewHtml: renderSafeMarkdown(state.markdown),
+      dataSourceRegistry: inspectDataSourceRegistry(
+        document.inspection.manifest.extras,
+      ),
+      previewHtml,
       editingLocked: this.editLocks.has(document),
     };
     const panels = this.panels.get(document);
@@ -561,10 +616,78 @@ export class TanuMarkdownEditorProvider
       ),
     );
   }
+
+  private async renderPreview(
+    document: TanuMarkdownDocument,
+    state: EditorState,
+  ): Promise<string> {
+    try {
+      return await previewRetainedBytes(
+        this.clientFactory(),
+        document.uri,
+        document.persistedBytes,
+        state.markdown,
+        extrasWithDataSources(
+          document.inspection.manifest.extras,
+          state.dataSources,
+        ),
+      );
+    } catch (error) {
+      // Keep editing usable, but make an old or missing CLI visible instead of
+      // silently hiding why dynamic data and attachments were not rendered.
+      return renderPreviewFallback(state.markdown, error);
+    }
+  }
 }
 
 function isMessage(value: unknown): value is Record<string, unknown> & { type: string } {
   return typeof value === "object" && value !== null && "type" in value;
+}
+
+function parseDataSources(value: unknown): SqliteDataSource[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const sources: SqliteDataSource[] = [];
+  for (const source of value) {
+    if (
+      typeof source !== "object" ||
+      source === null ||
+      !("name" in source) ||
+      typeof source.name !== "string" ||
+      !("type" in source) ||
+      source.type !== "sqlite" ||
+      !("query" in source) ||
+      typeof source.query !== "string"
+    ) {
+      return undefined;
+    }
+    sources.push({ name: source.name, type: "sqlite", query: source.query });
+  }
+  return sources;
+}
+
+function sameEditorStates(left: EditorState, right: EditorState): boolean {
+  return (
+    sameDataSources(left.dataSources, right.dataSources) &&
+    left.markdown === right.markdown &&
+    left.title === right.title
+  );
+}
+
+function documentUpdate(
+  document: TanuMarkdownDocument,
+  state: EditorState,
+): DocumentUpdate {
+  return {
+    schema_version: 1,
+    markdown: state.markdown,
+    title: state.title,
+    extras: extrasWithDataSources(
+      document.inspection.manifest.extras,
+      state.dataSources,
+    ),
+  };
 }
 
 function filePath(uri: vscode.Uri): string {
@@ -599,6 +722,27 @@ async function inspectRetainedBytes(
   try {
     await fs.writeFile(snapshotPath, bytes, { flag: "wx" });
     return await client.inspect(snapshotPath);
+  } finally {
+    await fs.rm(directory, { force: true, recursive: true });
+  }
+}
+
+async function previewRetainedBytes(
+  client: TmdCliClient,
+  source: vscode.Uri,
+  bytes: Uint8Array,
+  markdown: string,
+  extras: DocumentInspection["manifest"]["extras"],
+): Promise<string> {
+  const extension = path.extname(source.fsPath).toLowerCase();
+  if (extension !== ".tmd") {
+    throw new Error("TMD documents must use the .tmd extension.");
+  }
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "tmd-preview-"));
+  const snapshotPath = path.join(directory, `snapshot${extension}`);
+  try {
+    await fs.writeFile(snapshotPath, bytes, { flag: "wx" });
+    return await client.preview(snapshotPath, markdown, extras);
   } finally {
     await fs.rm(directory, { force: true, recursive: true });
   }
@@ -670,8 +814,21 @@ function editorHtml(_webview: vscode.Webview): string {
     .stale { color: var(--vscode-descriptionForeground); }
     li { margin: .35rem 0; }
     .attachment { display: flex; justify-content: space-between; gap: .5rem; align-items: center; }
+    .data-source-actions { display: flex; gap: .5rem; margin: .5rem 0; }
+    .data-source-card { border: 1px solid var(--vscode-panel-border); padding: .65rem; margin: .5rem 0; }
+    .data-source-heading { display: flex; justify-content: space-between; gap: .5rem; align-items: center; }
+    .data-source-type { color: var(--vscode-descriptionForeground); }
+    .source-query { min-height: 7rem; }
+    .registry-raw { overflow: auto; padding: .5rem; background: var(--vscode-textCodeBlock-background); white-space: pre-wrap; }
     .preview { line-height: 1.6; }
     .preview pre { overflow: auto; padding: .75rem; background: var(--vscode-textCodeBlock-background); }
+    .preview table { border-collapse: collapse; margin: .75rem 0; }
+    .preview th, .preview td { border: 1px solid var(--vscode-panel-border); padding: .25rem .5rem; text-align: left; }
+    .preview .tmd-view-error { color: var(--vscode-testing-iconFailed); border: 1px solid currentColor; padding: .25rem .5rem; }
+    .preview .preview-diagnostic { border: 1px solid var(--vscode-inputValidation-warningBorder, #cca700); background: var(--vscode-inputValidation-warningBackground, transparent); padding: .5rem .75rem; margin: 0 0 1rem; }
+    .preview .preview-diagnostic p { margin: .25rem 0; }
+    .preview .preview-diagnostic details { margin-top: .5rem; }
+    .preview .preview-diagnostic details code { display: block; margin-top: .25rem; overflow-wrap: anywhere; white-space: pre-wrap; }
     .image-placeholder { display: inline-block; padding: .25rem .5rem; border: 1px dashed var(--vscode-panel-border); }
     @media (max-width: 850px) { .layout { grid-template-columns: 1fr; } .pane + .pane { border-left: 0; border-top: 1px solid var(--vscode-panel-border); } }
   </style>
@@ -694,6 +851,18 @@ function editorHtml(_webview: vscode.Webview): string {
       <ul id="attachments"></ul>
       <h2>Database objects</h2>
       <ul id="database-objects"></ul>
+      <h2>Dynamic data views</h2>
+      <h3>Markdown views</h3>
+      <ul id="data-view-references"></ul>
+      <h3>SQLite sources</h3>
+      <div id="data-source-registry-issue" class="invalid"></div>
+      <pre id="data-source-registry-raw" class="registry-raw" hidden></pre>
+      <div id="data-sources"></div>
+      <div class="data-source-actions">
+        <button id="add-data-source" type="button">Add SQLite source</button>
+        <button id="apply-data-sources" type="button">Apply source changes</button>
+      </div>
+      <p id="data-source-status" class="stale"></p>
       <h2>Validation</h2>
       <div id="validation"></div>
     </section>
@@ -708,14 +877,161 @@ function editorHtml(_webview: vscode.Webview): string {
     const markdown = document.getElementById("markdown");
     const attachments = document.getElementById("attachments");
     const databaseObjects = document.getElementById("database-objects");
+    const dataViewReferences = document.getElementById("data-view-references");
+    const dataSources = document.getElementById("data-sources");
+    const dataSourceRegistryIssue = document.getElementById("data-source-registry-issue");
+    const dataSourceRegistryRaw = document.getElementById("data-source-registry-raw");
+    const addDataSource = document.getElementById("add-data-source");
+    const applyDataSources = document.getElementById("apply-data-sources");
+    const dataSourceStatus = document.getElementById("data-source-status");
     const validation = document.getElementById("validation");
     const preview = document.getElementById("preview");
+    let dataSourceDrafts = [];
+    let dataSourcesEditable = false;
+    let dataSourceEditingLocked = true;
+    let pendingDataSourceRevision;
     ${editInputScript()}
     ${authoritativeStateScript()}
     document.getElementById("validate").addEventListener("click", () => vscode.postMessage({ type: "validate" }));
     document.getElementById("add-attachment").addEventListener("click", () => vscode.postMessage({ type: "addAttachment" }));
     document.getElementById("export-html").addEventListener("click", () => vscode.postMessage({ type: "exportHtml" }));
     preview.addEventListener("click", (event) => { if (event.target.closest("a")) event.preventDefault(); });
+    const markDataSourceDraftChanged = () => {
+      dataSourceStatus.className = "stale";
+      dataSourceStatus.textContent = "Source changes are not applied to the document yet.";
+    };
+    const renderDataSourceDrafts = () => {
+      dataSources.replaceChildren();
+      for (const [index, source] of dataSourceDrafts.entries()) {
+        const card = document.createElement("section");
+        card.className = "data-source-card";
+        const heading = document.createElement("div");
+        heading.className = "data-source-heading";
+        const type = document.createElement("span");
+        type.className = "data-source-type";
+        type.textContent = "type: sqlite";
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.textContent = "Remove";
+        remove.disabled = !dataSourcesEditable || dataSourceEditingLocked;
+        remove.addEventListener("click", () => {
+          dataSourceDrafts.splice(index, 1);
+          renderDataSourceDrafts();
+          markDataSourceDraftChanged();
+        });
+        heading.append(type, remove);
+        const nameLabel = document.createElement("label");
+        nameLabel.textContent = "Source name";
+        const name = document.createElement("input");
+        name.type = "text";
+        name.value = source.name;
+        name.disabled = !dataSourcesEditable || dataSourceEditingLocked;
+        name.addEventListener("input", () => {
+          source.name = name.value;
+          markDataSourceDraftChanged();
+        });
+        const queryLabel = document.createElement("label");
+        queryLabel.textContent = "SQL query";
+        const query = document.createElement("textarea");
+        query.className = "source-query";
+        query.spellcheck = false;
+        query.value = source.query;
+        query.disabled = !dataSourcesEditable || dataSourceEditingLocked;
+        query.addEventListener("input", () => {
+          source.query = query.value;
+          markDataSourceDraftChanged();
+        });
+        card.append(heading, nameLabel, name, queryLabel, query);
+        dataSources.append(card);
+      }
+      if (dataSourceDrafts.length === 0 && dataSourcesEditable) {
+        const empty = document.createElement("p");
+        empty.className = "stale";
+        empty.textContent = "No SQLite sources are defined.";
+        dataSources.append(empty);
+      }
+    };
+    const renderDataSourceRegistry = (registry, editingLocked) => {
+      dataSourcesEditable = registry?.editable === true;
+      dataSourceEditingLocked = editingLocked === true;
+      dataSourceDrafts = Array.isArray(registry?.sources)
+        ? registry.sources.map((source) => ({ ...source }))
+        : [];
+      dataSourceRegistryIssue.textContent = registry?.issue ?? "";
+      dataSourceRegistryRaw.hidden = typeof registry?.rawRegistry !== "string";
+      dataSourceRegistryRaw.textContent = registry?.rawRegistry ?? "";
+      addDataSource.disabled = !dataSourcesEditable || dataSourceEditingLocked;
+      applyDataSources.disabled = !dataSourcesEditable || dataSourceEditingLocked;
+      dataSourceStatus.textContent = dataSourcesEditable
+        ? "Edit a source, then apply the changes to make the document dirty."
+        : "This registry is read-only in the current editor.";
+      dataSourceStatus.className = dataSourcesEditable ? "stale" : "invalid";
+      renderDataSourceDrafts();
+    };
+    const nextDataSourceName = () => {
+      const names = new Set(dataSourceDrafts.map((source) => source.name));
+      let suffix = 1;
+      while (names.has("source-" + String(suffix))) suffix += 1;
+      return "source-" + String(suffix);
+    };
+    const validateDataSourceDrafts = () => {
+      const names = new Set();
+      for (const source of dataSourceDrafts) {
+        if (!/^[A-Za-z0-9._-]{1,128}$/.test(source.name)) {
+          return "Source names must use 1-128 ASCII letters, digits, '.', '_' or '-'.";
+        }
+        if (names.has(source.name)) return "Source names must be unique.";
+        names.add(source.name);
+        if (source.query.trim() === "") return "SQLite queries cannot be empty.";
+      }
+      return undefined;
+    };
+    addDataSource.addEventListener("click", () => {
+      dataSourceDrafts.push({
+        name: nextDataSourceName(),
+        type: "sqlite",
+        query: "SELECT 1 AS value",
+      });
+      renderDataSourceDrafts();
+      markDataSourceDraftChanged();
+    });
+    applyDataSources.addEventListener("click", () => {
+      const issue = validateDataSourceDrafts();
+      if (issue) {
+        dataSourceStatus.className = "invalid";
+        dataSourceStatus.textContent = issue;
+        return;
+      }
+      pendingDataSourceRevision = sendDataSourceEdit(
+        dataSourceDrafts.map((source) => ({ ...source })),
+      );
+      dataSourceStatus.className = "stale";
+      dataSourceStatus.textContent = "Applying source changes…";
+    });
+    function renderDataViewReferences(report, current) {
+      dataViewReferences.replaceChildren();
+      const references = Array.isArray(report?.data_view_references)
+        ? report.data_view_references
+        : [];
+      if (references.length === 0) {
+        const item = document.createElement("li");
+        item.className = "stale";
+        item.textContent = "No dynamic views found.";
+        dataViewReferences.append(item);
+      }
+      for (const reference of references) {
+        const item = document.createElement("li");
+        item.className = reference.resolved ? "valid" : "invalid";
+        item.textContent = "view: " + reference.render + " · source: " + reference.source + (reference.resolved ? "" : " (unresolved)");
+        dataViewReferences.append(item);
+      }
+      if (!current) {
+        const item = document.createElement("li");
+        item.className = "stale";
+        item.textContent = "Save and validate to refresh this list.";
+        dataViewReferences.append(item);
+      }
+    }
     function renderValidation(report, current) {
       validation.replaceChildren();
       const status = document.createElement("p");
@@ -744,7 +1060,11 @@ function editorHtml(_webview: vscode.Webview): string {
         return;
       }
       if (model.type === "editAck") {
-        applyEditAck(model);
+        if (applyEditAck(model) && model.clientRevision === pendingDataSourceRevision) {
+          pendingDataSourceRevision = undefined;
+          dataSourceStatus.className = "valid";
+          dataSourceStatus.textContent = "Source changes applied. Save the document to persist them.";
+        }
         return;
       }
       if (model.type !== "model") return;
@@ -752,6 +1072,8 @@ function editorHtml(_webview: vscode.Webview): string {
       clearTimeout(previewTimer);
       document.getElementById("format").textContent = model.inspection.format;
       document.getElementById("database-version").textContent = String(model.inspection.database_user_version);
+      renderDataViewReferences(model.inspection.validation, model.validationCurrent);
+      renderDataSourceRegistry(model.dataSourceRegistry, model.editingLocked);
       attachments.replaceChildren();
       for (const attachment of model.inspection.attachments) {
         const item = document.createElement("li");

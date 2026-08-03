@@ -4,8 +4,9 @@ import {
   persistRetainedDocument,
   persistLatestEditorState,
   TanuMarkdownModel,
+  type EditorState,
 } from "../model.js";
-import type { DocumentInspection } from "../types.js";
+import type { DocumentInspection, SqliteDataSource } from "../types.js";
 
 function inspection(
   markdown: string,
@@ -20,6 +21,7 @@ function inspection(
       title,
       authors: [],
       tags: [],
+      extras: null,
     },
     attachments: [],
     database_user_version: databaseUserVersion,
@@ -36,17 +38,26 @@ function inspection(
   };
 }
 
+function state(
+  markdown: string,
+  title: string,
+  dataSources: SqliteDataSource[] = [],
+): EditorState {
+  return { dataSources, markdown, title };
+}
+
 test("persisted inspection preserves edits made while an operation was pending", () => {
   const model = new TanuMarkdownModel(inspection("initial", "Initial", 0));
   const savedRevision = model.contentRevision;
 
-  model.applyState({ markdown: "newer edit", title: "Newer title" });
+  model.applyState(state("newer edit", "Newer title"));
   model.applyPersistedInspection(
     inspection("saved snapshot", "Saved title", 2),
     savedRevision,
   );
 
   assert.deepEqual(model.snapshot(), {
+    dataSources: [],
     markdown: "newer edit",
     title: "Newer title",
   });
@@ -67,6 +78,7 @@ test("save response replaces state when no newer edit exists", () => {
   );
 
   assert.deepEqual(model.snapshot(), {
+    dataSources: [],
     markdown: "saved snapshot",
     title: "Saved title",
   });
@@ -79,7 +91,7 @@ test("undo and redo restore the persisted save point", () => {
   const model = new TanuMarkdownModel(inspection("initial", "Initial", 0));
   const initial = model.snapshot();
 
-  model.applyState({ markdown: "saved edit", title: "Saved title" });
+  model.applyState(state("saved edit", "Saved title"));
   const savedRevision = model.contentRevision;
   model.applyPersistedInspection(
     inspection("saved edit", "Saved title", 0),
@@ -99,17 +111,52 @@ test("undoing the first edit restores the initially persisted state", () => {
   const model = new TanuMarkdownModel(inspection("initial", "Initial", 0));
   const initial = model.snapshot();
 
-  model.applyState({ markdown: "unsaved edit", title: "Unsaved title" });
+  model.applyState(state("unsaved edit", "Unsaved title"));
   assert.equal(model.isCurrentRevisionPersisted, false);
 
   model.applyState(initial);
   assert.equal(model.isCurrentRevisionPersisted, true);
 });
 
+test("SQLite source edits participate in document dirty state and undo", () => {
+  const document = inspection("initial", "Initial", 0);
+  document.manifest.extras = {
+    application: { retained: true },
+    tmd_data_sources: {
+      schema_version: 1,
+      sources: {
+        existing: { type: "sqlite", query: "SELECT 1" },
+      },
+    },
+  };
+  const model = new TanuMarkdownModel(document);
+  const initial = model.snapshot();
+  const edited = state("initial", "Initial", [
+    { name: "renamed", type: "sqlite", query: "SELECT 2" },
+  ]);
+
+  model.applyState(edited);
+  assert.equal(model.isCurrentRevisionPersisted, false);
+  assert.deepEqual(model.snapshot().dataSources, edited.dataSources);
+  assert.deepEqual(model.inspection.manifest.extras, {
+    application: { retained: true },
+    tmd_data_sources: {
+      schema_version: 1,
+      sources: {
+        renamed: { type: "sqlite", query: "SELECT 2" },
+      },
+    },
+  });
+
+  model.applyState(initial);
+  assert.equal(model.isCurrentRevisionPersisted, true);
+  assert.deepEqual(model.snapshot().dataSources, initial.dataSources);
+});
+
 test("inspection replacement is rejected after a newer edit", () => {
   const model = new TanuMarkdownModel(inspection("initial", "Initial", 0));
   const revertedRevision = model.contentRevision;
-  model.applyState({ markdown: "typed during revert", title: "Current" });
+  model.applyState(state("typed during revert", "Current"));
 
   assert.equal(
     model.replaceInspectionIfCurrent(
@@ -119,6 +166,7 @@ test("inspection replacement is rejected after a newer edit", () => {
     false,
   );
   assert.deepEqual(model.snapshot(), {
+    dataSources: [],
     markdown: "typed during revert",
     title: "Current",
   });
@@ -141,7 +189,7 @@ test("validation results are discarded after a newer edit", () => {
     database_user_version: 0,
   };
 
-  model.applyState({ markdown: "newer edit", title: "Newer title" });
+  model.applyState(state("newer edit", "Newer title"));
 
   assert.equal(model.applyValidation(staleReport, validatedRevision), false);
   assert.equal(model.inspection.validation.valid, true);
@@ -171,18 +219,18 @@ test("validation results apply to the revision they checked", () => {
 
 test("Save As retries until the destination contains the latest edit", async () => {
   const model = new TanuMarkdownModel(inspection("first", "First", 0));
-  const persistedStates: Array<{ markdown: string; title: string }> = [];
+  const persistedStates: EditorState[] = [];
 
-  await persistLatestEditorState(model, async (state) => {
-    persistedStates.push(state);
+  await persistLatestEditorState(model, async (snapshot) => {
+    persistedStates.push(snapshot);
     if (persistedStates.length === 1) {
-      model.applyState({ markdown: "second", title: "Second" });
+      model.applyState(state("second", "Second"));
     }
   });
 
   assert.deepEqual(persistedStates, [
-    { markdown: "first", title: "First" },
-    { markdown: "second", title: "Second" },
+    state("first", "First"),
+    state("second", "Second"),
   ]);
 });
 
@@ -194,7 +242,7 @@ test("Save As fails safely when edits never become stable", async () => {
       model,
       async () => {
         const next = model.contentRevision + 1;
-        model.applyState({ markdown: String(next), title: `Revision ${next}` });
+        model.applyState(state(String(next), `Revision ${next}`));
       },
       2,
     ),
@@ -205,12 +253,12 @@ test("Save As fails safely when edits never become stable", async () => {
 test("document copies are constructed from retained bytes without rereading their source", async () => {
   const persistedBytes = Uint8Array.from([0x54, 0x4d, 0x44]);
   const written: number[][] = [];
-  const updates: Array<{ markdown: string; title: string }> = [];
+  const updates: EditorState[] = [];
   const source = {
     contentRevision: 3,
     persistedBytes,
     snapshot() {
-      return { markdown: "# Unsaved\n", title: "Recovered" };
+      return state("# Unsaved\n", "Recovered");
     },
   };
 
@@ -226,6 +274,6 @@ test("document copies are constructed from retained bytes without rereading thei
 
   assert.deepEqual(written, [[0x54, 0x4d, 0x44]]);
   assert.deepEqual(updates, [
-    { markdown: "# Unsaved\n", title: "Recovered" },
+    state("# Unsaved\n", "Recovered"),
   ]);
 });

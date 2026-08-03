@@ -41,11 +41,12 @@ Default reads:
 - verify attachment byte lengths and SHA-256 digests when present.
 
 Structured document validation additionally checks TMD major-version support,
-cover-image IDs, `attach:` Markdown references, and manifest/database schema
-versions. Path-based writes use same-directory temporary files and atomic
-replacement. Replacements preserve existing file permissions and final
-symbolic links; newly created documents use ordinary creation permissions
-subject to the process umask. Dangling final symbolic links are rejected.
+cover-image IDs, `attach:` Markdown references, manifest/database schema
+versions, and dynamic-data source references. Path-based writes use
+same-directory temporary files and atomic replacement. Replacements preserve
+existing file permissions and final symbolic links; newly created documents
+use ordinary creation permissions subject to the process umask. Dangling final
+symbolic links are rejected.
 
 The CLI accepts document paths with the `.tmd` extension. `tmd-core` exposes a
 single-format read/write API.
@@ -62,3 +63,10 @@ but not a stable compatibility promise. Changes require:
 
 The current draft intentionally defines only the `.tmd` ZIP representation;
 alternate-format APIs and tooling are outside the implemented contract.
+
+Dynamic views implement named, read-only SQLite sources with inline and block
+`scalar` output plus block `table` output. Source definitions live in the
+versioned `manifest.extras.tmd_data_sources` registry. JSON, YAML, TOML, Rhai,
+`list`, and `code` are planned extensions documented in
+[dynamic data views](dynamic-data-views.md) and tracked by
+[issue #35](https://github.com/Nagitch/tanu-markdown/issues/35).

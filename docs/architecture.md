@@ -26,7 +26,9 @@ so that the Rust core remains the single source of truth.
 
 `tmd-cli` and `tmd-core-ffi` depend on `tmd-core`. The VS Code extension calls
 the bundled or explicitly configured `tmd` binary through its schema-versioned
-JSON bridge and never parses `.tmd` containers in TypeScript.
+JSON bridge and never parses `.tmd` containers in TypeScript. Preview requests
+send the current unsaved Markdown with retained document bytes so the Rust
+renderer can query the embedded database and resolve attachments.
 
 ## `tmd-core`
 
@@ -35,6 +37,8 @@ The core crate owns:
 - `TmdDoc`, `Manifest`, and attachment metadata;
 - logical attachment path normalization and SHA-256 validation;
 - embedded SQLite lifecycle and migration helpers;
+- named dynamic-data registry parsing, read-only SQLite evaluation, and typed
+  scalar/table values;
 - `.tmd` ZIP serialization;
 - optional C ABI functions behind the `ffi` feature.
 
@@ -50,7 +54,8 @@ The CLI translates terminal inputs into `tmd-core` operations. It owns:
 - `.tmd` path validation;
 - human-readable and schema-versioned JSON inspection/updates;
 - attachment and SQLite lifecycle UX;
-- Markdown-to-HTML rendering with real `attach:` URL rewriting.
+- Markdown-to-HTML and schema-versioned preview rendering with real `attach:`
+  URL rewriting and dynamic SQLite views.
 
 HTML rendering neutralizes raw markup and executable URL schemes. Self-contained
 exports retain passive raster-image and plain-text MIME types and downgrade

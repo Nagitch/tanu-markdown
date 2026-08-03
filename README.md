@@ -1,7 +1,8 @@
 # Tanu Markdown
 
 Tanu Markdown (TMD) is a self-contained document format that keeps Markdown,
-metadata, attachments, and a SQLite database in one portable file.
+metadata, attachments, and a SQLite database in one portable file. Markdown
+can render named, read-only SQLite sources as inline scalars or block tables.
 
 This repository contains the Rust document library, the installed `tmd`
 command-line interface, a C-compatible dynamic library, a VS Code custom
@@ -22,7 +23,7 @@ normative implemented contract and the
 
 | Path | Responsibility |
 | --- | --- |
-| `tmd-core/` | Rust document model, attachment handling, SQLite lifecycle, and `.tmd` I/O |
+| `tmd-core/` | Rust document model, attachment handling, SQLite lifecycle/data views, and `.tmd` I/O |
 | `tmd-cli/` | CLI for creating, validating, publishing, exporting, and editing documents |
 | `tmd-core-ffi/` | C ABI dynamic-library wrapper around the optional `tmd-core` FFI surface |
 | `tmd-vscode/` | VS Code custom editor using the `tmd` JSON bridge |
@@ -59,11 +60,11 @@ tmd validate notes.tmd
 tmd export-html notes.tmd notes.html --self-contained
 ```
 
-The CLI also exposes schema-versioned JSON updates, complete attachment
-lifecycle commands, read-only JSON database queries, migrations, and database
-import/export. The VS Code extension calls those commands instead of parsing
-the container in TypeScript. Configure `tanuMarkdown.cliPath` if `tmd` is not
-on the VS Code process `PATH`.
+The CLI also exposes schema-versioned JSON updates and previews, complete
+attachment lifecycle commands, read-only JSON database queries, migrations,
+and database import/export. HTML export and VS Code preview share the same safe
+Rust renderer for attachments and dynamic data. Configure
+`tanuMarkdown.cliPath` if `tmd` is not on the VS Code process `PATH`.
 
 ## Validation
 
@@ -82,6 +83,7 @@ Clippy, tests, rustdoc, reference samples, extension tests, and VSIX packaging.
 - [Architecture](docs/architecture.md)
 - [TMD 1.0 draft specification](docs/spec-tmd-1.0-draft.md)
 - [Format overview](docs/format-overview.md)
+- [Dynamic data views](docs/dynamic-data-views.md)
 - [Development workflow](docs/dev-workflow.md)
 - [Publish readiness](docs/publish-readiness.md)
 - [Current project status](PROJECT_STATUS.md)

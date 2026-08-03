@@ -9,6 +9,8 @@ It provides:
 - manifests, safe/unique attachment paths, SHA-256 checks, and Markdown
   `attach:` reference validation;
 - an embedded SQLite handle with import, export, reset, and migration helpers;
+- versioned named data sources, bounded read-only SQLite evaluation, and typed
+  `scalar`/`table` values;
 - structured version/database validation reports and atomic path writes;
 - optional C ABI entry points behind the `ffi` feature.
 
@@ -45,8 +47,10 @@ fn main() -> tmd_core::TmdResult<()> {
 - `DbHandle`, `import_db`, `export_db`, `reset_db`, and `migrate` manage the
   embedded database. Reset and migration SQL may own a transaction; schema
   versions are constrained to SQLite's nonnegative 31-bit range.
-- `validate_document` returns machine-readable issues, references, and the
-  embedded database version.
+- `DataSourceRegistry`, `evaluate_data_source`, and the data-view parsers own
+  SQLite-backed Markdown view semantics shared by delivery surfaces.
+- `validate_document` returns machine-readable issues, attachment/data-view
+  references, and the embedded database version.
 - `read_from_path` and `write_to_path` provide the common path-based API;
   writers reject unsupported TMD major versions rather than risk stripping
   unknown manifest data, and reject destinations with multiple hard links

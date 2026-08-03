@@ -19,6 +19,18 @@ export function editInputScript(): string {
       });
       renderValidation(undefined, false);
     };
+    const sendDataSourceEdit = (dataSources) => {
+      if (!editorInitialized) return undefined;
+      clientRevision += 1;
+      vscode.postMessage({
+        type: "editDataSources",
+        clientRevision,
+        dataSources,
+      });
+      renderValidation(undefined, false);
+      queuePreview();
+      return clientRevision;
+    };
     const queuePreview = () => {
       if (!editorInitialized) return;
       clearTimeout(previewTimer);

@@ -33,7 +33,21 @@ printf '%s' '{"schema_version":1,"title":"Renamed","markdown":"# Renamed"}' \
 ```
 
 `update` preserves attachments, database content, manifest identity, and
-creation time. It writes atomically.
+creation time. Payloads may also replace `extras`, including dynamic-data
+source definitions. It writes atomically.
+
+### Schema-versioned preview
+
+```bash
+printf '%s' '{"schema_version":1,"markdown":"{{tmd-view:first-note}}"}' \
+  | tmd preview notes.tmd --json-stdin
+```
+
+`preview` renders the supplied current Markdown against the document's retained
+database and attachments. The request may include `extras` to preview unsaved
+data-source edits without persisting them. It returns escaped HTML in
+`preview_html` and is the same rendering boundary used by HTML export and the
+VS Code editor.
 
 ### Atomic publication
 
@@ -76,6 +90,24 @@ destinations are limited to relative URLs plus `http`, `https`, `mailto`, and
 names, render Markdown attachment links as downloads, and permit only passive
 attachment types as inline image sources. Export refuses an output path that
 resolves to the source document.
+
+### Dynamic SQLite views
+
+Declare named sources under `manifest.extras.tmd_data_sources`, then reference
+one cell inline or select a block renderer:
+
+````markdown
+The first note is **{{tmd-view:first-note}}**.
+
+```tmd-view:table
+source = "sample-notes"
+```
+````
+
+The implemented renderers are `scalar` and `table`. Sources execute exactly one
+bounded, read-only SQLite statement. Values are escaped and never reparsed as
+Markdown or HTML. Validation reports undefined sources, unsupported renderers,
+query failures, and shape mismatches.
 
 ## Embedded database
 
