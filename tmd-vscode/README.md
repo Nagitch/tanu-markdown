@@ -64,6 +64,22 @@ offers the same selector and a link to these setup instructions.
 
 ## Development
 
+The repository Dev Container is ready for interactive extension debugging:
+
+1. Run **Dev Containers: Reopen in Container** from the repository root. Use
+   **Dev Containers: Rebuild and Reopen in Container** when updating an existing
+   development container.
+2. Wait for the post-create command to finish.
+3. Select **Run Tanu Markdown Editor (sample)** in **Run and Debug** and press
+   **F5**.
+
+The build task compiles `tmd-cli` and this extension, stages the debug CLI as
+`tmd-vscode/bin/tmd`, validates the reference document, and then opens
+`tmd-sample/sample.tmd` in the Extension Development Host. No machine-level
+`tanuMarkdown.cliPath` setting or VSIX installation is needed. Run the default
+build task manually after changes when an Extension Development Host is already
+open; starting a new F5 session runs it automatically.
+
 From the repository root:
 
 ```bash

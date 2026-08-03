@@ -65,8 +65,10 @@ The current draft intentionally defines only the `.tmd` ZIP representation;
 alternate-format APIs and tooling are outside the implemented contract.
 
 Dynamic views implement named, read-only SQLite sources with inline and block
-`scalar` output plus block `table` output. Source definitions live in the
-versioned `manifest.extras.tmd_data_sources` registry. JSON, YAML, TOML, Rhai,
-`list`, and `code` are planned extensions documented in
+`scalar` output plus block `table` output. Registry schema version 2 also
+supports sandboxed Rhai scripts that transform declared SQLite inputs into a
+strictly declared table. Source definitions live in the versioned
+`manifest.extras.tmd_data_sources` registry. JSON, YAML, TOML, `list`, and
+`code` are planned extensions documented in
 [dynamic data views](dynamic-data-views.md) and tracked by
 [issue #35](https://github.com/Nagitch/tanu-markdown/issues/35).
