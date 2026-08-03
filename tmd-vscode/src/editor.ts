@@ -21,6 +21,7 @@ import {
 import { renderPreviewFallback } from "./preview.js";
 import { SerialTaskQueue } from "./queue.js";
 import { ClientRevisionTracker } from "./revision.js";
+import { editorTabScript } from "./tabs.js";
 import type {
   DocumentInspection,
   DocumentUpdate,
@@ -151,8 +152,15 @@ export class TanuMarkdownEditorProvider
     document: TanuMarkdownDocument,
     panel: vscode.WebviewPanel,
   ): Promise<void> {
-    panel.webview.options = { enableScripts: true };
-    panel.webview.html = editorHtml(panel.webview);
+    const webviewRoot = vscode.Uri.file(__dirname);
+    panel.webview.options = {
+      enableScripts: true,
+      localResourceRoots: [webviewRoot],
+    };
+    const markdownEditorUri = panel.webview.asWebviewUri(
+      vscode.Uri.joinPath(webviewRoot, "markdown-editor.js"),
+    );
+    panel.webview.html = editorHtml(panel.webview, markdownEditorUri);
     const documentPanels = this.panels.get(document) ?? new Set<vscode.WebviewPanel>();
     documentPanels.add(panel);
     this.panels.set(document, documentPanels);
@@ -779,12 +787,15 @@ async function showError(error: unknown): Promise<void> {
   await vscode.window.showErrorMessage(message);
 }
 
-function editorHtml(_webview: vscode.Webview): string {
+function editorHtml(
+  webview: vscode.Webview,
+  markdownEditorUri: vscode.Uri,
+): string {
   const nonce = randomBytes(18).toString("base64");
   const csp = [
     "default-src 'none'",
     `style-src 'nonce-${nonce}'`,
-    `script-src 'nonce-${nonce}'`,
+    `script-src ${webview.cspSource} 'nonce-${nonce}'`,
     "img-src data:",
   ].join("; ");
   return `<!DOCTYPE html>
@@ -803,9 +814,19 @@ function editorHtml(_webview: vscode.Webview): string {
     .layout { display: grid; grid-template-columns: minmax(22rem, 1fr) minmax(20rem, 1fr); min-height: calc(100vh - 3rem); }
     .pane { padding: 1rem; overflow: auto; }
     .pane + .pane { border-left: 1px solid var(--vscode-panel-border); }
+    .editor-tabs { display: flex; gap: .15rem; overflow-x: auto; margin: -1rem -1rem 1rem; padding: 0 .65rem; border-bottom: 1px solid var(--vscode-panel-border); }
+    .editor-tab { flex: 0 0 auto; color: var(--vscode-foreground); background: transparent; border-bottom: 2px solid transparent; padding: .7rem .65rem .55rem; }
+    .editor-tab:hover { background: var(--vscode-toolbar-hoverBackground); }
+    .editor-tab[aria-selected="true"] { color: var(--vscode-foreground); background: transparent; border-bottom-color: var(--vscode-focusBorder); }
+    .editor-tab:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -2px; }
+    .editor-panel > h2:first-child { margin-top: 0; }
+    .section-description { color: var(--vscode-descriptionForeground); }
+    [hidden] { display: none !important; }
     label { display: block; margin-bottom: .35rem; font-weight: 600; }
     input, textarea { box-sizing: border-box; width: 100%; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, transparent); padding: .5rem; }
     textarea { min-height: 55vh; resize: vertical; font-family: var(--vscode-editor-font-family); font-size: var(--vscode-editor-font-size); line-height: 1.5; }
+    .markdown-editor { min-height: 22rem; border: 1px solid var(--vscode-input-border, transparent); background: var(--vscode-editor-background); }
+    .markdown-editor[aria-disabled="true"] { opacity: .75; }
     .field { margin-bottom: 1rem; }
     .summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5rem; }
     .card { padding: .65rem; border: 1px solid var(--vscode-panel-border); }
@@ -840,41 +861,75 @@ function editorHtml(_webview: vscode.Webview): string {
     <button id="export-html" type="button">Export HTML</button>
   </nav>
   <main class="layout">
-    <section class="pane">
-      <div class="field"><label for="title">Title</label><input id="title" type="text" disabled></div>
-      <div class="field"><label for="markdown">Markdown</label><textarea id="markdown" spellcheck="true" disabled></textarea></div>
-      <div class="summary">
-        <div class="card"><strong>Format</strong><div id="format">—</div></div>
-        <div class="card"><strong>Database version</strong><div id="database-version">—</div></div>
-      </div>
-      <h2>Attachments</h2>
-      <ul id="attachments"></ul>
-      <h2>Database objects</h2>
-      <ul id="database-objects"></ul>
-      <h2>Dynamic data views</h2>
-      <h3>Markdown views</h3>
-      <ul id="data-view-references"></ul>
-      <h3>SQLite sources</h3>
-      <div id="data-source-registry-issue" class="invalid"></div>
-      <pre id="data-source-registry-raw" class="registry-raw" hidden></pre>
-      <div id="data-sources"></div>
-      <div class="data-source-actions">
-        <button id="add-data-source" type="button">Add SQLite source</button>
-        <button id="apply-data-sources" type="button">Apply source changes</button>
-      </div>
-      <p id="data-source-status" class="stale"></p>
-      <h2>Validation</h2>
-      <div id="validation"></div>
+    <section class="pane editor-workspace" aria-label="TMD editing workspace">
+      <nav class="editor-tabs" role="tablist" aria-label="Document sections">
+        <button id="tab-document" class="editor-tab" type="button" role="tab" aria-controls="panel-document" aria-selected="true" data-editor-tab="document">Document</button>
+        <button id="tab-data" class="editor-tab" type="button" role="tab" aria-controls="panel-data" aria-selected="false" tabindex="-1" data-editor-tab="data">Data</button>
+        <button id="tab-sources" class="editor-tab" type="button" role="tab" aria-controls="panel-sources" aria-selected="false" tabindex="-1" data-editor-tab="sources">Sources</button>
+        <button id="tab-attachments" class="editor-tab" type="button" role="tab" aria-controls="panel-attachments" aria-selected="false" tabindex="-1" data-editor-tab="attachments">Attachments</button>
+        <button id="tab-validation" class="editor-tab" type="button" role="tab" aria-controls="panel-validation" aria-selected="false" tabindex="-1" data-editor-tab="validation">Validation</button>
+      </nav>
+
+      <section id="panel-document" class="editor-panel" role="tabpanel" aria-labelledby="tab-document" data-editor-panel="document">
+        <h2>Document</h2>
+        <div class="field"><label for="title">Title</label><input id="title" type="text" disabled></div>
+        <div class="field"><label id="markdown-label">Markdown</label><div id="markdown" class="markdown-editor" aria-labelledby="markdown-label"></div></div>
+        <div class="summary">
+          <div class="card"><strong>Format</strong><div id="format">—</div></div>
+        </div>
+      </section>
+
+      <section id="panel-data" class="editor-panel" role="tabpanel" aria-labelledby="tab-data" data-editor-panel="data" hidden>
+        <h2>SQLite data</h2>
+        <p class="section-description">Inspect the embedded database. Editable table data will be added here in a future iteration.</p>
+        <div class="summary">
+          <div class="card"><strong>Database version</strong><div id="database-version">—</div></div>
+        </div>
+        <h3>Database objects</h3>
+        <ul id="database-objects"></ul>
+      </section>
+
+      <section id="panel-sources" class="editor-panel" role="tabpanel" aria-labelledby="tab-sources" data-editor-panel="sources" hidden>
+        <h2>Data sources</h2>
+        <p class="section-description">Define named sources that Markdown views can render in the document preview.</p>
+        <h3>Markdown view references</h3>
+        <ul id="data-view-references"></ul>
+        <h3>SQLite sources</h3>
+        <div id="data-source-registry-issue" class="invalid"></div>
+        <pre id="data-source-registry-raw" class="registry-raw" hidden></pre>
+        <div id="data-sources"></div>
+        <div class="data-source-actions">
+          <button id="add-data-source" type="button">Add SQLite source</button>
+          <button id="apply-data-sources" type="button">Apply source changes</button>
+        </div>
+        <p id="data-source-status" class="stale"></p>
+      </section>
+
+      <section id="panel-attachments" class="editor-panel" role="tabpanel" aria-labelledby="tab-attachments" data-editor-panel="attachments" hidden>
+        <h2>Attachments</h2>
+        <p class="section-description">Manage files packaged with this TMD document.</p>
+        <ul id="attachments"></ul>
+      </section>
+
+      <section id="panel-validation" class="editor-panel" role="tabpanel" aria-labelledby="tab-validation" data-editor-panel="validation" hidden>
+        <h2>Validation</h2>
+        <p class="section-description">Check document structure, attachment references, database versions, and dynamic views.</p>
+        <div id="validation"></div>
+      </section>
     </section>
     <section class="pane">
       <h2>Safe preview</h2>
       <div id="preview" class="preview"></div>
     </section>
   </main>
+  <script nonce="${nonce}" src="${markdownEditorUri.toString()}"></script>
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
     const title = document.getElementById("title");
-    const markdown = document.getElementById("markdown");
+    const markdown = TmdMarkdownEditor.create(
+      document.getElementById("markdown"),
+      "${nonce}",
+    );
     const attachments = document.getElementById("attachments");
     const databaseObjects = document.getElementById("database-objects");
     const dataViewReferences = document.getElementById("data-view-references");
@@ -890,6 +945,7 @@ function editorHtml(_webview: vscode.Webview): string {
     let dataSourcesEditable = false;
     let dataSourceEditingLocked = true;
     let pendingDataSourceRevision;
+    ${editorTabScript()}
     ${editInputScript()}
     ${authoritativeStateScript()}
     document.getElementById("validate").addEventListener("click", () => vscode.postMessage({ type: "validate" }));

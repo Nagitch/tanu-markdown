@@ -4,7 +4,8 @@ This directory contains the VS Code custom editor for Tanu Markdown.
 
 It opens `.tmd` files through `tmd inspect --json` and provides:
 
-- Markdown and title editing with undo/redo;
+- Markdown and title editing with undo/redo, including CodeMirror Markdown
+  syntax highlighting and VS Code theme colors;
 - save, save as, revert, and hot-exit backup support;
 - attachment and database summaries;
 - document validation with actionable issues;

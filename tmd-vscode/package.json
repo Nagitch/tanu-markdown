@@ -101,18 +101,25 @@
     "LICENCE"
   ],
   "scripts": {
-    "compile": "tsc -p .",
-    "watch": "tsc -w -p .",
-    "check": "tsc -p . --noEmit",
+    "bundle:webview": "esbuild webview/markdown-editor.js --bundle --minify --format=iife --global-name=TmdMarkdownEditor --outfile=dist/markdown-editor.js",
+    "compile": "npm run bundle:webview && tsc -p .",
+    "watch": "npm run bundle:webview && tsc -w -p .",
+    "check": "npm run bundle:webview && tsc -p . --noEmit",
     "test": "npm run compile && node --test dist/test/*.test.js",
     "stage-cli": "node scripts/stage-cli.mjs",
     "pack": "npm run compile && vsce package --no-dependencies --allow-unused-files-pattern",
     "pack:platform": "npm run compile && vsce package --no-dependencies"
   },
   "devDependencies": {
-    "@types/vscode": "1.90.0",
+    "@codemirror/lang-markdown": "^6.5.1",
+    "@codemirror/language": "^6.12.4",
+    "@codemirror/state": "^6.7.1",
+    "@codemirror/view": "^6.43.7",
+    "@lezer/highlight": "^1.2.3",
     "@types/node": "^26.1.2",
+    "@types/vscode": "1.90.0",
     "@vscode/vsce": "^3.9.2",
+    "esbuild": "^0.28.1",
     "typescript": "^7.0.2"
   }
 }
