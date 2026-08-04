@@ -27,6 +27,7 @@ mime = "0.3.17"
 mime_guess = "2.0.5"
 percent-encoding = "2.3.2"
 pulldown-cmark = "0.13.4"
+rhai = { version = "1.25.1", features = ["no_closure", "no_custom_syntax", "no_module", "no_time", "only_i64"] }
 rusqlite = { version = "0.40.1", features = ["bundled"] }
 same-file = "1.0.6"
 serde = { version = "1.0.229", features = ["derive"] }

@@ -4,13 +4,13 @@ import {
   sameDataSources,
 } from "./data-sources.js";
 import type {
+  DataSource,
   DocumentInspection,
-  SqliteDataSource,
   ValidationReport,
 } from "./types.js";
 
 export interface EditorState {
-  dataSources: SqliteDataSource[];
+  dataSources: DataSource[];
   markdown: string;
   title: string;
 }

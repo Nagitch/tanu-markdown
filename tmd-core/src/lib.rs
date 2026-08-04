@@ -16,7 +16,7 @@ pub use validation::{
 };
 pub use views::{
     data_view_references, evaluate_data_source, inline_data_view_references, parse_data_view_block,
-    DataScalar, DataSourceDefinition, DataSourceRegistry, DataTable, DataValue,
+    DataScalar, DataSourceDefinition, DataSourceOutput, DataSourceRegistry, DataTable, DataValue,
     DataViewParseReport, DataViewReference, DataViewRenderKind, InlineDataViewReference,
     DATA_SOURCES_EXTRAS_KEY,
 };

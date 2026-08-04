@@ -1,14 +1,14 @@
 # Dynamic Data Views
 
-Status: SQLite `scalar` and `table` implemented; additional adapters and
-renderers proposed
+Status: SQLite sources and Rhai-to-table transformations implemented;
+additional adapters and renderers proposed
 Tracking issue: [#35](https://github.com/Nagitch/tanu-markdown/issues/35)
 
-This document defines the implemented first slice of a TMD extension for
-rendering data from the embedded SQLite database inside document Markdown. It
-also records the planned extension points for declared JSON, YAML, and TOML
-attachments and sandboxed Rhai evaluation. The implemented contract is
-summarized in the [TMD 1.0 draft specification](spec-tmd-1.0-draft.md).
+This document defines the implemented TMD extension for rendering embedded
+SQLite data and sandboxed Rhai transformations inside document Markdown. It
+also records planned extension points for declared JSON, YAML, and TOML
+attachments. The implemented contract is summarized in the
+[TMD 1.0 draft specification](spec-tmd-1.0-draft.md).
 
 ## Goals
 
@@ -24,9 +24,9 @@ summarized in the [TMD 1.0 draft specification](spec-tmd-1.0-draft.md).
 - Keep evaluation read-only, bounded, deterministic where practical, and safe
   for HTML and editor previews.
 
-The initial implementation targets SQLite `scalar` and `table` output.
-Structured attachments and Rhai are planned extensions of the same contract,
-not requirements for the first implementation slice.
+The current implementation supports SQLite `scalar` and `table` output plus a
+Rhai adapter that transforms declared SQLite table inputs into a table.
+Structured attachment adapters remain proposed.
 
 ## Layered model
 
@@ -36,7 +36,7 @@ Dynamic views have three independent layers:
 Markdown reference
         |
         v
-named data source (sqlite, json, yaml, toml, or rhai)
+named data source (sqlite or rhai; structured attachments proposed)
         |
         v
 common typed value
@@ -132,16 +132,22 @@ or executable code. Definitions are stored under a versioned, namespaced
 {
   "extras": {
     "tmd_data_sources": {
-      "schema_version": 1,
+      "schema_version": 2,
       "sources": {
-        "profile-name": {
-          "type": "json",
-          "attachment": "data/profile.json",
-          "selector": "/user/displayName"
-        },
-        "sample-notes": {
+        "sales": {
           "type": "sqlite",
-          "query": "SELECT id, body FROM sample_notes ORDER BY id"
+          "query": "SELECT category, amount_cents FROM sample_sales ORDER BY id"
+        },
+        "category-summary": {
+          "type": "rhai",
+          "script": "views/category-summary.rhai",
+          "inputs": {
+            "sales": "sales"
+          },
+          "output": {
+            "type": "table",
+            "columns": ["category", "total_cents"]
+          }
         }
       }
     }
@@ -193,20 +199,64 @@ Arbitrary host filesystem paths are not valid sources. YAML custom tags and
 external references are outside the initial contract; TOML date/time values
 require an explicit normalization decision before implementation.
 
-### Rhai (proposed)
+### Rhai table transformation
 
-A Rhai source refers to a declared script attachment:
+A Rhai source refers to a declared script attachment, maps script-visible
+aliases to named SQLite sources, and declares its ordered table columns:
 
 ```json
 {
   "type": "rhai",
-  "script": "views/dashboard.rhai"
+  "script": "views/category-summary.rhai",
+  "inputs": {
+    "sales": "sales"
+  },
+  "output": {
+    "type": "table",
+    "columns": ["category", "total_cents"]
+  }
 }
 ```
 
-The script returns one common typed value. A future Rhai host API may read other
-named sources and compose or transform them, but it must not expose arbitrary
-filesystem, process, or network access.
+Registry schema version 2 adds this source type; schema version 1 SQLite
+registries remain readable. Each `inputs` value must name a SQLite source in the
+same registry. Rhai-to-Rhai dependencies are intentionally not supported in
+this slice, which keeps evaluation acyclic and makes every database query
+explicit.
+
+The host injects one constant map named `inputs`. Each alias contains an array
+of maps whose keys are the corresponding SQLite result-column names. SQLite
+columns must therefore be unique when used as Rhai input. A script returns an
+array of maps:
+
+```rhai
+let totals = #{};
+for row in inputs.sales {
+    if row.category in totals {
+        totals[row.category] += row.amount_cents;
+    } else {
+        totals[row.category] = row.amount_cents;
+    }
+}
+
+let output = [];
+for category in totals.keys() {
+    output.push(#{
+        category: category,
+        total_cents: totals[category]
+    });
+}
+output
+```
+
+Every returned map must contain exactly the declared `output.columns`; missing
+or extra keys are diagnostics. Column order comes from the declaration rather
+than map iteration. Cells may be `()`, boolean, signed integer, finite
+floating-point, or string. Nested maps, arrays, and other runtime values are
+not valid cells. Authors should sort the returned array when stable row order
+matters. See
+[`tmd-sample/views/category-summary.rhai`](../tmd-sample/views/category-summary.rhai)
+for a complete grouping example.
 
 ## Common typed value
 
@@ -221,12 +271,12 @@ The complete design allows every source to return one of these logical values:
 - object with string keys and typed values; or
 - table with ordered column names and rows of scalar cells.
 
-The implemented SQLite adapter currently returns a table containing scalar
-`null`, signed integer, finite floating-point, and UTF-8 string cells. Boolean,
-array, and object representations are part of the common model design needed
-by future structured-data and Rhai adapters. Binary values are not part of the
-initial render contract. SQLite BLOB values produce a diagnostic until a
-representation and output limit are defined.
+The SQLite adapter returns a table containing scalar `null`, signed integer,
+finite floating-point, and UTF-8 string cells. The Rhai adapter accepts those
+values as inputs, adds native booleans, and converts its declared array of maps
+back to a table. General array and object values remain part of the common model
+design for future structured-data adapters. Binary values are not part of the
+render contract. SQLite BLOB values produce a diagnostic.
 
 Typed values are passed directly to renderers. They are not interpolated as raw
 Markdown or HTML.
@@ -246,8 +296,10 @@ the value while preserving surrounding author-written Markdown formatting.
 ### `table`
 
 `table` accepts a table value. SQLite column labels and result order become the
-ordered headers and rows. A future structured-data adapter may convert an array
-of objects to a table when its column-order rules are explicitly defined.
+ordered headers and rows. Rhai headers use the source's explicit
+`output.columns`; returned array order becomes table row order. A future
+structured-data adapter may convert an array of objects to a table when its
+column-order rules are explicitly defined.
 
 Cells are scalar typed values. They are escaped as cells rather than reparsed
 as Markdown.
@@ -283,14 +335,18 @@ to the native CLI/core boundary instead of implementing a second TMD parser.
 
 ## Safety and resource limits
 
-The implementation enforces these boundaries for the SQLite slice, and future
-adapters must preserve equivalent boundaries:
+The implementation enforces these boundaries, and future adapters must
+preserve equivalent boundaries:
 
 - exactly one read-only SQLite statement;
 - declared attachment paths only for structured data and Rhai scripts;
 - no arbitrary filesystem, process, environment, or network access;
 - bounded source-name and query bytes, rows, columns, cells, and string length;
-- bounded Rhai execution time or instruction count when Rhai is implemented;
+- no Rhai modules, closures, custom syntax, time API, host I/O, or emitted
+  print/debug output;
+- bounded Rhai script bytes, inputs, operations, elapsed time, arrays, maps,
+  variables, functions, call depth, expression depth, strings, and table
+  output;
 - safe YAML parsing without custom constructors or external resolution;
 - escaped scalar, table-cell, list-item, and code output; and
 - visible diagnostics for missing sources, selector failures, shape mismatch,
@@ -300,12 +356,20 @@ The current SQLite limits are 64 KiB per query, 1,000 rows, 128 columns, 10,000
 cells, and 1 MiB per text cell. Source evaluation rejects mutation statements,
 multiple statements, BLOBs, non-finite reals, and invalid UTF-8.
 
+The current Rhai limits include 256 KiB per script, 16 declared inputs, 200,000
+operations, 250 ms elapsed time, 2,000 elements per array, 256 entries per map,
+and the same 1,000-row/128-column/10,000-cell table boundary. These are safety
+defaults for the experimental schema and may be tuned before stabilization.
+
 ## Compatibility and rollout
 
-The first slice implements parsing and validation together with SQLite
-`scalar` and `table` evaluation in HTML export, the CLI preview bridge, and VS
-Code preview. JSON, YAML, TOML, additional renderers, and sandboxed Rhai can use
-the same source and typed-value boundaries in later slices.
+The current slice implements parsing and validation together with SQLite and
+Rhai table evaluation in HTML export, the CLI preview bridge, and VS Code
+preview. The VS Code source-management form edits SQLite definitions together
+with Rhai script attachment paths, SQLite input mappings, and ordered table
+output columns. Script bodies remain TMD attachments and use the persisted
+document contract and CLI/core path. JSON, YAML, TOML, and additional renderers
+can use the same source and typed-value boundaries in later slices.
 
 Before the experimental feature becomes stable, the implementation must define:
 

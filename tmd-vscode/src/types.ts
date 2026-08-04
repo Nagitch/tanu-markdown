@@ -14,9 +14,25 @@ export interface SqliteDataSource {
   query: string;
 }
 
+export interface RhaiDataSourceInput {
+  alias: string;
+  source: string;
+}
+
+export interface RhaiDataSource {
+  name: string;
+  type: "rhai";
+  script: string;
+  inputs: RhaiDataSourceInput[];
+  outputColumns: string[];
+}
+
+export type DataSource = SqliteDataSource | RhaiDataSource;
+
 export interface DataSourceRegistryView {
   editable: boolean;
-  sources: SqliteDataSource[];
+  schemaVersion?: 1 | 2;
+  sources: DataSource[];
   issue?: string;
   rawRegistry?: string;
 }

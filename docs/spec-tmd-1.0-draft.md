@@ -89,7 +89,7 @@ Links and images may reference an attachment using:
 The substring after `attach:` is an exact logical-path reference. It MUST be a
 canonical attachment logical path and MUST resolve to one declared attachment.
 
-### 4.1 Dynamic SQLite data views
+### 4.1 Dynamic data views
 
 Markdown may select a named SQLite source inline or in a fenced block:
 
@@ -140,6 +140,37 @@ SQLite BLOB values, non-finite real values, invalid UTF-8 text, and incompatible
 result shapes produce diagnostics. Implementations bound source names, query
 size, row count, column count, cell count, and text size. Renderers MUST escape
 all source-produced values and MUST NOT reparse them as Markdown or HTML.
+
+Registry schema version 2 retains SQLite sources and adds sandboxed Rhai table
+transformations. A Rhai definition has this shape:
+
+```json
+{
+  "type": "rhai",
+  "script": "views/category-summary.rhai",
+  "inputs": {
+    "sales": "sales"
+  },
+  "output": {
+    "type": "table",
+    "columns": ["category", "total_cents"]
+  }
+}
+```
+
+`script` MUST be the canonical logical path of a declared UTF-8 attachment.
+Each `inputs` key is the alias exposed beneath the Rhai `inputs` map, and each
+value MUST resolve to a SQLite source in the same registry. Rhai sources MUST
+NOT directly depend on other Rhai sources in schema version 2. SQLite input
+rows become arrays of maps keyed by unique result-column labels.
+
+The Rhai result MUST be an array of maps. Every map MUST contain exactly the
+declared `output.columns`; the declaration determines column order. Supported
+cell values are null/unit, boolean, signed integer, finite real, and UTF-8
+string. Scripts and results are bounded. The implemented host exposes no
+filesystem, process, environment, network, module, or time API and suppresses
+script print/debug output. Evaluation failures, resource-limit violations, and
+result-shape mismatches produce diagnostics.
 
 These references use ordinary Markdown text and fenced blocks, so unaware
 readers retain passive placeholders rather than executing a query. The source
@@ -219,4 +250,6 @@ must not infer long-term compatibility until this document is marked stable.
 Draft 2 intentionally narrowed the container contract to the single `.tmd` ZIP
 representation and removed alternate-format APIs and tooling. Draft 3 defines
 the implemented, backward-readable SQLite `scalar` and `table` dynamic-view
-extension under `manifest.extras.tmd_data_sources`.
+extension under `manifest.extras.tmd_data_sources`. Draft 4 adds registry
+schema version 2 and sandboxed Rhai-to-table transformations while retaining
+schema version 1 reads.

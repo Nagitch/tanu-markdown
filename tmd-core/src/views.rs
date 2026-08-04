@@ -1,20 +1,35 @@
-use crate::{TmdDoc, TmdError, TmdResult};
+use crate::{normalize_logical_path, TmdDoc, TmdError, TmdResult};
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
+use rhai::{Array, Dynamic, Engine, ImmutableString, Map, Scope, FLOAT, INT};
 use rusqlite::types::ValueRef;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
+use std::time::{Duration, Instant};
 
 /// Manifest `extras` key containing versioned dynamic-data source definitions.
 pub const DATA_SOURCES_EXTRAS_KEY: &str = "tmd_data_sources";
 
-const DATA_SOURCES_SCHEMA_VERSION: u32 = 1;
+const DATA_SOURCES_SCHEMA_VERSION: u32 = 2;
+const LEGACY_DATA_SOURCES_SCHEMA_VERSION: u32 = 1;
 const MAX_SOURCE_NAME_BYTES: usize = 128;
 const MAX_QUERY_BYTES: usize = 64 * 1024;
+const MAX_RHAI_SCRIPT_BYTES: usize = 256 * 1024;
+const MAX_RHAI_INPUTS: usize = 16;
+const MAX_RHAI_OPERATIONS: u64 = 200_000;
+const MAX_RHAI_ARRAY_SIZE: usize = 2_000;
+const MAX_RHAI_MAP_SIZE: usize = 256;
+const MAX_RHAI_VARIABLES: usize = 256;
+const MAX_RHAI_FUNCTIONS: usize = 64;
+const MAX_RHAI_CALL_LEVELS: usize = 32;
+const MAX_RHAI_EXPR_DEPTH: usize = 64;
+const MAX_RHAI_FUNCTION_EXPR_DEPTH: usize = 32;
+const MAX_RHAI_RUN_TIME: Duration = Duration::from_millis(250);
 const MAX_TABLE_ROWS: usize = 1_000;
 const MAX_TABLE_COLUMNS: usize = 128;
 const MAX_TABLE_CELLS: usize = 10_000;
 const MAX_TEXT_BYTES: usize = 1024 * 1024;
+const MAX_COLUMN_NAME_BYTES: usize = 256;
 
 /// Versioned collection of named dynamic-data sources.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -52,17 +67,54 @@ impl DataSourceRegistry {
         let registry: Self = serde_json::from_value(value.clone()).map_err(|error| {
             TmdError::DataView(format!("invalid data-source registry: {error}"))
         })?;
-        if registry.schema_version != DATA_SOURCES_SCHEMA_VERSION {
+        if !matches!(
+            registry.schema_version,
+            LEGACY_DATA_SOURCES_SCHEMA_VERSION | DATA_SOURCES_SCHEMA_VERSION
+        ) {
             return Err(TmdError::DataView(format!(
-                "unsupported data-source schema_version {}; expected {}",
-                registry.schema_version, DATA_SOURCES_SCHEMA_VERSION
+                "unsupported data-source schema_version {}; expected {} or {}",
+                registry.schema_version,
+                LEGACY_DATA_SOURCES_SCHEMA_VERSION,
+                DATA_SOURCES_SCHEMA_VERSION
             )));
         }
         for (name, definition) in &registry.sources {
             validate_source_name(name)?;
             definition.validate(name)?;
+            if registry.schema_version == LEGACY_DATA_SOURCES_SCHEMA_VERSION
+                && matches!(definition, DataSourceDefinition::Rhai { .. })
+            {
+                return Err(TmdError::DataView(format!(
+                    "Rhai source `{name}` requires data-source schema_version {DATA_SOURCES_SCHEMA_VERSION}"
+                )));
+            }
         }
+        registry.validate_input_references()?;
         Ok(registry)
+    }
+
+    fn validate_input_references(&self) -> TmdResult<()> {
+        for (name, definition) in &self.sources {
+            let DataSourceDefinition::Rhai { inputs, .. } = definition else {
+                continue;
+            };
+            for (alias, source_name) in inputs {
+                match self.sources.get(source_name) {
+                    Some(DataSourceDefinition::Sqlite { .. }) => {}
+                    Some(DataSourceDefinition::Rhai { .. }) => {
+                        return Err(TmdError::DataView(format!(
+                            "Rhai source `{name}` input `{alias}` must reference a SQLite source; `{source_name}` is Rhai"
+                        )));
+                    }
+                    None => {
+                        return Err(TmdError::DataView(format!(
+                            "Rhai source `{name}` input `{alias}` references undefined source `{source_name}`"
+                        )));
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -74,6 +126,26 @@ pub enum DataSourceDefinition {
     Sqlite {
         /// SQL statement evaluated when the source is rendered.
         query: String,
+    },
+    /// A sandboxed Rhai transformation over declared SQLite table inputs.
+    Rhai {
+        /// Logical path of the Rhai script attachment.
+        script: String,
+        /// Script-visible aliases mapped to named SQLite sources.
+        inputs: BTreeMap<String, String>,
+        /// Required output shape for the script result.
+        output: DataSourceOutput,
+    },
+}
+
+/// Declared output shape for a scripted data source.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
+pub enum DataSourceOutput {
+    /// An ordered table built from an array of Rhai object maps.
+    Table {
+        /// Ordered output columns. Every result map must contain exactly these keys.
+        columns: Vec<String>,
     },
 }
 
@@ -90,6 +162,74 @@ impl DataSourceDefinition {
                     return Err(TmdError::DataView(format!(
                         "SQLite source `{name}` query exceeds {MAX_QUERY_BYTES} bytes"
                     )));
+                }
+            }
+            Self::Rhai {
+                script,
+                inputs,
+                output,
+            } => {
+                let normalized = normalize_logical_path(script).map_err(|error| {
+                    TmdError::DataView(format!(
+                        "Rhai source `{name}` has invalid script attachment path `{script}`: {error}"
+                    ))
+                })?;
+                if normalized != *script {
+                    return Err(TmdError::DataView(format!(
+                        "Rhai source `{name}` script path must be canonical; use `{normalized}`"
+                    )));
+                }
+                if inputs.is_empty() {
+                    return Err(TmdError::DataView(format!(
+                        "Rhai source `{name}` requires at least one SQLite input"
+                    )));
+                }
+                if inputs.len() > MAX_RHAI_INPUTS {
+                    return Err(TmdError::DataView(format!(
+                        "Rhai source `{name}` exceeds the {MAX_RHAI_INPUTS}-input limit"
+                    )));
+                }
+                for (alias, source_name) in inputs {
+                    validate_source_name(alias).map_err(|_| {
+                        TmdError::DataView(format!(
+                            "Rhai source `{name}` has invalid input alias `{alias}`"
+                        ))
+                    })?;
+                    validate_source_name(source_name)?;
+                }
+                output.validate(name)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl DataSourceOutput {
+    fn validate(&self, name: &str) -> TmdResult<()> {
+        match self {
+            Self::Table { columns } => {
+                if columns.is_empty() {
+                    return Err(TmdError::DataView(format!(
+                        "Rhai source `{name}` table output requires at least one column"
+                    )));
+                }
+                if columns.len() > MAX_TABLE_COLUMNS {
+                    return Err(TmdError::DataView(format!(
+                        "Rhai source `{name}` table output exceeds {MAX_TABLE_COLUMNS} columns"
+                    )));
+                }
+                let mut seen = BTreeSet::new();
+                for column in columns {
+                    if column.is_empty() || column.len() > MAX_COLUMN_NAME_BYTES {
+                        return Err(TmdError::DataView(format!(
+                            "Rhai source `{name}` has an empty or overlong output column"
+                        )));
+                    }
+                    if !seen.insert(column) {
+                        return Err(TmdError::DataView(format!(
+                            "Rhai source `{name}` repeats output column `{column}`"
+                        )));
+                    }
                 }
             }
         }
@@ -366,7 +506,218 @@ pub fn evaluate_data_source(doc: &TmdDoc, name: &str) -> TmdResult<DataValue> {
         .ok_or_else(|| TmdError::DataView(format!("data source `{name}` is not defined")))?;
     match definition {
         DataSourceDefinition::Sqlite { query } => evaluate_sqlite(doc, name, query),
+        DataSourceDefinition::Rhai {
+            script,
+            inputs,
+            output,
+        } => evaluate_rhai(doc, &registry, name, script, inputs, output),
     }
+}
+
+fn evaluate_rhai(
+    doc: &TmdDoc,
+    registry: &DataSourceRegistry,
+    name: &str,
+    script_path: &str,
+    inputs: &BTreeMap<String, String>,
+    output: &DataSourceOutput,
+) -> TmdResult<DataValue> {
+    let meta = doc.attachment_meta_by_path(script_path).ok_or_else(|| {
+        TmdError::DataView(format!(
+            "Rhai source `{name}` script attachment `{script_path}` does not exist"
+        ))
+    })?;
+    if meta.length > MAX_RHAI_SCRIPT_BYTES as u64 {
+        return Err(TmdError::DataView(format!(
+            "Rhai source `{name}` script exceeds {MAX_RHAI_SCRIPT_BYTES} bytes"
+        )));
+    }
+    let script_bytes = doc.attachments.data(meta.id).ok_or_else(|| {
+        TmdError::DataView(format!(
+            "Rhai source `{name}` script attachment `{script_path}` has no data"
+        ))
+    })?;
+    let script = std::str::from_utf8(script_bytes).map_err(|error| {
+        TmdError::DataView(format!(
+            "Rhai source `{name}` script attachment `{script_path}` is not UTF-8: {error}"
+        ))
+    })?;
+
+    let mut rhai_inputs = Map::new();
+    for (alias, source_name) in inputs {
+        let DataSourceDefinition::Sqlite { query } = registry
+            .sources
+            .get(source_name)
+            .expect("registry input references were validated")
+        else {
+            unreachable!("Rhai MVP accepts only SQLite inputs");
+        };
+        let value = evaluate_sqlite(doc, source_name, query)?;
+        let DataValue::Table(table) = value else {
+            unreachable!("SQLite sources always produce tables");
+        };
+        rhai_inputs.insert(
+            alias.as_str().into(),
+            Dynamic::from_array(data_table_to_rhai_rows(name, alias, &table)?),
+        );
+    }
+
+    let mut engine = sandboxed_rhai_engine();
+    let started = Instant::now();
+    engine.on_progress(move |_| {
+        (started.elapsed() > MAX_RHAI_RUN_TIME).then(|| Dynamic::from("Rhai execution timed out"))
+    });
+    let mut scope = Scope::new();
+    scope.push_constant("inputs", Dynamic::from_map(rhai_inputs));
+    let result = engine
+        .eval_with_scope::<Dynamic>(&mut scope, script)
+        .map_err(|error| {
+            TmdError::DataView(format!(
+                "Rhai source `{name}` script `{script_path}` failed: {error}"
+            ))
+        })?;
+
+    match output {
+        DataSourceOutput::Table { columns } => {
+            rhai_result_to_table(name, result.flatten(), columns)
+        }
+    }
+}
+
+fn sandboxed_rhai_engine() -> Engine {
+    let mut engine = Engine::new();
+    engine
+        .set_fail_on_invalid_map_property(true)
+        .set_max_operations(MAX_RHAI_OPERATIONS)
+        .set_max_array_size(MAX_RHAI_ARRAY_SIZE)
+        .set_max_map_size(MAX_RHAI_MAP_SIZE)
+        .set_max_string_size(MAX_TEXT_BYTES)
+        .set_max_variables(MAX_RHAI_VARIABLES)
+        .set_max_functions(MAX_RHAI_FUNCTIONS)
+        .set_max_call_levels(MAX_RHAI_CALL_LEVELS)
+        .set_max_expr_depths(MAX_RHAI_EXPR_DEPTH, MAX_RHAI_FUNCTION_EXPR_DEPTH);
+    engine.on_print(|_| {});
+    engine.on_debug(|_, _, _| {});
+    engine
+}
+
+fn data_table_to_rhai_rows(owner_name: &str, alias: &str, table: &DataTable) -> TmdResult<Array> {
+    let mut unique_columns = BTreeSet::new();
+    for column in &table.columns {
+        if !unique_columns.insert(column) {
+            return Err(TmdError::DataView(format!(
+                "Rhai source `{owner_name}` input `{alias}` has duplicate column `{column}`; alias SQLite columns uniquely"
+            )));
+        }
+    }
+    let mut result = Array::with_capacity(table.rows.len());
+    for row in &table.rows {
+        let mut map = Map::new();
+        for (column, value) in table.columns.iter().zip(row) {
+            map.insert(column.as_str().into(), data_scalar_to_rhai(value));
+        }
+        result.push(Dynamic::from_map(map));
+    }
+    Ok(result)
+}
+
+fn data_scalar_to_rhai(value: &DataScalar) -> Dynamic {
+    match value {
+        DataScalar::Null => Dynamic::UNIT,
+        DataScalar::Boolean(value) => Dynamic::from_bool(*value),
+        DataScalar::Integer(value) => Dynamic::from_int(*value as INT),
+        DataScalar::Real(value) => Dynamic::from_float(*value as FLOAT),
+        DataScalar::String(value) => Dynamic::from(value.clone()),
+    }
+}
+
+fn rhai_result_to_table(name: &str, result: Dynamic, columns: &[String]) -> TmdResult<DataValue> {
+    let result_type = result.type_name().to_owned();
+    let rows = result.try_cast::<Array>().ok_or_else(|| {
+        TmdError::DataView(format!(
+            "Rhai source `{name}` must return an array of object maps, found `{result_type}`"
+        ))
+    })?;
+    if rows.len() > MAX_TABLE_ROWS || rows.len().saturating_mul(columns.len()) > MAX_TABLE_CELLS {
+        return Err(TmdError::DataView(format!(
+            "Rhai source `{name}` exceeded the table output limit"
+        )));
+    }
+
+    let declared = columns.iter().map(String::as_str).collect::<BTreeSet<_>>();
+    let mut table_rows = Vec::with_capacity(rows.len());
+    for (row_index, row) in rows.into_iter().enumerate() {
+        let row_type = row.type_name().to_owned();
+        let map = row.try_cast::<Map>().ok_or_else(|| {
+            TmdError::DataView(format!(
+                "Rhai source `{name}` row {} must be an object map, found `{row_type}`",
+                row_index + 1
+            ))
+        })?;
+        for key in map.keys() {
+            if !declared.contains(key.as_str()) {
+                return Err(TmdError::DataView(format!(
+                    "Rhai source `{name}` row {} contains undeclared column `{key}`",
+                    row_index + 1
+                )));
+            }
+        }
+        let mut values = Vec::with_capacity(columns.len());
+        for column in columns {
+            let value = map.get(column.as_str()).ok_or_else(|| {
+                TmdError::DataView(format!(
+                    "Rhai source `{name}` row {} is missing column `{column}`; use `()` for NULL",
+                    row_index + 1
+                ))
+            })?;
+            values.push(rhai_scalar(name, row_index, column, value)?);
+        }
+        table_rows.push(values);
+    }
+    Ok(DataValue::Table(DataTable {
+        columns: columns.to_vec(),
+        rows: table_rows,
+    }))
+}
+
+fn rhai_scalar(
+    name: &str,
+    row_index: usize,
+    column: &str,
+    value: &Dynamic,
+) -> TmdResult<DataScalar> {
+    let scalar = if value.is_unit() {
+        DataScalar::Null
+    } else if value.is::<bool>() {
+        DataScalar::Boolean(value.clone_cast::<bool>())
+    } else if value.is::<INT>() {
+        DataScalar::Integer(value.clone_cast::<INT>())
+    } else if value.is::<FLOAT>() {
+        let value = value.clone_cast::<FLOAT>();
+        if !value.is_finite() {
+            return Err(TmdError::DataView(format!(
+                "Rhai source `{name}` row {} column `{column}` returned a non-finite real",
+                row_index + 1
+            )));
+        }
+        DataScalar::Real(value)
+    } else if value.is::<ImmutableString>() {
+        let value = value.clone_cast::<ImmutableString>().to_string();
+        if value.len() > MAX_TEXT_BYTES {
+            return Err(TmdError::DataView(format!(
+                "Rhai source `{name}` row {} column `{column}` returned text exceeding {MAX_TEXT_BYTES} bytes",
+                row_index + 1
+            )));
+        }
+        DataScalar::String(value)
+    } else {
+        return Err(TmdError::DataView(format!(
+            "Rhai source `{name}` row {} column `{column}` returned unsupported type `{}`",
+            row_index + 1,
+            value.type_name()
+        )));
+    };
+    Ok(scalar)
 }
 
 fn evaluate_sqlite(doc: &TmdDoc, name: &str, query: &str) -> TmdResult<DataValue> {
@@ -498,6 +849,50 @@ mod tests {
         doc
     }
 
+    fn document_with_rhai(script: &str, columns: &[&str]) -> TmdDoc {
+        let mut doc = TmdDoc::new(String::new()).expect("document");
+        doc.manifest.extras = json!({
+            DATA_SOURCES_EXTRAS_KEY: {
+                "schema_version": 2,
+                "sources": {
+                    "sales": {
+                        "type": "sqlite",
+                        "query": "SELECT category, amount_cents FROM sample_sales ORDER BY id"
+                    },
+                    "category-summary": {
+                        "type": "rhai",
+                        "script": "views/category-summary.rhai",
+                        "inputs": { "sales": "sales" },
+                        "output": {
+                            "type": "table",
+                            "columns": columns
+                        }
+                    }
+                }
+            }
+        });
+        doc.db_with_conn_mut(|connection| {
+            connection.execute_batch(
+                "CREATE TABLE sample_sales(\
+                    id INTEGER PRIMARY KEY,\
+                    category TEXT NOT NULL,\
+                    amount_cents INTEGER NOT NULL\
+                 );\
+                 INSERT INTO sample_sales(category, amount_cents) VALUES\
+                    ('books', 1200), ('games', 3500), ('books', 800);",
+            )
+        })
+        .expect("database access")
+        .expect("database fixture");
+        doc.add_attachment(
+            "views/category-summary.rhai",
+            "text/x-rhai".parse().expect("Rhai MIME type"),
+            script.as_bytes().to_vec(),
+        )
+        .expect("Rhai script attachment");
+        doc
+    }
+
     #[test]
     fn evaluates_scalar_and_table_shapes() {
         let doc = document_with_sources("");
@@ -513,6 +908,87 @@ mod tests {
             .clone();
         assert_eq!(table.columns, vec!["id", "body"]);
         assert_eq!(table.rows.len(), 2);
+    }
+
+    #[test]
+    fn evaluates_rhai_table_aggregation() {
+        let doc = document_with_rhai(
+            r#"
+                let totals = #{};
+                for row in inputs.sales {
+                    if row.category in totals {
+                        totals[row.category] += row.amount_cents;
+                    } else {
+                        totals[row.category] = row.amount_cents;
+                    }
+                }
+
+                let categories = totals.keys();
+                categories.sort();
+                let output = [];
+                for category in categories {
+                    output.push(#{
+                        category: category,
+                        total_cents: totals[category]
+                    });
+                }
+                output
+            "#,
+            &["category", "total_cents"],
+        );
+
+        assert_eq!(
+            evaluate_data_source(&doc, "category-summary").expect("Rhai table source"),
+            DataValue::Table(DataTable {
+                columns: vec!["category".to_owned(), "total_cents".to_owned()],
+                rows: vec![
+                    vec![
+                        DataScalar::String("books".to_owned()),
+                        DataScalar::Integer(2_000),
+                    ],
+                    vec![
+                        DataScalar::String("games".to_owned()),
+                        DataScalar::Integer(3_500),
+                    ],
+                ],
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_rhai_results_that_do_not_match_declared_columns() {
+        let doc = document_with_rhai(
+            "[#{ category: \"books\", total_cents: 2000, extra: true }]",
+            &["category", "total_cents"],
+        );
+        let error =
+            evaluate_data_source(&doc, "category-summary").expect_err("undeclared output column");
+        assert!(error.to_string().contains("undeclared column `extra`"));
+
+        let doc = document_with_rhai("[#{ category: \"books\" }]", &["category", "total_cents"]);
+        let error =
+            evaluate_data_source(&doc, "category-summary").expect_err("missing output column");
+        assert!(error.to_string().contains("missing column `total_cents`"));
+
+        let doc = document_with_rhai("#{ category: \"books\" }", &["category"]);
+        let error = evaluate_data_source(&doc, "category-summary").expect_err("non-array output");
+        assert!(error.to_string().contains("must return an array"));
+    }
+
+    #[test]
+    fn rejects_rhai_in_legacy_registry_and_unbounded_execution() {
+        let mut legacy = document_with_rhai("[]", &["category"]);
+        legacy.manifest.extras[DATA_SOURCES_EXTRAS_KEY]["schema_version"] = json!(1);
+        let error = evaluate_data_source(&legacy, "category-summary")
+            .expect_err("Rhai requires schema version 2");
+        assert!(error
+            .to_string()
+            .contains("requires data-source schema_version 2"));
+
+        let doc = document_with_rhai("loop {}", &["category"]);
+        let error = evaluate_data_source(&doc, "category-summary")
+            .expect_err("operation limit interrupts runaway script");
+        assert!(error.to_string().contains("failed"));
     }
 
     #[test]

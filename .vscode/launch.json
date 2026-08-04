@@ -1,0 +1,16 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run Tanu Markdown Editor (sample)",
+      "type": "extensionHost",
+      "request": "launch",
+      "args": [
+        "--extensionDevelopmentPath=${workspaceFolder}/tmd-vscode",
+        "${workspaceFolder}/tmd-sample/sample.tmd"
+      ],
+      "outFiles": ["${workspaceFolder}/tmd-vscode/dist/**/*.js"],
+      "preLaunchTask": "build: Tanu Markdown editor"
+    }
+  ]
+}

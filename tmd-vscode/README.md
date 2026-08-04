@@ -4,14 +4,15 @@ This directory contains the VS Code custom editor for Tanu Markdown.
 
 It opens `.tmd` files through `tmd inspect --json` and provides:
 
-- Markdown and title editing with undo/redo;
+- Markdown and title editing with undo/redo, including CodeMirror Markdown
+  syntax highlighting and VS Code theme colors;
 - save, save as, revert, and hot-exit backup support;
 - attachment and database summaries;
 - document validation with actionable issues;
 - a live, non-executable safe Markdown preview with attached images and dynamic
   SQLite `scalar`/`table` views;
-- dynamic-view reference inspection plus SQLite source name/query
-  add, edit, remove, undo/redo, and save workflows;
+- dynamic-view reference inspection plus SQLite query and Rhai table-source
+  definition add, edit, remove, undo/redo, preview, and save workflows;
 - document creation, attachment add/remove, and HTML export.
 
 Container parsing remains exclusively in Rust. Platform-specific VSIX packages
@@ -19,9 +20,11 @@ contain the matching native CLI, and the extension passes argument arrays
 directly to that executable without invoking a shell.
 The preview bridge sends current unsaved Markdown together with the last
 retained `.tmd` bytes, so the CLI can resolve attachments and query the embedded
-database without the extension implementing either format. Unsaved SQLite
-source edits are passed as a preview-only `extras` override and are not written
-until the document is saved. An older configured
+database without the extension implementing either format. Unsaved SQLite and
+Rhai source-definition edits are passed as a preview-only `extras` override and
+are not written until the document is saved. Rhai script contents remain
+ordinary TMD attachments; the Sources tab edits their logical paths, SQLite
+input mappings, and ordered table output columns. An older configured
 external CLI falls back to the local safe Markdown renderer.
 The preview displays a diagnostic banner when that fallback is active,
 distinguishing a missing, outdated, incompatible, or timed-out CLI and directing
@@ -62,6 +65,22 @@ offers the same selector and a link to these setup instructions.
 `tanuMarkdown.timeoutMs` controls the per-operation timeout.
 
 ## Development
+
+The repository Dev Container is ready for interactive extension debugging:
+
+1. Run **Dev Containers: Reopen in Container** from the repository root. Use
+   **Dev Containers: Rebuild and Reopen in Container** when updating an existing
+   development container.
+2. Wait for the post-create command to finish.
+3. Select **Run Tanu Markdown Editor (sample)** in **Run and Debug** and press
+   **F5**.
+
+The build task compiles `tmd-cli` and this extension, stages the debug CLI as
+`tmd-vscode/bin/tmd`, validates the reference document, and then opens
+`tmd-sample/sample.tmd` in the Extension Development Host. No machine-level
+`tanuMarkdown.cliPath` setting or VSIX installation is needed. Run the default
+build task manually after changes when an Extension Development Host is already
+open; starting a new F5 session runs it automatically.
 
 From the repository root:
 
