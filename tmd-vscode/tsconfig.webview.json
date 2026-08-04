@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "target": "es2022",
+    "lib": [
+      "es2022",
+      "dom",
+      "dom.iterable"
+    ],
+    "strict": true,
+    "noEmit": true,
+    "types": []
+  },
+  "include": [
+    "webview/**/*.ts",
+    "src/input.ts",
+    "src/tabs.ts",
+    "src/types.ts",
+    "src/webview-protocol.ts"
+  ]
+}

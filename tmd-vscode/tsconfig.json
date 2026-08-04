@@ -14,5 +14,8 @@
       "node",
       "vscode"
     ]
-  }
+  },
+  "include": [
+    "src/**/*.ts"
+  ]
 }

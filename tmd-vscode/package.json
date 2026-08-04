@@ -97,14 +97,17 @@
   "files": [
     "bin/**",
     "dist/*.js",
+    "dist/*.css",
     "README.md",
     "LICENCE"
   ],
   "scripts": {
-    "bundle:webview": "esbuild webview/markdown-editor.js --bundle --minify --format=iife --global-name=TmdMarkdownEditor --outfile=dist/markdown-editor.js",
-    "compile": "npm run bundle:webview && tsc -p .",
-    "watch": "npm run bundle:webview && tsc -w -p .",
-    "check": "npm run bundle:webview && tsc -p . --noEmit",
+    "clean": "node scripts/clean.mjs",
+    "bundle:webview": "esbuild webview/editor-app.ts --bundle --minify --format=iife --outfile=dist/editor-app.js",
+    "check:webview": "tsc -p tsconfig.webview.json --noEmit",
+    "compile": "npm run clean && npm run bundle:webview && tsc -p .",
+    "watch": "npm run clean && npm run bundle:webview && tsc -w -p .",
+    "check": "npm run bundle:webview && tsc -p . --noEmit && npm run check:webview",
     "test": "npm run compile && node --test dist/test/*.test.js",
     "stage-cli": "node scripts/stage-cli.mjs",
     "pack": "npm run compile && vsce package --no-dependencies --allow-unused-files-pattern",

@@ -1,6 +1,6 @@
 # Project Status
 
-Last reviewed: 2026-08-03
+Last reviewed: 2026-08-04
 
 Tanu Markdown is an early-stage, pre-1.0 project. The core Rust implementation
 supports document creation, `.tmd` round trips, attachment metadata
@@ -16,7 +16,7 @@ a functional custom editor backed exclusively by that bridge.
 | `tmd-core` | Implements the document model, structured validation, safe attachment handling, atomic writes, SQLite import/export/migration, dynamic SQLite source evaluation, sandboxed Rhai-to-table transformations, ZIP I/O, and optional C ABI functions |
 | `tmd-cli` | Installs `tmd`; implements document create/inspect/update/publish/validate, attachment lifecycle, shared safe preview/HTML rendering, dynamic `scalar`/`table` views, and embedded database lifecycle/query commands |
 | `tmd-core-ffi` | Builds a `cdylib` wrapper and retains the exported `tmd-core` FFI symbols |
-| `tmd-vscode` | Implements a CSP-restricted custom editor with edit/save/revert/backup, dynamic view/source inspection and SQLite source editing, CLI-rendered live preview including unsaved source changes and attachments, validation, and HTML export workflows through `tmd` |
+| `tmd-vscode` | Implements a CSP-restricted bundled Web UI, a VS Code host bridge, and a shared local document session with edit/save/revert/backup, dynamic view/source inspection and SQLite source editing, CLI-rendered live preview including unsaved source changes and attachments, validation, and HTML export workflows through `tmd` |
 | `tmd-sample` | Contains a `.tmd` sample with text, image, and Rhai attachments plus inline `scalar`, direct SQLite `table`, and Rhai-transformed `table` views |
 
 ## Verified behavior

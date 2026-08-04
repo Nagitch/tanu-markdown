@@ -7,21 +7,21 @@ so that the Rust core remains the single source of truth.
 
 ```text
 +------------------+     +------------------+     +------------------+
-| tmd-vscode       | --> | tmd CLI/JSON     | --> | tmd-core         |
-| custom editor    |     | terminal UX      |     | model and I/O    |
+| bundled Web UI   | --> | VS Code bridge   | --> | local TMD session|
+| editing surface  |     | lifecycle + I/O  |     | draft + revisions|
 +------------------+     +------------------+     +------------------+
-                                                      ^
                                                       |
-                                              +------------------+
-                                              | tmd-core-ffi     |
-                                              | C ABI cdylib     |
-                                              +------------------+
-                               |
-                               v
-                            .tmd files
-                               |
-                               v
-                         tmd-sample fixtures
+                                                      v
+                         +------------------+     +------------------+
+                         | tmd-core         | <-- | tmd CLI/JSON     |
+                         | model and I/O    |     | operation API    |
+                         +------------------+     +------------------+
+                                  ^
+                                  |
+                         +------------------+
+                         | tmd-core-ffi     |
+                         | C ABI cdylib     |
+                         +------------------+
 ```
 
 `tmd-cli` and `tmd-core-ffi` depend on `tmd-core`. The VS Code extension calls
@@ -72,15 +72,30 @@ ABI version negotiation, or cross-language packaging policy.
 
 ## `tmd-vscode`
 
-The extension owns custom-document state, undo/redo, save/revert/backup,
-commands, safe live preview, and VS Code user experience. Platform-specific
-VSIX packages carry the matching native CLI. A machine-level setting may select
-an external CLI, while generic development packages fall back to `PATH`. The
-extension invokes the selected CLI with argument arrays and no shell. The webview uses a restrictive content
-security policy, nonce-bound scripts/styles, DOM text APIs, and escaped preview
-HTML. Edit state is sent immediately so closing a panel cannot strand input;
-only preview rendering is debounced. Commands remain bound to their originating
-document across asynchronous work, and all document I/O runs through a
+The editor is divided into three responsibilities:
+
+- a bundled, framework-independent TypeScript Web UI owns controls, layout,
+  local presentation state, and input/response ordering;
+- the VS Code bridge owns custom-editor lifecycle, commands, undo/redo events,
+  dialogs, and typed messages between VS Code and the editing surface; and
+- `LocalTmdSession` owns one opened document's draft, revisions, retained
+  container bytes, operation serialization, and calls to the Rust CLI.
+
+The Web UI builds as separate JavaScript and CSS assets and contains no TMD
+container parser. A browser host can provide the same small host adapter instead
+of the VS Code API. The current local session invokes the existing one-shot CLI
+JSON operations, so terminal commands and editor use coexist. A future
+persistent stdio or remote collaborative session can sit behind the host bridge
+without moving document authority into the editing surface.
+
+Platform-specific VSIX packages carry the matching native CLI. A machine-level
+setting may select an external CLI, while generic development packages fall
+back to `PATH`. The extension invokes the selected CLI with argument arrays and
+no shell. The webview uses a restrictive content security policy, bundled
+styles and scripts, DOM text APIs, and escaped preview HTML. Edit state is sent
+immediately so closing a panel cannot strand input; only preview rendering is
+debounced. Commands remain bound to their originating document across
+asynchronous work, and all document I/O runs through the session's
 per-document serial queue. The current editor supports local files only.
 
 ## Repository-level contracts

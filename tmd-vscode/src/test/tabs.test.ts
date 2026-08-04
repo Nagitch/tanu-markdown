@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
-import { runInNewContext } from "node:vm";
 import { test } from "node:test";
-import { DEFAULT_EDITOR_TAB, editorTabScript } from "../tabs.js";
+import { DEFAULT_EDITOR_TAB, setupEditorTabs } from "../tabs.js";
 
-type Listener = (event: { key?: string; preventDefault(): void }) => void;
+type Listener = (event: { key: string; preventDefault(): void }) => void;
 
 class FakeElement {
   readonly attributes = new Map<string, string>();
@@ -26,7 +25,7 @@ class FakeElement {
     this.focused = true;
   }
 
-  dispatch(type: string, key?: string): boolean {
+  dispatch(type: string, key = ""): boolean {
     let prevented = false;
     const listener = this.listeners.get(type);
     assert.ok(listener, `missing ${type} listener`);
@@ -51,28 +50,30 @@ function tabFixture(initialState: Record<string, unknown>): {
   const states: Array<Record<string, unknown>> = [];
   let state = initialState;
 
-  runInNewContext(editorTabScript(), {
-    document: {
-      querySelectorAll(selector: string) {
-        return selector === "[data-editor-tab]" ? tabs : panels;
-      },
+  const document = {
+    querySelectorAll(selector: string) {
+      return selector === "[data-editor-tab]" ? tabs : panels;
     },
-    vscode: {
-      getState() {
-        return state;
-      },
-      setState(nextState: Record<string, unknown>) {
-        state = { ...nextState };
-        states.push(state);
-      },
+  } as unknown as Parameters<typeof setupEditorTabs>[0];
+  const stateStore = {
+    getState() {
+      return state;
     },
-  });
+    setState(nextState: Record<string, unknown>) {
+      state = { ...nextState };
+      states.push(state);
+    },
+  };
 
+  setupEditorTabs(document, stateStore);
   return { panels, states, tabs };
 }
 
 test("editor tabs restore presentation state without changing document state", () => {
-  const { panels, states, tabs } = tabFixture({ activeEditorTab: "sources", keep: 1 });
+  const { panels, states, tabs } = tabFixture({
+    activeEditorTab: "sources",
+    keep: 1,
+  });
 
   assert.equal(tabs[2]?.attributes.get("aria-selected"), "true");
   assert.equal(tabs[2]?.tabIndex, 0);
