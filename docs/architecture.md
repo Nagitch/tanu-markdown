@@ -7,7 +7,7 @@ so that the Rust core remains the single source of truth.
 
 ```text
 +------------------+     +------------------+     +------------------+
-| bundled Web UI   | --> | VS Code bridge   | --> | local TMD session|
+| SvelteKit Web UI | --> | VS Code bridge   | --> | local TMD session|
 | editing surface  |     | lifecycle + I/O  |     | draft + revisions|
 +------------------+     +------------------+     +------------------+
                                                       |
@@ -74,19 +74,23 @@ ABI version negotiation, or cross-language packaging policy.
 
 The editor is divided into three responsibilities:
 
-- a bundled, framework-independent TypeScript Web UI owns controls, layout,
-  local presentation state, and input/response ordering;
+- a statically generated SvelteKit Web UI owns controls, layout, local
+  presentation state, and input/response ordering;
 - the VS Code bridge owns custom-editor lifecycle, commands, undo/redo events,
   dialogs, and typed messages between VS Code and the editing surface; and
 - `LocalTmdSession` owns one opened document's draft, revisions, retained
   container bytes, operation serialization, and calls to the Rust CLI.
 
-The Web UI builds as separate JavaScript and CSS assets and contains no TMD
-container parser. A browser host can provide the same small host adapter instead
-of the VS Code API. The current local session invokes the existing one-shot CLI
-JSON operations, so terminal commands and editor use coexist. A future
-persistent stdio or remote collaborative session can sit behind the host bridge
-without moving document authority into the editing surface.
+The Web UI uses `adapter-static`, builds as separate JavaScript and CSS assets,
+and contains no TMD container parser. The VS Code bridge rewrites the generated
+asset URLs to webview resource URIs and injects a per-panel CSP nonce. A browser
+host can provide the same small host adapter instead of the VS Code API. The
+current local session invokes the existing one-shot CLI JSON operations, so
+terminal commands and editor use coexist. A future persistent stdio or remote
+collaborative session can sit behind the host bridge without moving document
+authority into the editing surface. RevoGrid and the table-specific interaction
+model are deliberately deferred to
+[issue #43](https://github.com/Nagitch/tanu-markdown/issues/43).
 
 Platform-specific VSIX packages carry the matching native CLI. A machine-level
 setting may select an external CLI, while generic development packages fall

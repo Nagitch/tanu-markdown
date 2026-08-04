@@ -2,7 +2,7 @@
 
 This directory contains the VS Code custom editor for Tanu Markdown.
 
-The visible editor is a standalone TypeScript Web UI bundle included in the
+The visible editor is a statically generated SvelteKit Web UI included in the
 extension. VS Code-specific lifecycle and commands stay in a thin host bridge,
 while `LocalTmdSession` owns the shared draft, revisions, retained bytes, and
 serialized Rust CLI operations for the opened document. The Web UI depends on a
@@ -107,6 +107,12 @@ binaries so they do not inherit the build runner's glibc requirement.
 The extension targets VS Code `^1.90.0` and uses strict TypeScript settings.
 Generated `bin/`, `dist/`, `node_modules/`, and `.vsix` files are not committed.
 The package command verifies the exact minimal VSIX contents.
+
+SvelteKit uses `adapter-static` with a single JavaScript and CSS bundle. The VS
+Code bridge loads the generated HTML, rewrites its asset URLs to webview-safe
+resource URIs, and applies a fresh CSP nonce for each panel. Table-grid adoption
+and editing-UX refinement, including RevoGrid integration, are tracked
+separately in [issue #43](https://github.com/Nagitch/tanu-markdown/issues/43).
 
 The webview permits no default network or resource source. Its bundled styles
 and script are restricted to the extension resource origin, CodeMirror's

@@ -96,18 +96,21 @@ export class TanuMarkdownEditorProvider
     document: TanuMarkdownDocument,
     panel: vscode.WebviewPanel,
   ): Promise<void> {
-    const webviewRoot = vscode.Uri.file(__dirname);
+    const webviewRoot = vscode.Uri.joinPath(vscode.Uri.file(__dirname), "webview");
     panel.webview.options = {
       enableScripts: true,
       localResourceRoots: [webviewRoot],
     };
-    const editorAppUri = panel.webview.asWebviewUri(
-      vscode.Uri.joinPath(webviewRoot, "editor-app.js"),
+    const webviewTemplate = new TextDecoder().decode(
+      await vscode.workspace.fs.readFile(
+        vscode.Uri.joinPath(webviewRoot, "index.html"),
+      ),
     );
-    const editorStyleUri = panel.webview.asWebviewUri(
-      vscode.Uri.joinPath(webviewRoot, "editor-app.css"),
+    panel.webview.html = editorHtml(
+      panel.webview,
+      panel.webview.asWebviewUri(webviewRoot),
+      webviewTemplate,
     );
-    panel.webview.html = editorHtml(panel.webview, editorAppUri, editorStyleUri);
     const documentPanels = this.panels.get(document) ?? new Set<vscode.WebviewPanel>();
     documentPanels.add(panel);
     this.panels.set(document, documentPanels);
@@ -503,29 +506,29 @@ async function showError(error: unknown): Promise<void> {
 
 export function editorHtml(
   webview: vscode.Webview,
-  editorAppUri: vscode.Uri,
-  editorStyleUri: vscode.Uri,
+  webviewRootUri: vscode.Uri,
+  webviewTemplate: string,
 ): string {
   const nonce = randomBytes(18).toString("base64");
   const csp = [
     "default-src 'none'",
+    "base-uri 'none'",
     `style-src ${webview.cspSource} 'nonce-${nonce}'`,
     `script-src ${webview.cspSource} 'nonce-${nonce}'`,
     "img-src data:",
   ].join("; ");
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="${csp}">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta id="tmd-csp-nonce" name="tmd-csp-nonce" content="${nonce}">
-  <title>Tanu Markdown Editor</title>
-  <link rel="stylesheet" href="${editorStyleUri.toString()}">
-</head>
-<body>
-  <div id="tmd-editor-root" data-state="loading">Loading Tanu Markdown…</div>
-  <script nonce="${nonce}" src="${editorAppUri.toString()}"></script>
-</body>
-</html>`;
+  const resourceRoot = webviewRootUri.toString().replace(/\/$/, "");
+  const rewritten = webviewTemplate.replaceAll(
+    "./_app/",
+    `${resourceRoot}/_app/`,
+  );
+  if (!rewritten.includes("<head>")) {
+    throw new Error("The bundled SvelteKit webview is missing its <head> element.");
+  }
+  return rewritten
+    .replace(
+      "<head>",
+      `<head>\n    <meta http-equiv="Content-Security-Policy" content="${csp}">\n    <meta id="tmd-csp-nonce" name="tmd-csp-nonce" content="${nonce}">`,
+    )
+    .replace(/<script(?=[\s>])/g, `<script nonce="${nonce}"`);
 }
