@@ -31,6 +31,7 @@ Thumbs.db
 
 # Node.js / VS Code extension
 **/node_modules/
+**/.svelte-kit/
 **/dist/
 **/out/
 *.vsix

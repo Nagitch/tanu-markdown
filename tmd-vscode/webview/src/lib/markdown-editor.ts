@@ -9,6 +9,12 @@ import {
 } from "@codemirror/view";
 import { tags } from "@lezer/highlight";
 
+export interface MarkdownInputAdapter {
+  value: string;
+  disabled: boolean;
+  addEventListener(type: "input", listener: () => void): void;
+}
+
 const markdownHighlightStyle = HighlightStyle.define([
   {
     tag: [tags.heading, tags.heading1, tags.heading2, tags.heading3],
@@ -88,14 +94,13 @@ const vscodeTheme = EditorView.theme({
   },
 });
 
-/**
- * Create the Markdown input adapter expected by the existing webview bridge.
- * CodeMirror remains a presentation/input layer; document state and undo/redo
- * continue to be owned by the extension-host CustomDocument.
- */
-export function create(parent, cspNonce) {
+/** Create the Markdown input used by the host-independent editor app. */
+export function createMarkdownEditor(
+  parent: HTMLElement,
+  cspNonce: string,
+): MarkdownInputAdapter {
   const editable = new Compartment();
-  const inputListeners = new Set();
+  const inputListeners = new Set<() => void>();
   let disabled = true;
   let applyingAuthoritativeValue = false;
 
@@ -130,10 +135,10 @@ export function create(parent, cspNonce) {
   parent.setAttribute("aria-disabled", "true");
 
   return {
-    get value() {
+    get value(): string {
       return view.state.doc.toString();
     },
-    set value(nextValue) {
+    set value(nextValue: string) {
       if (nextValue === view.state.doc.toString()) return;
       const selection = view.state.selection.main;
       const anchor = Math.min(selection.anchor, nextValue.length);
@@ -148,10 +153,10 @@ export function create(parent, cspNonce) {
         applyingAuthoritativeValue = false;
       }
     },
-    get disabled() {
+    get disabled(): boolean {
       return disabled;
     },
-    set disabled(nextDisabled) {
+    set disabled(nextDisabled: boolean) {
       if (disabled === nextDisabled) return;
       disabled = nextDisabled;
       parent.setAttribute("aria-disabled", String(disabled));
@@ -159,9 +164,8 @@ export function create(parent, cspNonce) {
         effects: editable.reconfigure(EditorView.editable.of(!disabled)),
       });
     },
-    addEventListener(type, listener) {
-      if (type !== "input") return;
-      inputListeners.add(listener);
+    addEventListener(type: "input", listener: () => void): void {
+      if (type === "input") inputListeners.add(listener);
     },
   };
 }

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { Script } from "node:vm";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { test } from "node:test";
 import type * as vscode from "vscode";
 
@@ -21,26 +22,55 @@ function loadEditorModule(): typeof import("../editor.js") {
   }
 }
 
-test("custom editor emits syntactically valid inline JavaScript", () => {
+function uri(value: string): vscode.Uri {
+  return {
+    toString() {
+      return value;
+    },
+  } as vscode.Uri;
+}
+
+test("custom editor loads the bundled SvelteKit app with webview resource URIs", () => {
   const { editorHtml } = loadEditorModule();
   const webview = {
     cspSource: "vscode-webview://test",
-    asWebviewUri(uri: vscode.Uri) {
-      return uri;
-    },
   } as unknown as vscode.Webview;
-  const markdownEditorUri = {
-    toString() {
-      return "vscode-webview://test/markdown-editor.js";
-    },
-  } as vscode.Uri;
 
-  const html = editorHtml(webview, markdownEditorUri);
-  const scripts = [...html.matchAll(/<script nonce="[^"]+">([\s\S]*?)<\/script>/g)];
-  const inlineScript = scripts.at(-1)?.[1];
+  const template = readFileSync(
+    join(__dirname, "..", "webview", "index.html"),
+    "utf8",
+  );
+  const html = editorHtml(webview, uri("vscode-webview://test/webview"), template);
 
-  assert.ok(inlineScript);
-  assert.doesNotThrow(() => new Script(inlineScript));
-  assert.match(inlineScript, /split\(\/\\r\?\\n\/\)/);
-  assert.match(inlineScript, /addRhaiDataSource/);
+  assert.match(html, /id="tmd-editor-root"/);
+  assert.match(html, /id="tmd-csp-nonce"/);
+  assert.match(
+    html,
+    /href="vscode-webview:\/\/test\/webview\/_app\/[^"\s]+\.css" rel="stylesheet"/,
+  );
+  assert.match(
+    html,
+    /import\("vscode-webview:\/\/test\/webview\/_app\/[^"\s]+\.js"\)/,
+  );
+  assert.doesNotMatch(html, /<style(?:\s|>)/);
+  assert.doesNotMatch(html, /<script(?! nonce="[^"]+")/);
+});
+
+test("custom editor applies a restrictive content security policy", () => {
+  const { editorHtml } = loadEditorModule();
+  const webview = {
+    cspSource: "vscode-webview://test",
+  } as unknown as vscode.Webview;
+
+  const html = editorHtml(
+    webview,
+    uri("vscode-webview://test/webview"),
+    "<!doctype html><html><head></head><body><script>void 0;</script></body></html>",
+  );
+
+  assert.match(html, /default-src 'none'/);
+  assert.match(html, /base-uri 'none'/);
+  assert.match(html, /style-src vscode-webview:\/\/test 'nonce-[^']+'/);
+  assert.match(html, /script-src vscode-webview:\/\/test 'nonce-[^']+'/);
+  assert.match(html, /img-src data:/);
 });
