@@ -7,6 +7,7 @@ import {
   validateDataSources,
 } from "./data-sources.js";
 import type { EditorState } from "./model.js";
+import { publishLatestRevision } from "./publication.js";
 import { ClientRevisionTracker } from "./revision.js";
 import { diskState, LocalTmdSession, readOptionalFile } from "./session.js";
 import type {
@@ -390,38 +391,40 @@ export class TanuMarkdownEditorProvider
   }
 
   private async postModel(document: TanuMarkdownDocument): Promise<void> {
-    const contentRevision = document.contentRevision;
-    const state = document.snapshot();
-    const previewHtml = await this.renderPreview(document, state);
-    if (contentRevision !== document.contentRevision) {
-      // A newer edit already owns the surface. Do not pair its acknowledgement
-      // with the older state captured for this preview.
-      return;
-    }
-    const model = {
-      type: "model",
-      contentRevision,
-      inspection: document.inspection,
-      validationCurrent: document.isValidationCurrent,
-      markdown: state.markdown,
-      title: state.title,
-      dataSourceRegistry: inspectDataSourceRegistry(
-        document.inspection.manifest.extras,
-      ),
-      previewHtml,
-      editingLocked: document.session.editingLocked,
-    };
-    const panels = this.panels.get(document);
-    if (!panels) {
-      return;
-    }
-    await Promise.all(
-      [...panels].map((panel) =>
-        panel.webview.postMessage({
-          ...model,
-          acknowledgedClientRevision: this.panelClientRevisions.latest(panel),
-        }),
-      ),
+    await publishLatestRevision(
+      () => ({
+        contentRevision: document.contentRevision,
+        state: document.snapshot(),
+      }),
+      () => document.contentRevision,
+      (state) => this.renderPreview(document, state),
+      async ({ contentRevision, state }, previewHtml) => {
+        const model = {
+          type: "model",
+          contentRevision,
+          inspection: document.inspection,
+          validationCurrent: document.isValidationCurrent,
+          markdown: state.markdown,
+          title: state.title,
+          dataSourceRegistry: inspectDataSourceRegistry(
+            document.inspection.manifest.extras,
+          ),
+          previewHtml,
+          editingLocked: document.session.editingLocked,
+        };
+        const panels = this.panels.get(document);
+        if (!panels) {
+          return;
+        }
+        await Promise.all(
+          [...panels].map((panel) =>
+            panel.webview.postMessage({
+              ...model,
+              acknowledgedClientRevision: this.panelClientRevisions.latest(panel),
+            }),
+          ),
+        );
+      },
     );
   }
 
