@@ -190,9 +190,9 @@ Formula table transformations. A Formula definition has this shape:
 `input` MUST resolve directly to a SQLite source in the same registry. Its
 query result order defines the Formula sheet order. The declared
 `output.columns` MUST begin with the input's exact ordered column labels and MAY
-append derived columns. Formula assignments MUST NOT target the input
-rectangle. They MAY populate appended columns and extend the row count;
-unassigned derived cells are null.
+append derived columns. Formula assignments MAY overlay the input rectangle,
+populate appended columns, and extend the row count; unassigned derived cells
+are null.
 
 `program` MUST be non-empty UTF-8 containing one `cell = expression`
 assignment per non-comment line. `//` starts a comment outside string and
@@ -212,6 +212,15 @@ parse into an internal representation rather than interpolate Formula text
 into Rhai or SQL. Programs, syntax complexity, evaluation work, generated
 text, and table shape are bounded. Parse and runtime diagnostics identify a
 source line and column and use a stable typed error category.
+
+Registry schema version 4 retains all earlier source types and adds an optional
+SQLite `edit` contract. It declares a target table, a query-result key mapped
+to its table key column, and the exact query-result-to-table column mappings
+that may be written. Identifiers are bounded and restricted. The key MUST be
+non-null and unique in the evaluated query result, and an update MUST match
+exactly one table row. Implementations MUST apply a staged edit batch in one
+transaction and MUST NOT infer write-back identity from a displayed row index
+or arbitrary SELECT shape.
 
 These references use ordinary Markdown text and fenced blocks, so unaware
 readers retain passive placeholders rather than executing a query. The source
@@ -297,3 +306,6 @@ schema version 1 reads. Draft 5 adds registry schema version 3 and bounded
 Formula table transformations while retaining schema version 1 and 2 reads.
 This addition is tracked in
 [issue #45](https://github.com/Nagitch/tanu-markdown/issues/45).
+Draft 6 adds registry schema version 4, explicit primary-keyed SQLite
+write-back contracts, and Formula assignments over input cells while retaining
+schema version 1 through 3 reads.

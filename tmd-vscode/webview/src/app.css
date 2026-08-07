@@ -122,6 +122,43 @@ li { margin: .35rem 0; }
 .table-source-field { max-width: 28rem; }
 .table-result-heading { min-height: 2rem; }
 .table-result-heading p { margin: .25rem 0 .65rem; }
+.cell-formula-bar {
+  display: grid;
+  grid-template-columns: 5.5rem minmax(12rem, 1fr) auto auto;
+  gap: .35rem;
+  align-items: stretch;
+  margin: 0 0 .5rem;
+}
+.cell-formula-bar input { height: 100%; }
+.cell-name { text-align: center; font-family: var(--vscode-editor-font-family); }
+.cell-input-field { position: relative; }
+.cell-input-field input {
+  padding-left: 2.5rem;
+  font-family: var(--vscode-editor-font-family);
+}
+.formula-symbol {
+  position: absolute;
+  z-index: 1;
+  left: .7rem;
+  top: 50%;
+  color: var(--vscode-descriptionForeground);
+  font-family: Georgia, serif;
+  font-style: italic;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+.cell-edit-status { margin: 0 0 .5rem; }
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
 .table-grid-host {
   height: min(32rem, calc(100vh - 14rem));
   min-height: 18rem;
@@ -210,4 +247,5 @@ li { margin: .35rem 0; }
   .layout { grid-template-columns: 1fr; }
   .app-bar { align-items: flex-start; flex-direction: column; }
   .source-script-heading { align-items: flex-start; flex-direction: column; }
+  .cell-formula-bar { grid-template-columns: 5rem minmax(8rem, 1fr); }
 }

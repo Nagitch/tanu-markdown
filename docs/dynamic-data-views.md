@@ -136,11 +136,22 @@ or executable code. Definitions are stored under a versioned, namespaced
 {
   "extras": {
     "tmd_data_sources": {
-      "schema_version": 3,
+      "schema_version": 4,
       "sources": {
         "sales": {
           "type": "sqlite",
-          "query": "SELECT category, amount_cents FROM sample_sales ORDER BY id"
+          "query": "SELECT id, category, amount_cents FROM sample_sales ORDER BY id",
+          "edit": {
+            "table": "sample_sales",
+            "key": {
+              "source_column": "id",
+              "table_column": "id"
+            },
+            "columns": {
+              "category": "category",
+              "amount_cents": "amount_cents"
+            }
+          }
         },
         "category-summary": {
           "type": "rhai",
@@ -156,10 +167,10 @@ or executable code. Definitions are stored under a versioned, namespaced
         "sales-formula": {
           "type": "formula",
           "input": "sales",
-          "program": "C1 = SUM(B1:B3)\nC2 = C1\nC3 = [@amount_cents] * 2",
+          "program": "D1 = SUM(C1:C3)\nD2 = D1\nD3 = [@amount_cents] * 2",
           "output": {
             "type": "table",
-            "columns": ["category", "amount_cents", "total_cents"]
+            "columns": ["id", "category", "amount_cents", "total_cents"]
           }
         }
       }
@@ -192,6 +203,15 @@ SQLite sources execute one read-only statement against `db/main.sqlite3`:
 A one-row, one-column result may be consumed by `scalar`. General query results
 produce the table value described below. Authors are responsible for an
 explicit `ORDER BY` when row order matters.
+
+Registry schema version 4 may add an explicit `edit` contract to a SQLite
+source. `table` and every mapped table column are restricted SQLite
+identifiers. `key.source_column` must occur exactly once in the query result,
+must be non-null and unique there, and maps to `key.table_column` in the target
+table. Only query-result columns listed in `columns` are writable. Updates use
+the stable key and must match exactly one database row; the complete staged
+batch is transactional. An arbitrary SELECT result is never inferred to be
+writable from its displayed row number.
 
 ### JSON, YAML, and TOML (proposed)
 
@@ -303,21 +323,24 @@ SQL. A leading second `=` on the expression is accepted, so both
 `C1 = SUM(B1:B3)` and `C1 = =SUM(B1:B3)` are valid.
 
 Coordinates are one-based over data cells: `A1` is the first SQLite result
-cell, not a header. `$A$1` is accepted as the same absolute coordinate in the
-current language; relative-copy semantics are not implemented. A rectangular
-range such as `A1:C3` evaluates in row-major order. Header-oriented references
-are:
+cell, not a header. `$A$1` evaluates as the same coordinate. The VS Code table
+editor uses `$` markers when copying formulas with its fill handle: unmarked
+rows and columns move relative to the destination, while marked components
+stay fixed. A rectangular range such as `A1:C3` evaluates in row-major order.
+Header-oriented references are:
 
 - `[amount_cents]`: that exact output column across the original input row
   extent;
 - `[@amount_cents]`: that output column's value on the target row; and
 - `HEADER(B)`: the output header at column B.
 
-Input cells are authoritative and cannot be formula targets. The output column
-list MUST begin with the exact SQLite input columns in the same order, then may
-append derived columns. Assignments may extend the row count; unassigned
-derived cells are `NULL`. References to other formula targets are resolved by
-dependency, independent of line order. Circular dependencies are rejected.
+The output column list MUST begin with the exact SQLite input columns in the
+same order, then may append derived columns. Formula assignments may overlay
+input cells, which lets a table cell switch between its SQLite value and a
+Formula without changing the Formula source shape. Assignments may extend the
+row count; unassigned derived cells are `NULL`. References to other formula
+targets are resolved by dependency, independent of line order. Circular
+dependencies are rejected.
 
 The supported literals are null, booleans, signed integers, finite real
 numbers, and strings. Arithmetic (`+`, `-`, `*`, `/`), comparisons (`=`, `==`,

@@ -48,6 +48,7 @@ test("shared session operations own editor state and content revisions", () => {
     type: "replaceEditorState" as const,
     state: {
       dataSources: [],
+      databaseEdits: [],
       markdown: "edited",
       textAttachmentEdits: [],
       title: "Edited",

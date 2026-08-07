@@ -8,7 +8,8 @@
 - a `sample_sales` SQLite source transformed and grouped by a sandboxed Rhai
   attachment into a second dynamic table;
 - the same ordered sales rows extended by an inline Formula program with a
-  calculated column and a `SUM` total;
+  calculated column and a `SUM` total, plus an explicit primary-keyed SQLite
+  edit contract used by the Formula table editor;
 - an attached PNG rendered from an `attach:` image reference; and
 - an attached text file rendered as a download link.
 
@@ -20,6 +21,9 @@ output columns. Its editable source copy is
 are stored in `sample.tmd` as the `views/category-summary.rhai` attachment.
 The `sales-formula` source keeps its Formula program inline in the manifest and
 declares the input columns followed by `double_cents` and `all_sales_cents`.
+The input begins with the stable `id` key. In the VS Code Table tab,
+`category` and `amount_cents` can be edited directly, while input beginning
+with `=` becomes a Formula assignment.
 TMD-aware HTML and VS Code preview evaluate direct, Rhai-transformed, and
 Formula-transformed tables.
 Non-aware Markdown viewers retain readable placeholders and fenced blocks. The
@@ -32,7 +36,7 @@ tmd attachment list tmd-sample/sample.tmd
 tmd db query tmd-sample/sample.tmd \
   --sql "SELECT id, body FROM sample_notes ORDER BY id" --json
 tmd db query tmd-sample/sample.tmd \
-  --sql "SELECT category, amount_cents FROM sample_sales ORDER BY id" --json
+  --sql "SELECT id, category, amount_cents FROM sample_sales ORDER BY id" --json
 tmd preview tmd-sample/sample.tmd --json-stdin <<'JSON'
 {"schema_version":1,"markdown":"```tmd-view:table\nsource = \"sales-formula\"\n```\n"}
 JSON

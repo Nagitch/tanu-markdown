@@ -20,15 +20,17 @@ use serde::Deserialize;
 use serde_json::{json, Value as JsonValue};
 use sha2::{Digest, Sha256};
 use tmd_core::{
-    attachment_references, evaluate_data_source, export_db, import_db, inline_data_view_references,
-    migrate, parse_data_view_block, read_tmd, reset_db, validate_document, write_bytes_to_path,
-    write_to_path, AttachmentMeta, DataScalar, DataValue, DataViewRenderKind, ReadMode, TmdDoc,
-    ValidationSeverity, SQLITE_MAX_USER_VERSION,
+    apply_data_cell_edits, attachment_references, data_source_edit_info, evaluate_data_source,
+    export_db, import_db, inline_data_view_references, migrate, parse_data_view_block, read_tmd,
+    reset_db, validate_document, write_bytes_to_path, write_to_path, AttachmentMeta, DataCellEdit,
+    DataScalar, DataValue, DataViewRenderKind, ReadMode, TmdDoc, ValidationSeverity,
+    SQLITE_MAX_USER_VERSION,
 };
 
 const JSON_SCHEMA_VERSION: u32 = 1;
 const MAX_TEXT_ATTACHMENT_EDITS: usize = 16;
 const MAX_TEXT_ATTACHMENT_BYTES: usize = 256 * 1024;
+const MAX_DATABASE_CELL_EDITS: usize = 10_000;
 const URL_SEGMENT_ENCODE_SET: &AsciiSet = &CONTROLS
     .add(b' ')
     .add(b'"')
@@ -232,6 +234,7 @@ struct DocumentUpdate {
     tags: Option<Vec<String>>,
     extras: Option<JsonValue>,
     text_attachments: Option<Vec<TextAttachmentUpdate>>,
+    database_edits: Option<Vec<DataCellEditUpdate>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -241,6 +244,7 @@ struct PreviewRequest {
     markdown: String,
     extras: Option<JsonValue>,
     text_attachments: Option<Vec<TextAttachmentUpdate>>,
+    database_edits: Option<Vec<DataCellEditUpdate>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -250,6 +254,7 @@ struct DataSourceRequest {
     source: String,
     extras: Option<JsonValue>,
     text_attachments: Option<Vec<TextAttachmentUpdate>>,
+    database_edits: Option<Vec<DataCellEditUpdate>>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -257,6 +262,25 @@ struct DataSourceRequest {
 struct TextAttachmentUpdate {
     logical_path: String,
     text: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DataCellEditUpdate {
+    source: String,
+    key: DataCellScalarUpdate,
+    column: String,
+    value: DataCellScalarUpdate,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(tag = "type", content = "value", rename_all = "snake_case")]
+enum DataCellScalarUpdate {
+    Null,
+    Boolean(bool),
+    Integer(String),
+    Real(f64),
+    String(String),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -495,6 +519,7 @@ fn cmd_update(input: &Path, json_stdin: bool) -> Result<()> {
     if let Some(text_attachments) = update.text_attachments {
         apply_text_attachment_updates(&mut doc, &text_attachments)?;
     }
+    apply_database_edit_updates(&mut doc, update.database_edits.as_deref())?;
     doc.touch();
     write_document_if_expected(input, &doc, Some(&expected))?;
     let persisted_doc = read_document(input)?;
@@ -529,6 +554,7 @@ fn cmd_preview(input: &Path, json_stdin: bool) -> Result<()> {
     if let Some(text_attachments) = request.text_attachments {
         apply_text_attachment_updates(&mut doc, &text_attachments)?;
     }
+    apply_database_edit_updates(&mut doc, request.database_edits.as_deref())?;
     let attachment_urls = embedded_attachment_urls(&doc);
     let preview_html = render_markdown_body(&doc, &request.markdown, &attachment_urls)?;
     println!(
@@ -565,6 +591,7 @@ fn cmd_data_source(input: &Path, json_stdin: bool) -> Result<()> {
     if let Some(text_attachments) = request.text_attachments {
         apply_text_attachment_updates(&mut doc, &text_attachments)?;
     }
+    apply_database_edit_updates(&mut doc, request.database_edits.as_deref())?;
     let value = evaluate_data_source(&doc, &request.source)?;
     let table = value.as_table()?;
     let rows = table
@@ -572,6 +599,17 @@ fn cmd_data_source(input: &Path, json_stdin: bool) -> Result<()> {
         .iter()
         .map(|row| row.iter().map(data_scalar_json).collect::<Vec<_>>())
         .collect::<Vec<_>>();
+    let editable = data_source_edit_info(&doc, &request.source)?.map(|info| {
+        json!({
+            "input_source": info.input_source,
+            "key_column": info.key_column,
+            "editable_columns": info.editable_columns,
+            "row_keys": info.row_keys.iter().map(data_scalar_json).collect::<Vec<_>>(),
+            "input_rows": info.input_rows.iter().map(|row| {
+                row.iter().map(data_scalar_json).collect::<Vec<_>>()
+            }).collect::<Vec<_>>(),
+        })
+    });
     println!(
         "{}",
         serde_json::to_string_pretty(&json!({
@@ -580,9 +618,53 @@ fn cmd_data_source(input: &Path, json_stdin: bool) -> Result<()> {
             "kind": "table",
             "columns": table.columns,
             "rows": rows,
+            "editable": editable,
         }))?
     );
     Ok(())
+}
+
+fn apply_database_edit_updates(
+    doc: &mut TmdDoc,
+    updates: Option<&[DataCellEditUpdate]>,
+) -> Result<()> {
+    let Some(updates) = updates else {
+        return Ok(());
+    };
+    ensure!(
+        updates.len() <= MAX_DATABASE_CELL_EDITS,
+        "database cell edit count exceeds {MAX_DATABASE_CELL_EDITS}"
+    );
+    let edits = updates
+        .iter()
+        .map(|update| {
+            Ok(DataCellEdit {
+                source: update.source.clone(),
+                key: data_cell_scalar(&update.key)?,
+                column: update.column.clone(),
+                value: data_cell_scalar(&update.value)?,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    apply_data_cell_edits(doc, &edits)?;
+    Ok(())
+}
+
+fn data_cell_scalar(value: &DataCellScalarUpdate) -> Result<DataScalar> {
+    match value {
+        DataCellScalarUpdate::Null => Ok(DataScalar::Null),
+        DataCellScalarUpdate::Boolean(value) => Ok(DataScalar::Boolean(*value)),
+        DataCellScalarUpdate::Integer(value) => {
+            Ok(DataScalar::Integer(value.parse::<i64>().with_context(
+                || format!("invalid 64-bit integer cell value `{value}`"),
+            )?))
+        }
+        DataCellScalarUpdate::Real(value) => {
+            ensure!(value.is_finite(), "real cell values must be finite");
+            Ok(DataScalar::Real(*value))
+        }
+        DataCellScalarUpdate::String(value) => Ok(DataScalar::String(value.clone())),
+    }
 }
 
 fn data_scalar_json(value: &DataScalar) -> JsonValue {

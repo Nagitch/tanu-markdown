@@ -4,7 +4,8 @@ Tanu Markdown (TMD) is a self-contained document format that keeps Markdown,
 metadata, attachments, and a SQLite database in one portable file. Markdown
 can render named, read-only SQLite sources as inline scalars or block tables,
 and sandboxed Rhai scripts or bounded spreadsheet-style Formula programs can
-transform declared SQLite inputs into tables.
+transform declared SQLite inputs into tables. Formula tables backed by an
+explicit keyed edit contract can also stage safe SQLite cell updates.
 
 This repository contains the Rust document library, the installed `tmd`
 command-line interface, a C-compatible dynamic library, a VS Code custom

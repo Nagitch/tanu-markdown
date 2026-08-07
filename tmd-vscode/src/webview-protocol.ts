@@ -2,6 +2,7 @@ import type {
   DataSource,
   DataSourceRegistryView,
   DataSourceTable,
+  DatabaseCellEdit,
   DocumentInspection,
   TextAttachmentView,
 } from "./types.js";
@@ -19,6 +20,13 @@ export type EditorRequest =
       type: "editDataSources";
       clientRevision: number;
       dataSources: DataSource[];
+    }
+  | {
+      type: "editSpreadsheet";
+      clientRevision: number;
+      source: string;
+      formulaProgram: string;
+      databaseEdits: DatabaseCellEdit[];
     }
   | {
       type: "preview";
@@ -116,6 +124,7 @@ export function isEditorRequest(value: unknown): value is EditorRequest {
     "ready",
     "edit",
     "editDataSources",
+    "editSpreadsheet",
     "preview",
     "dataSourceTable",
     "rhaiScript",

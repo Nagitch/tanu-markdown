@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import type {
   DataSourceTable,
   DataTableCell,
+  DatabaseCellEdit,
   DocumentInspection,
   DocumentUpdate,
   JsonValue,
@@ -45,8 +46,13 @@ interface PreviewResponse {
   preview_html: string;
 }
 
-interface DataSourceResponse extends DataSourceTable {
+interface DataSourceResponse {
   schema_version: number;
+  source: string;
+  kind: "table";
+  columns: string[];
+  rows: DataTableCell[][];
+  editable?: unknown;
 }
 
 interface TextAttachmentResponse {
@@ -80,6 +86,7 @@ export class TmdCliClient {
     markdown: string,
     extras: JsonValue,
     textAttachments: readonly TextAttachmentEdit[] = [],
+    databaseEdits: readonly DatabaseCellEdit[] = [],
   ): Promise<string> {
     const preview = await this.runJson<PreviewResponse>(
       ["preview", path, "--json-stdin"],
@@ -88,6 +95,7 @@ export class TmdCliClient {
         markdown,
         extras,
         text_attachments: textAttachmentUpdates(textAttachments),
+        database_edits: databaseEditUpdates(databaseEdits),
       },
     );
     if (preview.schema_version !== 1) {
@@ -116,6 +124,7 @@ export class TmdCliClient {
     source: string,
     extras: JsonValue,
     textAttachments: readonly TextAttachmentEdit[] = [],
+    databaseEdits: readonly DatabaseCellEdit[] = [],
   ): Promise<DataSourceTable> {
     const response = await this.runJson<DataSourceResponse>(
       ["data-source", path, "--json-stdin"],
@@ -124,6 +133,7 @@ export class TmdCliClient {
         source,
         extras,
         text_attachments: textAttachmentUpdates(textAttachments),
+        database_edits: databaseEditUpdates(databaseEdits),
       },
     );
     if (response.schema_version !== 1) {
@@ -135,7 +145,15 @@ export class TmdCliClient {
         "incompatible-schema",
       );
     }
-    if (!isDataSourceTable(response) || response.source !== source) {
+    const editable = parseDataSourceTableEditInfo(response.editable);
+    const table: DataSourceTable = {
+      source: response.source,
+      kind: response.kind,
+      columns: response.columns,
+      rows: response.rows,
+      ...(editable ? { editable } : {}),
+    };
+    if (!isDataSourceTable(table) || response.source !== source) {
       throw new CliError(
         "The TMD CLI returned an invalid tabular data-source response.",
         0,
@@ -144,12 +162,7 @@ export class TmdCliClient {
         "invalid-output",
       );
     }
-    return {
-      source: response.source,
-      kind: response.kind,
-      columns: response.columns,
-      rows: response.rows,
-    };
+    return table;
   }
 
   async textAttachment(
@@ -433,6 +446,72 @@ function textAttachmentUpdates(
     logical_path: edit.logicalPath,
     text: edit.text,
   }));
+}
+
+function databaseEditUpdates(
+  edits: readonly DatabaseCellEdit[],
+): DatabaseCellEdit[] {
+  return edits.map((edit) => ({
+    source: edit.source,
+    key: { ...edit.key },
+    column: edit.column,
+    value: { ...edit.value },
+  }));
+}
+
+function parseDataSourceTableEditInfo(
+  value: unknown,
+): DataSourceTable["editable"] {
+  if (value === undefined || value === null) return undefined;
+  if (
+    typeof value !== "object" ||
+    !("input_source" in value) ||
+    typeof value.input_source !== "string" ||
+    !("key_column" in value) ||
+    typeof value.key_column !== "string" ||
+    !("editable_columns" in value) ||
+    !Array.isArray(value.editable_columns) ||
+    !value.editable_columns.every((column) => typeof column === "string") ||
+    !("row_keys" in value) ||
+    !Array.isArray(value.row_keys) ||
+    !value.row_keys.every(isDataTableCell) ||
+    !("input_rows" in value) ||
+    !Array.isArray(value.input_rows) ||
+    !value.input_rows.every(
+      (row) => Array.isArray(row) && row.every(isDataTableCell),
+    ) ||
+    value.row_keys.length !== value.input_rows.length
+  ) {
+    throw new CliError(
+      "The TMD CLI returned invalid editable table metadata.",
+      0,
+      JSON.stringify(value),
+      "",
+      "invalid-output",
+    );
+  }
+  const inputWidth = value.input_rows[0]?.length;
+  if (
+    inputWidth !== undefined &&
+    !value.input_rows.every((row) => row.length === inputWidth)
+  ) {
+    throw new CliError(
+      "The TMD CLI returned inconsistent editable input rows.",
+      0,
+      JSON.stringify(value),
+      "",
+      "invalid-output",
+    );
+  }
+  return {
+    inputSource: value.input_source,
+    keyColumn: value.key_column,
+    editableColumns: [...value.editable_columns],
+    rowKeys: value.row_keys.map((cell) => ({ ...cell })),
+    inputRows: value.input_rows.map((row) =>
+      row.map((cell) => ({ ...cell })),
+    ),
+  };
 }
 
 function isDataSourceTable(value: unknown): value is DataSourceTable {

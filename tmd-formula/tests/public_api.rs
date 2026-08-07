@@ -38,23 +38,23 @@ fn public_engine_evaluates_without_tmd_core() {
 
 #[test]
 fn public_error_exposes_structured_location_and_target() {
-    let program = parse_formula_program("A1 = 1").expect("syntax");
+    let program = parse_formula_program("C1 = 1").expect("syntax");
     let error = evaluate_formula_program(
         &program,
         &input_table(),
         &["item".to_owned(), "amount".to_owned()],
     )
-    .expect_err("input overwrite");
+    .expect_err("target outside output columns");
 
     assert_eq!(error.code(), "#REF!");
     assert_eq!(error.line(), 1);
     assert_eq!(error.column(), 1);
     assert!(error.end_column() > error.column());
-    assert_eq!(error.target(), CellRef::from_indexes(0, 0));
-    assert_eq!(error.target().expect("target").to_string(), "A1");
+    assert_eq!(error.target(), CellRef::from_indexes(2, 0));
+    assert_eq!(error.target().expect("target").to_string(), "C1");
     assert_eq!(
         error.message(),
-        "formula targets cannot overwrite the input table"
+        "target `C1` is outside the declared output columns"
     );
     assert_eq!(CellRef::from_indexes(usize::MAX, 0), None);
 }

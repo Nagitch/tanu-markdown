@@ -109,7 +109,7 @@ terminal commands and editor use coexist. A future persistent stdio or remote
 collaborative session can sit behind the host bridge without moving document
 authority into the editing surface. The table tab asks the session to evaluate
 a selected named source through the versioned `data-source` CLI bridge and
-renders the typed result in a bundled, read-only RevoGrid. For Rhai sources,
+renders the typed result in a bundled RevoGrid. For Rhai sources,
 the session also reads the referenced UTF-8 attachment through the CLI and the
 table tab displays a CodeMirror editor with a small Rhai lexer. Script drafts
 are document edits, while preview and table evaluation receive them as bounded
@@ -121,8 +121,13 @@ column legend, and syntax highlighting below the grid. Program edits flow
 immediately through the ordinary source-definition dirty/save/backup/undo
 lifecycle; table reevaluation is debounced, and the CLI/core returns typed
 line-and-column errors for editor diagnostics.
-Persisted grid edits and the broader table interaction model remain tracked in
-[issue #43](https://github.com/Nagitch/tanu-markdown/issues/43).
+For a Formula source whose SQLite input declares a schema-version-4 `edit`
+contract, the grid and formula bar stage either a primary-keyed database update
+or a Formula assignment. Cell/range selection inserts A1 references, and the
+fill handle translates relative references while preserving `$` components.
+The host stores database edits with the Formula program in revisioned editor
+state, applies them to temporary snapshots for preview and evaluation, and
+commits them transactionally only when the document is saved.
 
 Platform-specific VSIX packages carry the matching native CLI. A machine-level
 setting may select an external CLI, while generic development packages fall

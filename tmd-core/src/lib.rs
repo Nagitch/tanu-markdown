@@ -16,9 +16,11 @@ pub use validation::{
     ValidationIssue, ValidationReport, ValidationSeverity,
 };
 pub use views::{
-    data_view_references, evaluate_data_source, inline_data_view_references, parse_data_view_block,
-    DataSourceDefinition, DataSourceOutput, DataSourceRegistry, DataValue, DataViewParseReport,
-    DataViewReference, DataViewRenderKind, InlineDataViewReference, DATA_SOURCES_EXTRAS_KEY,
+    apply_data_cell_edits, data_source_edit_info, data_view_references, evaluate_data_source,
+    inline_data_view_references, parse_data_view_block, DataCellEdit, DataSourceDefinition,
+    DataSourceEditInfo, DataSourceOutput, DataSourceRegistry, DataValue, DataViewParseReport,
+    DataViewReference, DataViewRenderKind, InlineDataViewReference, SqliteEditDefinition,
+    SqliteEditKey, DATA_SOURCES_EXTRAS_KEY,
 };
 
 mod validation;

@@ -12,6 +12,9 @@ import { ClientRevisionTracker } from "./revision.js";
 import { diskState, LocalTmdSession, readOptionalFile } from "./session.js";
 import type {
   DataSource,
+  DatabaseCellEdit,
+  DataTableCell,
+  SqliteEditDefinition,
   ValidationReport,
 } from "./types.js";
 import { isEditorRequest } from "./webview-protocol.js";
@@ -285,6 +288,63 @@ export class TanuMarkdownEditorProvider
           message.clientRevision,
           { ...before, dataSources },
           "Edit TMD data sources",
+        );
+        break;
+      }
+      case "editSpreadsheet": {
+        if (
+          typeof message.source !== "string" ||
+          typeof message.formulaProgram !== "string" ||
+          new TextEncoder().encode(message.formulaProgram).length > 256 * 1024 ||
+          typeof message.clientRevision !== "number" ||
+          !Number.isSafeInteger(message.clientRevision) ||
+          message.clientRevision <= 0
+        ) {
+          return;
+        }
+        const incomingEdits = parseDatabaseCellEdits(message.databaseEdits);
+        if (!incomingEdits) return;
+        const before = document.snapshot();
+        const formulaSource = before.dataSources.find(
+          (source) => source.name === message.source && source.type === "formula",
+        );
+        if (!formulaSource || formulaSource.type !== "formula") return;
+        const input = before.dataSources.find(
+          (source) => source.name === formulaSource.input && source.type === "sqlite",
+        );
+        if (!input || input.type !== "sqlite" || !input.edit) return;
+        const editableColumns = new Set(
+          input.edit.columns.map((column) => column.sourceColumn),
+        );
+        if (
+          incomingEdits.some(
+            (edit) =>
+              edit.source !== input.name ||
+              !editableColumns.has(edit.column) ||
+              edit.key.type === "null",
+          )
+        ) {
+          return;
+        }
+        const dataSources = before.dataSources.map((source) =>
+          source.name === formulaSource.name && source.type === "formula"
+            ? { ...source, program: message.formulaProgram }
+            : source,
+        );
+        validateDataSources(dataSources);
+        await this.applyEditorState(
+          document,
+          panel,
+          message.clientRevision,
+          {
+            ...before,
+            dataSources,
+            databaseEdits: mergeDatabaseCellEdits(
+              before.databaseEdits,
+              incomingEdits,
+            ),
+          },
+          `Edit Formula table ${formulaSource.name}`,
         );
         break;
       }
@@ -572,7 +632,14 @@ function parseDataSources(value: unknown): DataSource[] | undefined {
       return undefined;
     }
     if (source.type === "sqlite" && "query" in source && typeof source.query === "string") {
-      sources.push({ name: source.name, type: "sqlite", query: source.query });
+      const edit = "edit" in source ? parseSqliteEditDefinition(source.edit) : undefined;
+      if ("edit" in source && !edit) return undefined;
+      sources.push({
+        name: source.name,
+        type: "sqlite",
+        query: source.query,
+        ...(edit ? { edit } : {}),
+      });
       continue;
     }
     if (
@@ -630,6 +697,126 @@ function parseDataSources(value: unknown): DataSource[] | undefined {
     });
   }
   return sources;
+}
+
+function parseSqliteEditDefinition(value: unknown): SqliteEditDefinition | undefined {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !("table" in value) ||
+    typeof value.table !== "string" ||
+    !("keySourceColumn" in value) ||
+    typeof value.keySourceColumn !== "string" ||
+    !("keyTableColumn" in value) ||
+    typeof value.keyTableColumn !== "string" ||
+    !("columns" in value) ||
+    !Array.isArray(value.columns)
+  ) {
+    return undefined;
+  }
+  const columns: SqliteEditDefinition["columns"] = [];
+  for (const column of value.columns) {
+    if (
+      typeof column !== "object" ||
+      column === null ||
+      !("sourceColumn" in column) ||
+      typeof column.sourceColumn !== "string" ||
+      !("tableColumn" in column) ||
+      typeof column.tableColumn !== "string"
+    ) {
+      return undefined;
+    }
+    columns.push({
+      sourceColumn: column.sourceColumn,
+      tableColumn: column.tableColumn,
+    });
+  }
+  return {
+    table: value.table,
+    keySourceColumn: value.keySourceColumn,
+    keyTableColumn: value.keyTableColumn,
+    columns,
+  };
+}
+
+function parseDatabaseCellEdits(value: unknown): DatabaseCellEdit[] | undefined {
+  if (!Array.isArray(value) || value.length > 10_000) return undefined;
+  const edits: DatabaseCellEdit[] = [];
+  for (const edit of value) {
+    if (
+      typeof edit !== "object" ||
+      edit === null ||
+      !("source" in edit) ||
+      typeof edit.source !== "string" ||
+      !("column" in edit) ||
+      typeof edit.column !== "string" ||
+      !("key" in edit) ||
+      !isDataTableCell(edit.key) ||
+      !("value" in edit) ||
+      !isDataTableCell(edit.value)
+    ) {
+      return undefined;
+    }
+    edits.push({
+      source: edit.source,
+      key: { ...edit.key },
+      column: edit.column,
+      value: { ...edit.value },
+    });
+  }
+  return edits;
+}
+
+function isDataTableCell(value: unknown): value is DataTableCell {
+  if (typeof value !== "object" || value === null || !("type" in value)) {
+    return false;
+  }
+  if (value.type === "null") return true;
+  if (!("value" in value)) return false;
+  return (
+    (value.type === "boolean" && typeof value.value === "boolean") ||
+    (value.type === "integer" &&
+      typeof value.value === "string" &&
+      /^-?\d+$/u.test(value.value)) ||
+    (value.type === "real" &&
+      typeof value.value === "number" &&
+      Number.isFinite(value.value)) ||
+    (value.type === "string" && typeof value.value === "string")
+  );
+}
+
+function mergeDatabaseCellEdits(
+  current: readonly DatabaseCellEdit[],
+  incoming: readonly DatabaseCellEdit[],
+): DatabaseCellEdit[] {
+  const result = current.map((edit) => ({
+    source: edit.source,
+    key: { ...edit.key },
+    column: edit.column,
+    value: { ...edit.value },
+  }));
+  for (const edit of incoming) {
+    const identity = databaseCellEditIdentity(edit);
+    const index = result.findIndex(
+      (candidate) => databaseCellEditIdentity(candidate) === identity,
+    );
+    const clone = {
+      source: edit.source,
+      key: { ...edit.key },
+      column: edit.column,
+      value: { ...edit.value },
+    };
+    if (index >= 0) result[index] = clone;
+    else result.push(clone);
+  }
+  result.sort((left, right) =>
+    databaseCellEditIdentity(left).localeCompare(databaseCellEditIdentity(right)),
+  );
+  return result;
+}
+
+function databaseCellEditIdentity(edit: DatabaseCellEdit): string {
+  return `${edit.source}\u0000${JSON.stringify(edit.key)}\u0000${edit.column}`;
 }
 
 function filePath(uri: vscode.Uri): string {

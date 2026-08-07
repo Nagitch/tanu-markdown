@@ -127,6 +127,57 @@ test("schema-version-3 registries expose Formula sources and retain Rhai", () =>
   ]);
 });
 
+test("schema-version-4 registries round-trip an explicit SQLite edit contract", () => {
+  const sources = [
+    {
+      name: "sales",
+      type: "sqlite" as const,
+      query: "SELECT id, category, amount_cents FROM sales ORDER BY id",
+      edit: {
+        table: "sales",
+        keySourceColumn: "id",
+        keyTableColumn: "id",
+        columns: [
+          { sourceColumn: "category", tableColumn: "category" },
+          { sourceColumn: "amount_cents", tableColumn: "amount_cents" },
+        ],
+      },
+    },
+  ];
+  const extras = extrasWithDataSources(null, sources);
+  assert.deepEqual(extras, {
+    tmd_data_sources: {
+      schema_version: 4,
+      sources: {
+        sales: {
+          type: "sqlite",
+          query: "SELECT id, category, amount_cents FROM sales ORDER BY id",
+          edit: {
+            table: "sales",
+            key: { source_column: "id", table_column: "id" },
+            columns: {
+              amount_cents: "amount_cents",
+              category: "category",
+            },
+          },
+        },
+      },
+    },
+  });
+  assert.deepEqual(inspectDataSourceRegistry(extras).sources, [
+    {
+      ...sources[0],
+      edit: {
+        ...sources[0]?.edit,
+        columns: [
+          { sourceColumn: "amount_cents", tableColumn: "amount_cents" },
+          { sourceColumn: "category", tableColumn: "category" },
+        ],
+      },
+    },
+  ]);
+});
+
 test("editing sources preserves unrelated manifest extras", () => {
   const extras = extrasWithDataSources(
     { application: { theme: "dark" } },
@@ -288,11 +339,11 @@ test("unsupported registries remain visible and read-only", () => {
 
 test("unknown registry versions remain visible and read-only", () => {
   const registry = inspectDataSourceRegistry({
-    tmd_data_sources: { schema_version: 4, sources: {} },
+    tmd_data_sources: { schema_version: 5, sources: {} },
   });
 
   assert.equal(registry.editable, false);
-  assert.match(registry.issue ?? "", /expected 1, 2 or 3/);
+  assert.match(registry.issue ?? "", /expected 1, 2, 3 or 4/);
 });
 
 test("Formula sources require schema version 3", () => {

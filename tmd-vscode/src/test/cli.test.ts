@@ -69,7 +69,8 @@ test("CLI client requests and validates typed table source data", async () => {
     '    source: request.source,',
     '    kind: "table",',
     '    columns: ["id", "label"],',
-    '    rows: [[{ type: "integer", value: "9007199254740993" }, { type: "string", value: request.text_attachments[0]?.text ?? "safe" }]]',
+    '    rows: [[{ type: "integer", value: "9007199254740993" }, { type: "string", value: request.text_attachments[0]?.text ?? "safe" }]],',
+    '    editable: { input_source: "rows-input", key_column: "id", editable_columns: ["label"], row_keys: [{ type: "integer", value: "9007199254740993" }], input_rows: [[{ type: "integer", value: "9007199254740993" }, request.database_edits[0]?.value ?? { type: "string", value: "safe" }]] }',
     '  }));',
     '});',
   ].join("\n");
@@ -84,6 +85,13 @@ test("CLI client requests and validates typed table source data", async () => {
       tmd_data_sources: { schema_version: 1, sources: {} },
     }, [
       { logicalPath: "views/rows.rhai", text: "edited" },
+    ], [
+      {
+        source: "rows-input",
+        key: { type: "integer", value: "9007199254740993" },
+        column: "label",
+        value: { type: "string", value: "draft" },
+      },
     ]),
     {
       source: "rows",
@@ -95,6 +103,18 @@ test("CLI client requests and validates typed table source data", async () => {
           { type: "string", value: "edited" },
         ],
       ],
+      editable: {
+        inputSource: "rows-input",
+        keyColumn: "id",
+        editableColumns: ["label"],
+        rowKeys: [{ type: "integer", value: "9007199254740993" }],
+        inputRows: [
+          [
+            { type: "integer", value: "9007199254740993" },
+            { type: "string", value: "draft" },
+          ],
+        ],
+      },
     },
   );
 });

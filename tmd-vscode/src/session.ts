@@ -10,6 +10,7 @@ import {
 import {
   persistLatestEditorState,
   persistRetainedDocument,
+  sameDatabaseCellEdits,
   TanuMarkdownModel,
   type EditorState,
 } from "./model.js";
@@ -316,6 +317,7 @@ export class LocalTmdSession {
           state.dataSources,
         ),
         state.textAttachmentEdits,
+        state.databaseEdits,
       );
     } catch (error) {
       return renderPreviewFallback(state.markdown, error);
@@ -336,6 +338,7 @@ export class LocalTmdSession {
         state.dataSources,
       ),
       state.textAttachmentEdits,
+      state.databaseEdits,
     );
   }
 
@@ -471,12 +474,19 @@ function documentUpdate(
       logical_path: edit.logicalPath,
       text: edit.text,
     })),
+    database_edits: state.databaseEdits.map((edit) => ({
+      source: edit.source,
+      key: { ...edit.key },
+      column: edit.column,
+      value: { ...edit.value },
+    })),
   };
 }
 
 function sameEditorStates(left: EditorState, right: EditorState): boolean {
   return (
     sameDataSources(left.dataSources, right.dataSources) &&
+    sameDatabaseCellEdits(left.databaseEdits, right.databaseEdits) &&
     left.markdown === right.markdown &&
     sameTextAttachmentEdits(
       left.textAttachmentEdits,
@@ -523,13 +533,20 @@ async function previewRetainedBytes(
   markdown: string,
   extras: DocumentInspection["manifest"]["extras"],
   textAttachments: readonly TextAttachmentEdit[],
+  databaseEdits: EditorState["databaseEdits"],
 ): Promise<string> {
   ensureTmdPath(sourcePath);
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "tmd-preview-"));
   const snapshotPath = path.join(directory, "snapshot.tmd");
   try {
     await fs.writeFile(snapshotPath, bytes, { flag: "wx" });
-    return await client.preview(snapshotPath, markdown, extras, textAttachments);
+    return await client.preview(
+      snapshotPath,
+      markdown,
+      extras,
+      textAttachments,
+      databaseEdits,
+    );
   } finally {
     await fs.rm(directory, { force: true, recursive: true });
   }
@@ -542,6 +559,7 @@ async function dataSourceTableFromRetainedBytes(
   source: string,
   extras: DocumentInspection["manifest"]["extras"],
   textAttachments: readonly TextAttachmentEdit[],
+  databaseEdits: EditorState["databaseEdits"],
 ): Promise<DataSourceTable> {
   ensureTmdPath(sourcePath);
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "tmd-data-source-"));
@@ -553,6 +571,7 @@ async function dataSourceTableFromRetainedBytes(
       source,
       extras,
       textAttachments,
+      databaseEdits,
     );
   } finally {
     await fs.rm(directory, { force: true, recursive: true });

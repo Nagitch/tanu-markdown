@@ -54,6 +54,19 @@
           <div class="table-result-heading">
             <p id="table-source-status" class="stale" role="status">Loading sources…</p>
           </div>
+          <form id="cell-formula-bar" class="cell-formula-bar" hidden>
+            <label>
+              <span class="visually-hidden">Selected cell</span>
+              <input id="cell-name" class="cell-name" type="text" readonly aria-label="Selected cell" />
+            </label>
+            <label class="cell-input-field">
+              <span class="formula-symbol" aria-hidden="true">fx</span>
+              <input id="cell-input" type="text" autocomplete="off" spellcheck="false" aria-label="Cell value or formula" />
+            </label>
+            <button id="apply-cell-edit" type="submit">Apply</button>
+            <button id="cancel-cell-edit" type="button">Cancel</button>
+          </form>
+          <p id="cell-edit-status" class="cell-edit-status stale" role="status" hidden></p>
           <div id="table-grid-host" class="table-grid-host" hidden></div>
           <section id="formula-program-panel" class="source-script-panel" aria-labelledby="formula-program-heading" hidden>
             <div class="source-script-heading">
@@ -63,7 +76,7 @@
               </div>
               <p id="formula-program-status" class="stale" role="status"></p>
             </div>
-            <p class="formula-help"><code>A1</code> is the first data cell; headers are not rows. Use <code>SUM(B1:B3)</code>, <code>[amount]</code>, <code>[@amount]</code>, or <code>HEADER(B)</code>.</p>
+            <p class="formula-help"><code>A1</code> is the first data cell; headers are not rows. Start a cell value with <code>=</code> to create a Formula such as <code>SUM(B1:B3)</code>, then click or drag across cells to insert a reference. Drag the selected cell’s fill handle to copy it with relative references.</p>
             <div id="formula-column-legend" class="formula-column-legend" aria-label="Formula column references"></div>
             <div id="formula-program-editor" class="source-script-editor"></div>
             <p id="formula-program-error" class="invalid source-script-error" role="alert" hidden></p>

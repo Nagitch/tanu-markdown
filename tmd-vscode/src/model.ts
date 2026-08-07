@@ -5,6 +5,7 @@ import {
 } from "./data-sources.js";
 import type {
   DataSource,
+  DatabaseCellEdit,
   DocumentInspection,
   TextAttachmentEdit,
   ValidationReport,
@@ -12,6 +13,7 @@ import type {
 
 export interface EditorState {
   dataSources: DataSource[];
+  databaseEdits: DatabaseCellEdit[];
   markdown: string;
   textAttachmentEdits: TextAttachmentEdit[];
   title: string;
@@ -23,6 +25,7 @@ export class TanuMarkdownModel {
   private validationRevisionValue = 0;
   private persistedStateValue: EditorState;
   private textAttachmentEditsValue: TextAttachmentEdit[] = [];
+  private databaseEditsValue: DatabaseCellEdit[] = [];
 
   constructor(private inspectionValue: DocumentInspection) {
     this.persistedStateValue = this.snapshot();
@@ -51,6 +54,7 @@ export class TanuMarkdownModel {
   snapshot(): EditorState {
     return {
       dataSources: inspectDataSourceRegistry(this.inspectionValue.manifest.extras).sources,
+      databaseEdits: this.databaseEditsValue.map(cloneDatabaseCellEdit),
       markdown: this.inspectionValue.markdown,
       textAttachmentEdits: this.textAttachmentEditsValue.map((edit) => ({ ...edit })),
       title: this.inspectionValue.manifest.title ?? "",
@@ -74,6 +78,7 @@ export class TanuMarkdownModel {
     }
     this.inspectionValue = inspection;
     this.textAttachmentEditsValue = [];
+    this.databaseEditsValue = [];
     this.contentRevisionValue += 1;
     this.persistedRevisionValue = this.contentRevisionValue;
     this.validationRevisionValue = this.contentRevisionValue;
@@ -92,6 +97,7 @@ export class TanuMarkdownModel {
     const currentState = this.snapshot();
     this.inspectionValue = inspection;
     this.textAttachmentEditsValue = [];
+    this.databaseEditsValue = [];
     this.persistedStateValue = this.snapshot();
     this.setState(currentState);
     const currentMatchesPersisted = sameEditorState(
@@ -124,6 +130,7 @@ export class TanuMarkdownModel {
     this.textAttachmentEditsValue = state.textAttachmentEdits.map((edit) => ({
       ...edit,
     }));
+    this.databaseEditsValue = state.databaseEdits.map(cloneDatabaseCellEdit);
     this.inspectionValue.manifest.title = state.title || null;
   }
 }
@@ -131,12 +138,41 @@ export class TanuMarkdownModel {
 function sameEditorState(left: EditorState, right: EditorState): boolean {
   return (
     sameDataSources(left.dataSources, right.dataSources) &&
+    sameDatabaseCellEdits(left.databaseEdits, right.databaseEdits) &&
     left.markdown === right.markdown &&
     sameTextAttachmentEdits(
       left.textAttachmentEdits,
       right.textAttachmentEdits,
     ) &&
     left.title === right.title
+  );
+}
+
+function cloneDatabaseCellEdit(edit: DatabaseCellEdit): DatabaseCellEdit {
+  return {
+    source: edit.source,
+    key: { ...edit.key },
+    column: edit.column,
+    value: { ...edit.value },
+  };
+}
+
+export function sameDatabaseCellEdits(
+  left: readonly DatabaseCellEdit[],
+  right: readonly DatabaseCellEdit[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((edit, index) => {
+      const other = right[index];
+      return (
+        other !== undefined &&
+        edit.source === other.source &&
+        edit.column === other.column &&
+        JSON.stringify(edit.key) === JSON.stringify(other.key) &&
+        JSON.stringify(edit.value) === JSON.stringify(other.value)
+      );
+    })
   );
 }
 

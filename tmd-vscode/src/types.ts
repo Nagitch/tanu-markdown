@@ -12,6 +12,17 @@ export interface SqliteDataSource {
   name: string;
   type: "sqlite";
   query: string;
+  edit?: SqliteEditDefinition;
+}
+
+export interface SqliteEditDefinition {
+  table: string;
+  keySourceColumn: string;
+  keyTableColumn: string;
+  columns: Array<{
+    sourceColumn: string;
+    tableColumn: string;
+  }>;
 }
 
 export interface RhaiDataSourceInput {
@@ -49,6 +60,22 @@ export interface DataSourceTable {
   kind: "table";
   columns: string[];
   rows: DataTableCell[][];
+  editable?: DataSourceTableEditInfo;
+}
+
+export interface DataSourceTableEditInfo {
+  inputSource: string;
+  keyColumn: string;
+  editableColumns: string[];
+  rowKeys: DataTableCell[];
+  inputRows: DataTableCell[][];
+}
+
+export interface DatabaseCellEdit {
+  source: string;
+  key: DataTableCell;
+  column: string;
+  value: DataTableCell;
 }
 
 export interface TextAttachmentEdit {
@@ -60,7 +87,7 @@ export interface TextAttachmentView extends TextAttachmentEdit {}
 
 export interface DataSourceRegistryView {
   editable: boolean;
-  schemaVersion?: 1 | 2 | 3;
+  schemaVersion?: 1 | 2 | 3 | 4;
   sources: DataSource[];
   issue?: string;
   rawRegistry?: string;
@@ -131,5 +158,11 @@ export interface DocumentUpdate {
   text_attachments?: Array<{
     logical_path: string;
     text: string;
+  }>;
+  database_edits?: Array<{
+    source: string;
+    key: DataTableCell;
+    column: string;
+    value: DataTableCell;
   }>;
 }

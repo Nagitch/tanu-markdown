@@ -48,7 +48,7 @@ function state(
   dataSources: DataSource[] = [],
   textAttachmentEdits: TextAttachmentEdit[] = [],
 ): EditorState {
-  return { dataSources, markdown, textAttachmentEdits, title };
+  return { dataSources, databaseEdits: [], markdown, textAttachmentEdits, title };
 }
 
 test("persisted inspection preserves edits made while an operation was pending", () => {
@@ -63,6 +63,7 @@ test("persisted inspection preserves edits made while an operation was pending",
 
   assert.deepEqual(model.snapshot(), {
     dataSources: [],
+    databaseEdits: [],
     markdown: "newer edit",
     textAttachmentEdits: [],
     title: "Newer title",
@@ -85,6 +86,7 @@ test("save response replaces state when no newer edit exists", () => {
 
   assert.deepEqual(model.snapshot(), {
     dataSources: [],
+    databaseEdits: [],
     markdown: "saved snapshot",
     textAttachmentEdits: [],
     title: "Saved title",
@@ -158,6 +160,35 @@ test("SQLite source edits participate in document dirty state and undo", () => {
   model.applyState(initial);
   assert.equal(model.isCurrentRevisionPersisted, true);
   assert.deepEqual(model.snapshot().dataSources, initial.dataSources);
+});
+
+test("staged database cell edits participate in dirty state and clear on save", () => {
+  const model = new TanuMarkdownModel(inspection("initial", "Initial", 0));
+  const initial = model.snapshot();
+  const edited = model.snapshot();
+  edited.databaseEdits = [
+    {
+      source: "sales",
+      key: { type: "integer", value: "2" },
+      column: "amount_cents",
+      value: { type: "integer", value: "4000" },
+    },
+  ];
+
+  model.applyState(edited);
+  assert.equal(model.isCurrentRevisionPersisted, false);
+  assert.deepEqual(model.snapshot().databaseEdits, edited.databaseEdits);
+
+  const savedRevision = model.contentRevision;
+  model.applyPersistedInspection(
+    inspection("initial", "Initial", 0),
+    savedRevision,
+  );
+  assert.deepEqual(model.snapshot().databaseEdits, []);
+  assert.equal(model.isCurrentRevisionPersisted, true);
+
+  model.applyState(initial);
+  assert.equal(model.isCurrentRevisionPersisted, true);
 });
 
 test("Rhai source edits preserve schema version 2 and ordered output columns", () => {
@@ -276,6 +307,7 @@ test("inspection replacement is rejected after a newer edit", () => {
   );
   assert.deepEqual(model.snapshot(), {
     dataSources: [],
+    databaseEdits: [],
     markdown: "typed during revert",
     textAttachmentEdits: [],
     title: "Current",

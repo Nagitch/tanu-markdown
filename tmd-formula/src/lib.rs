@@ -1058,14 +1058,6 @@ pub fn evaluate_formula_program_with_limits(
             )
             .at_target(*target));
         }
-        if target.row < input.rows.len() && target.column < input.columns.len() {
-            return Err(FormulaError::new(
-                FormulaErrorKind::Ref,
-                assignment.target_span,
-                "formula targets cannot overwrite the input table",
-            )
-            .at_target(*target));
-        }
         row_count = row_count.max(target.row + 1);
     }
     if row_count > limits.max_table_rows
@@ -2034,11 +2026,9 @@ mod tests {
     }
 
     #[test]
-    fn rejects_input_overwrites_and_cycles_with_locations() {
-        let error = evaluate("A1 = 1", &["item", "amount"]).expect_err("input overwrite");
-        assert!(error
-            .to_string()
-            .contains("cell `A1`: #REF! at line 1, column 1"));
+    fn supports_input_overwrites_and_rejects_cycles_with_locations() {
+        let table = evaluate("A1 = 1", &["item", "amount"]).expect("input overwrite");
+        assert_eq!(table.rows[0][0], DataScalar::Integer(1));
 
         let error = evaluate("C1 = C2\nC2 = C1", &["item", "amount", "result"]).expect_err("cycle");
         assert!(error.to_string().contains("#CYCLE!"));

@@ -5,19 +5,24 @@ import type {
   JsonValue,
   RhaiDataSource,
   RhaiDataSourceInput,
+  SqliteDataSource,
+  SqliteEditDefinition,
 } from "./types.js";
 
 const REGISTRY_KEY = "tmd_data_sources";
 const LEGACY_REGISTRY_SCHEMA_VERSION = 1;
 const RHAI_REGISTRY_SCHEMA_VERSION = 2;
-const CURRENT_REGISTRY_SCHEMA_VERSION = 3;
+const FORMULA_REGISTRY_SCHEMA_VERSION = 3;
+const CURRENT_REGISTRY_SCHEMA_VERSION = 4;
 const MAX_SOURCE_NAME_BYTES = 128;
 const MAX_QUERY_BYTES = 64 * 1024;
 const MAX_FORMULA_PROGRAM_BYTES = 256 * 1024;
 const MAX_RHAI_INPUTS = 16;
 const MAX_TABLE_COLUMNS = 128;
 const MAX_COLUMN_NAME_BYTES = 256;
+const MAX_SQLITE_IDENTIFIER_BYTES = 128;
 const SOURCE_NAME_PATTERN = /^[A-Za-z0-9._-]+$/;
+const SQLITE_IDENTIFIER_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const RESERVED_ATTACHMENT_PATHS = new Set([
   "manifest.json",
   "index.md",
@@ -62,10 +67,11 @@ export function inspectDataSourceRegistry(extras: JsonValue): DataSourceRegistry
   if (
     schemaVersion !== LEGACY_REGISTRY_SCHEMA_VERSION &&
     schemaVersion !== RHAI_REGISTRY_SCHEMA_VERSION &&
+    schemaVersion !== FORMULA_REGISTRY_SCHEMA_VERSION &&
     schemaVersion !== CURRENT_REGISTRY_SCHEMA_VERSION
   ) {
     return invalidRegistry(
-      `Data-source schema_version ${String(schemaVersion)} is not editable; expected 1, 2 or 3.`,
+      `Data-source schema_version ${String(schemaVersion)} is not editable; expected 1, 2, 3 or 4.`,
       rawRegistry,
     );
   }
@@ -79,25 +85,30 @@ export function inspectDataSourceRegistry(extras: JsonValue): DataSourceRegistry
       return invalidRegistry(`Data source \`${name}\` is not an object.`, rawRegistry);
     }
     if (definition.type === "sqlite") {
-      if (
-        hasUnknownKeys(definition, new Set(["type", "query"])) ||
-        typeof definition.query !== "string"
-      ) {
+      const source = parseSqliteDataSource(name, definition);
+      if (!source) {
         return invalidRegistry(
           `Data source \`${name}\` is not an editable SQLite source.`,
           rawRegistry,
         );
       }
-      sources.push({ name, type: "sqlite", query: definition.query });
+      if (source.edit && schemaVersion !== CURRENT_REGISTRY_SCHEMA_VERSION) {
+        return invalidRegistry(
+          `Editable SQLite data source \`${name}\` requires schema_version 4.`,
+          rawRegistry,
+        );
+      }
+      sources.push(source);
       continue;
     }
     if (definition.type === "rhai") {
       if (
         schemaVersion !== RHAI_REGISTRY_SCHEMA_VERSION &&
+        schemaVersion !== FORMULA_REGISTRY_SCHEMA_VERSION &&
         schemaVersion !== CURRENT_REGISTRY_SCHEMA_VERSION
       ) {
         return invalidRegistry(
-          `Rhai data source \`${name}\` requires schema_version 2 or 3.`,
+          `Rhai data source \`${name}\` requires schema_version 2, 3 or 4.`,
           rawRegistry,
         );
       }
@@ -112,7 +123,10 @@ export function inspectDataSourceRegistry(extras: JsonValue): DataSourceRegistry
       continue;
     }
     if (definition.type === "formula") {
-      if (schemaVersion !== CURRENT_REGISTRY_SCHEMA_VERSION) {
+      if (
+        schemaVersion !== FORMULA_REGISTRY_SCHEMA_VERSION &&
+        schemaVersion !== CURRENT_REGISTRY_SCHEMA_VERSION
+      ) {
         return invalidRegistry(
           `Formula data source \`${name}\` requires schema_version 3.`,
           rawRegistry,
@@ -157,8 +171,11 @@ export function extrasWithDataSources(
   const root = isObject(extras) ? { ...extras } : {};
   const schemaVersion =
     current.schemaVersion === CURRENT_REGISTRY_SCHEMA_VERSION ||
-    sources.some((source) => source.type === "formula")
+    sources.some((source) => source.type === "sqlite" && source.edit)
       ? CURRENT_REGISTRY_SCHEMA_VERSION
+      : current.schemaVersion === FORMULA_REGISTRY_SCHEMA_VERSION ||
+          sources.some((source) => source.type === "formula")
+        ? FORMULA_REGISTRY_SCHEMA_VERSION
       : current.schemaVersion === RHAI_REGISTRY_SCHEMA_VERSION ||
           sources.some((source) => source.type === "rhai")
         ? RHAI_REGISTRY_SCHEMA_VERSION
@@ -195,6 +212,7 @@ export function validateDataSources(sources: readonly DataSource[]): void {
           `SQLite source \`${source.name}\` query exceeds ${MAX_QUERY_BYTES} bytes.`,
         );
       }
+      if (source.edit) validateSqliteEditDefinition(source.name, source.edit);
       continue;
     }
 
@@ -217,7 +235,11 @@ export function sameDataSources(
       return false;
     }
     if (source.type === "sqlite") {
-      return other.type === "sqlite" && source.query === other.query;
+      return (
+        other.type === "sqlite" &&
+        source.query === other.query &&
+        sameSqliteEditDefinitions(source.edit, other.edit)
+      );
     }
     if (source.type === "rhai") {
       return (
@@ -234,6 +256,52 @@ export function sameDataSources(
       sameStrings(source.outputColumns, other.outputColumns)
     );
   });
+}
+
+function parseSqliteDataSource(
+  name: string,
+  definition: { [key: string]: JsonValue },
+): SqliteDataSource | undefined {
+  if (
+    hasUnknownKeys(definition, new Set(["type", "query", "edit"])) ||
+    typeof definition.query !== "string"
+  ) {
+    return undefined;
+  }
+  if (definition.edit === undefined) {
+    return { name, type: "sqlite", query: definition.query };
+  }
+  if (
+    !isObject(definition.edit) ||
+    hasUnknownKeys(definition.edit, new Set(["table", "key", "columns"])) ||
+    typeof definition.edit.table !== "string" ||
+    !isObject(definition.edit.key) ||
+    hasUnknownKeys(definition.edit.key, new Set(["source_column", "table_column"])) ||
+    typeof definition.edit.key.source_column !== "string" ||
+    typeof definition.edit.key.table_column !== "string" ||
+    !isObject(definition.edit.columns)
+  ) {
+    return undefined;
+  }
+  const columns: SqliteEditDefinition["columns"] = [];
+  for (const [sourceColumn, tableColumn] of Object.entries(
+    definition.edit.columns,
+  )) {
+    if (typeof tableColumn !== "string") return undefined;
+    columns.push({ sourceColumn, tableColumn });
+  }
+  columns.sort((left, right) => left.sourceColumn.localeCompare(right.sourceColumn));
+  return {
+    name,
+    type: "sqlite",
+    query: definition.query,
+    edit: {
+      table: definition.edit.table,
+      keySourceColumn: definition.edit.key.source_column,
+      keyTableColumn: definition.edit.key.table_column,
+      columns,
+    },
+  };
 }
 
 function parseRhaiDataSource(
@@ -295,7 +363,28 @@ function parseFormulaDataSource(
 
 function serializeDataSource(source: DataSource): JsonValue {
   if (source.type === "sqlite") {
-    return { type: "sqlite", query: source.query };
+    return {
+      type: "sqlite",
+      query: source.query,
+      ...(source.edit
+        ? {
+            edit: {
+              table: source.edit.table,
+              key: {
+                source_column: source.edit.keySourceColumn,
+                table_column: source.edit.keyTableColumn,
+              },
+              columns: Object.fromEntries(
+                [...source.edit.columns]
+                  .sort((left, right) =>
+                    left.sourceColumn.localeCompare(right.sourceColumn),
+                  )
+                  .map((column) => [column.sourceColumn, column.tableColumn]),
+              ),
+            },
+          }
+        : {}),
+    };
   }
   if (source.type === "formula") {
     return {
@@ -321,6 +410,62 @@ function serializeDataSource(source: DataSource): JsonValue {
       columns: [...source.outputColumns],
     },
   };
+}
+
+function validateSqliteEditDefinition(
+  sourceName: string,
+  edit: SqliteEditDefinition,
+): void {
+  validateSqliteIdentifier(edit.table, `SQLite source \`${sourceName}\` edit table`);
+  validateColumnName(edit.keySourceColumn, sourceName);
+  validateSqliteIdentifier(
+    edit.keyTableColumn,
+    `SQLite source \`${sourceName}\` edit key table column`,
+  );
+  if (edit.columns.length === 0) {
+    throw new Error(
+      `Editable SQLite source \`${sourceName}\` requires at least one writable column.`,
+    );
+  }
+  const sourceColumns = new Set<string>();
+  for (const column of edit.columns) {
+    validateColumnName(column.sourceColumn, sourceName);
+    if (column.sourceColumn === edit.keySourceColumn) {
+      throw new Error(
+        `Editable SQLite source \`${sourceName}\` cannot make its stable key column \`${column.sourceColumn}\` writable.`,
+      );
+    }
+    if (sourceColumns.has(column.sourceColumn)) {
+      throw new Error(
+        `Editable SQLite source \`${sourceName}\` repeats writable column \`${column.sourceColumn}\`.`,
+      );
+    }
+    sourceColumns.add(column.sourceColumn);
+    validateSqliteIdentifier(
+      column.tableColumn,
+      `SQLite source \`${sourceName}\` edit table column`,
+    );
+  }
+}
+
+function validateColumnName(column: string, sourceName: string): void {
+  const length = Buffer.byteLength(column, "utf8");
+  if (length === 0 || length > MAX_COLUMN_NAME_BYTES) {
+    throw new Error(
+      `Editable SQLite source \`${sourceName}\` has an empty or overlong query-result column.`,
+    );
+  }
+}
+
+function validateSqliteIdentifier(identifier: string, owner: string): void {
+  if (
+    Buffer.byteLength(identifier, "utf8") > MAX_SQLITE_IDENTIFIER_BYTES ||
+    !SQLITE_IDENTIFIER_PATTERN.test(identifier)
+  ) {
+    throw new Error(
+      `${owner} \`${identifier}\` must use at most ${MAX_SQLITE_IDENTIFIER_BYTES} ASCII letters, digits or underscores and start with a letter or underscore.`,
+    );
+  }
 }
 
 function validateRhaiDataSource(
@@ -478,6 +623,32 @@ function sameRhaiInputs(
     (input, index) =>
       input.alias === sortedRight[index]?.alias &&
       input.source === sortedRight[index]?.source,
+  );
+}
+
+function sameSqliteEditDefinitions(
+  left: SqliteEditDefinition | undefined,
+  right: SqliteEditDefinition | undefined,
+): boolean {
+  if (!left || !right) return left === right;
+  if (
+    left.table !== right.table ||
+    left.keySourceColumn !== right.keySourceColumn ||
+    left.keyTableColumn !== right.keyTableColumn ||
+    left.columns.length !== right.columns.length
+  ) {
+    return false;
+  }
+  const sortedLeft = [...left.columns].sort((a, b) =>
+    a.sourceColumn.localeCompare(b.sourceColumn),
+  );
+  const sortedRight = [...right.columns].sort((a, b) =>
+    a.sourceColumn.localeCompare(b.sourceColumn),
+  );
+  return sortedLeft.every(
+    (column, index) =>
+      column.sourceColumn === sortedRight[index]?.sourceColumn &&
+      column.tableColumn === sortedRight[index]?.tableColumn,
   );
 }
 
