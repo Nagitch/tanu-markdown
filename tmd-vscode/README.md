@@ -20,6 +20,11 @@ It opens `.tmd` files through `tmd inspect --json` and provides:
   SQLite `scalar`/`table` views;
 - dynamic-view reference inspection plus SQLite query and Rhai table-source
   definition add, edit, remove, undo/redo, preview, and save workflows;
+- a read-only RevoGrid table viewer that selects and evaluates the current
+  SQLite or Rhai table source, including unsaved source-definition changes;
+- a Rhai script editor below the table viewer with syntax highlighting,
+  undo/redo-aware attachment edits, and debounced sandbox diagnostics shown in
+  the status, error panel, gutter, and source range;
 - document creation, attachment add/remove, and HTML export.
 
 Container parsing remains exclusively in Rust. Platform-specific VSIX packages
@@ -30,9 +35,14 @@ retained `.tmd` bytes, so the CLI can resolve attachments and query the embedded
 database without the extension implementing either format. Unsaved SQLite and
 Rhai source-definition edits are passed as a preview-only `extras` override and
 are not written until the document is saved. Rhai script contents remain
-ordinary TMD attachments; the Sources tab edits their logical paths, SQLite
-input mappings, and ordered table output columns. An older configured
-external CLI falls back to the local safe Markdown renderer.
+ordinary TMD attachments, but selecting a Rhai source in the Table tab exposes
+its UTF-8 script in a CodeMirror editor. Script drafts participate in the same
+document dirty state, save, backup, undo, and redo lifecycle as Markdown and
+source-definition edits. Table and preview evaluation receive the draft as a
+bounded attachment override, so sandbox errors are reported without first
+writing the document. The Sources tab edits the script's logical path, SQLite
+input mappings, and ordered table output columns. An older configured external
+CLI falls back to the local safe Markdown renderer.
 The preview displays a diagnostic banner when that fallback is active,
 distinguishing a missing, outdated, incompatible, or timed-out CLI and directing
 the user to `TMD: Select CLI Executable` without interrupting editing.
@@ -108,11 +118,11 @@ The extension targets VS Code `^1.90.0` and uses strict TypeScript settings.
 Generated `bin/`, `dist/`, `node_modules/`, and `.vsix` files are not committed.
 The package command verifies the exact minimal VSIX contents.
 
-SvelteKit uses `adapter-static` with a single JavaScript and CSS bundle. The VS
-Code bridge loads the generated HTML, rewrites its asset URLs to webview-safe
-resource URIs, and applies a fresh CSP nonce for each panel. Table-grid adoption
-and editing-UX refinement, including RevoGrid integration, are tracked
-separately in [issue #43](https://github.com/Nagitch/tanu-markdown/issues/43).
+SvelteKit uses `adapter-static`; RevoGrid is bundled with the Web UI and uses the
+same per-panel CSP nonce for its runtime styles. The VS Code bridge loads the
+generated HTML and rewrites its asset URLs to webview-safe resource URIs.
+Persisted spreadsheet-style table editing and further UX refinement remain
+tracked in [issue #43](https://github.com/Nagitch/tanu-markdown/issues/43).
 
 The webview permits no default network or resource source. Its bundled styles
 and script are restricted to the extension resource origin, CodeMirror's

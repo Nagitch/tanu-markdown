@@ -6,12 +6,14 @@ import {
 import type {
   DataSource,
   DocumentInspection,
+  TextAttachmentEdit,
   ValidationReport,
 } from "./types.js";
 
 export interface EditorState {
   dataSources: DataSource[];
   markdown: string;
+  textAttachmentEdits: TextAttachmentEdit[];
   title: string;
 }
 
@@ -20,6 +22,7 @@ export class TanuMarkdownModel {
   private persistedRevisionValue = 0;
   private validationRevisionValue = 0;
   private persistedStateValue: EditorState;
+  private textAttachmentEditsValue: TextAttachmentEdit[] = [];
 
   constructor(private inspectionValue: DocumentInspection) {
     this.persistedStateValue = this.snapshot();
@@ -49,6 +52,7 @@ export class TanuMarkdownModel {
     return {
       dataSources: inspectDataSourceRegistry(this.inspectionValue.manifest.extras).sources,
       markdown: this.inspectionValue.markdown,
+      textAttachmentEdits: this.textAttachmentEditsValue.map((edit) => ({ ...edit })),
       title: this.inspectionValue.manifest.title ?? "",
     };
   }
@@ -69,6 +73,7 @@ export class TanuMarkdownModel {
       return false;
     }
     this.inspectionValue = inspection;
+    this.textAttachmentEditsValue = [];
     this.contentRevisionValue += 1;
     this.persistedRevisionValue = this.contentRevisionValue;
     this.validationRevisionValue = this.contentRevisionValue;
@@ -86,6 +91,7 @@ export class TanuMarkdownModel {
 
     const currentState = this.snapshot();
     this.inspectionValue = inspection;
+    this.textAttachmentEditsValue = [];
     this.persistedStateValue = this.snapshot();
     this.setState(currentState);
     const currentMatchesPersisted = sameEditorState(
@@ -115,6 +121,9 @@ export class TanuMarkdownModel {
       state.dataSources,
     );
     this.inspectionValue.markdown = state.markdown;
+    this.textAttachmentEditsValue = state.textAttachmentEdits.map((edit) => ({
+      ...edit,
+    }));
     this.inspectionValue.manifest.title = state.title || null;
   }
 }
@@ -123,7 +132,25 @@ function sameEditorState(left: EditorState, right: EditorState): boolean {
   return (
     sameDataSources(left.dataSources, right.dataSources) &&
     left.markdown === right.markdown &&
+    sameTextAttachmentEdits(
+      left.textAttachmentEdits,
+      right.textAttachmentEdits,
+    ) &&
     left.title === right.title
+  );
+}
+
+function sameTextAttachmentEdits(
+  left: readonly TextAttachmentEdit[],
+  right: readonly TextAttachmentEdit[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every(
+      (edit, index) =>
+        edit.logicalPath === right[index]?.logicalPath &&
+        edit.text === right[index]?.text,
+    )
   );
 }
 

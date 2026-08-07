@@ -49,6 +49,7 @@ test("shared session operations own editor state and content revisions", () => {
     state: {
       dataSources: [],
       markdown: "edited",
+      textAttachmentEdits: [],
       title: "Edited",
     },
   };

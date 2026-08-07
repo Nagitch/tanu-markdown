@@ -28,6 +28,7 @@
       <div class="editor-tabs" role="tablist" aria-label="Document sections">
         <button class="editor-tab" type="button" role="tab" aria-controls="panel-document" aria-selected="true" data-editor-tab="document">Document</button>
         <button class="editor-tab" type="button" role="tab" aria-controls="panel-data" aria-selected="false" tabindex="-1" data-editor-tab="data">Data</button>
+        <button class="editor-tab" type="button" role="tab" aria-controls="panel-table" aria-selected="false" tabindex="-1" data-editor-tab="table">Table</button>
         <button class="editor-tab" type="button" role="tab" aria-controls="panel-sources" aria-selected="false" tabindex="-1" data-editor-tab="sources">Sources</button>
         <button class="editor-tab" type="button" role="tab" aria-controls="panel-attachments" aria-selected="false" tabindex="-1" data-editor-tab="attachments">Attachments</button>
         <button class="editor-tab" type="button" role="tab" aria-controls="panel-validation" aria-selected="false" tabindex="-1" data-editor-tab="validation">Validation</button>
@@ -45,6 +46,26 @@
           <div class="summary"><div class="metric"><span>Database version</span><strong id="database-version">—</strong></div></div>
           <h3>Database objects</h3>
           <ul id="database-objects"></ul>
+        </section>
+        <section id="panel-table" class="editor-panel table-panel" role="tabpanel" data-editor-panel="table" hidden>
+          <h2>Table</h2>
+          <p class="section-description">Select a tabular source to inspect its current rows.</p>
+          <label class="field table-source-field"><span>Source</span><select id="table-source" disabled></select></label>
+          <div class="table-result-heading">
+            <p id="table-source-status" class="stale" role="status">Loading sources…</p>
+          </div>
+          <div id="table-grid-host" class="table-grid-host" hidden></div>
+          <section id="rhai-script-panel" class="rhai-script-panel" aria-labelledby="rhai-script-heading" hidden>
+            <div class="rhai-script-heading">
+              <div>
+                <h3 id="rhai-script-heading">Rhai script</h3>
+                <code id="rhai-script-path"></code>
+              </div>
+              <p id="rhai-script-status" class="stale" role="status"></p>
+            </div>
+            <div id="rhai-script-editor" class="rhai-script-editor"></div>
+            <p id="rhai-script-error" class="invalid rhai-script-error" role="alert" hidden></p>
+          </section>
         </section>
         <section id="panel-sources" class="editor-panel" role="tabpanel" data-editor-panel="sources" hidden>
           <h2>Data sources</h2>

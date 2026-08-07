@@ -1,8 +1,13 @@
+import { defineCustomElements } from "@revolist/revogrid/loader";
+import type { ColumnRegular, DataType } from "@revolist/revogrid";
 import { EditorClientState, PREVIEW_DEBOUNCE_MS } from "../../../src/input.js";
 import { setupEditorTabs } from "../../../src/tabs.js";
+import { rhaiDiagnosticFromIssue } from "../../../src/rhai-diagnostics.js";
 import type {
   DataSource,
   DataSourceRegistryView,
+  DataSourceTable,
+  DataTableCell,
   RhaiDataSource,
   ValidationReport,
 } from "../../../src/types.js";
@@ -12,9 +17,14 @@ import type {
   EditorRequest,
 } from "../../../src/webview-protocol.js";
 import { createMarkdownEditor } from "./markdown-editor.js";
+import { createRhaiEditor } from "./rhai-editor.js";
+
+const RHAI_EVALUATION_DEBOUNCE_MS = 350;
+const MAX_RHAI_SCRIPT_BYTES = 256 * 1024;
 
 interface EditorUiState extends Record<string, unknown> {
   activeEditorTab?: string;
+  selectedTableSource?: string;
 }
 
 interface HostApi {
@@ -40,6 +50,17 @@ const title = requireElement<HTMLInputElement>("title");
 const markdown = createMarkdownEditor(requireElement("markdown"), cspNonce);
 const attachments = requireElement<HTMLUListElement>("attachments");
 const databaseObjects = requireElement<HTMLUListElement>("database-objects");
+const tableSource = requireElement<HTMLSelectElement>("table-source");
+const tableSourceStatus = requireElement<HTMLElement>("table-source-status");
+const tableGridHost = requireElement<HTMLElement>("table-grid-host");
+const rhaiScriptPanel = requireElement<HTMLElement>("rhai-script-panel");
+const rhaiScriptPath = requireElement<HTMLElement>("rhai-script-path");
+const rhaiScriptStatus = requireElement<HTMLElement>("rhai-script-status");
+const rhaiScriptError = requireElement<HTMLElement>("rhai-script-error");
+const rhaiEditor = createRhaiEditor(
+  requireElement("rhai-script-editor"),
+  cspNonce,
+);
 const dataViewReferences = requireElement<HTMLUListElement>("data-view-references");
 const dataSources = requireElement<HTMLElement>("data-sources");
 const dataSourceRegistryIssue = requireElement<HTMLElement>(
@@ -58,10 +79,36 @@ const validation = requireElement<HTMLElement>("validation");
 const preview = requireElement<HTMLElement>("preview");
 
 let previewTimer: ReturnType<typeof setTimeout> | undefined;
+let rhaiEvaluationTimer: ReturnType<typeof setTimeout> | undefined;
 let dataSourceDrafts: DataSource[] = [];
+let tableSourceDefinitions: DataSource[] = [];
 let dataSourcesEditable = false;
 let dataSourceEditingLocked = true;
 let pendingDataSourceRevision: number | undefined;
+let pendingRhaiScriptRevision: number | undefined;
+let selectedTableSource = host.getState()?.selectedTableSource;
+let tableRequestId = 0;
+let rhaiScriptRequestId = 0;
+let currentTable: DataSourceTable | undefined;
+let tableGrid: HTMLRevoGridElement | undefined;
+let currentRhaiScriptPath: string | undefined;
+let rhaiEvaluationComplete = false;
+let rhaiEvaluationIssue: string | undefined;
+
+void Promise.resolve(defineCustomElements()).then(() => {
+  const grid = document.createElement("revo-grid");
+  grid.setAttribute("aria-label", "Selected data source table");
+  grid.theme = "compact";
+  grid.readonly = true;
+  grid.resize = true;
+  grid.rowHeaders = true;
+  grid.range = true;
+  grid.stretch = true;
+  grid.useClipboard = true;
+  tableGrid = grid;
+  tableGridHost.replaceChildren(grid);
+  if (currentTable) renderTableGrid(currentTable);
+});
 
 setupEditorTabs(
   {
@@ -79,6 +126,8 @@ markdown.addEventListener("input", () => {
   sendDocumentEdit();
   queuePreview();
 });
+rhaiEditor.disabled = true;
+rhaiEditor.addEventListener("input", sendRhaiScriptEdit);
 
 requireElement("validate").addEventListener("click", () =>
   host.postMessage({ type: "validate" }),
@@ -93,6 +142,16 @@ preview.addEventListener("click", (event) => {
   if (event.target instanceof Element && event.target.closest("a")) {
     event.preventDefault();
   }
+});
+
+tableSource.addEventListener("change", () => {
+  selectedTableSource = tableSource.value || undefined;
+  host.setState({
+    ...(host.getState() ?? {}),
+    selectedTableSource,
+  });
+  requestTableSource();
+  requestRhaiScript();
 });
 
 addSqliteDataSource.addEventListener("click", () => {
@@ -139,17 +198,28 @@ window.addEventListener("message", (event: MessageEvent<unknown>) => {
     return;
   }
   if (message.type === "editAck") {
-    if (
-      revision.acceptEditAcknowledgement(message) &&
-      message.clientRevision === pendingDataSourceRevision
-    ) {
+    if (!revision.acceptEditAcknowledgement(message)) return;
+    if (message.clientRevision === pendingDataSourceRevision) {
       pendingDataSourceRevision = undefined;
       setStatus(
         dataSourceStatus,
         "Source changes applied. Save the document to persist them.",
         "valid",
       );
+      renderTableSourceOptions(dataSourceDrafts);
     }
+    if (message.clientRevision === pendingRhaiScriptRevision) {
+      pendingRhaiScriptRevision = undefined;
+      queueRhaiEvaluation();
+    }
+    return;
+  }
+  if (message.type === "dataSourceTable") {
+    renderTableSourceResult(message);
+    return;
+  }
+  if (message.type === "rhaiScript") {
+    renderRhaiScriptResult(message);
     return;
   }
   applyModel(message);
@@ -182,6 +252,35 @@ function sendDataSourceEdit(sources: DataSource[]): number | undefined {
   return clientRevision;
 }
 
+function sendRhaiScriptEdit(): void {
+  const source = selectedRhaiSource();
+  if (!source || !currentRhaiScriptPath) return;
+  if (new TextEncoder().encode(rhaiEditor.value).length > MAX_RHAI_SCRIPT_BYTES) {
+    const issue = `Rhai scripts must be at most ${MAX_RHAI_SCRIPT_BYTES} UTF-8 bytes.`;
+    rhaiEvaluationComplete = true;
+    rhaiEvaluationIssue = issue;
+    rhaiEditor.setDiagnostic({ message: issue });
+    updateRhaiScriptStatus();
+    return;
+  }
+  const clientRevision = revision.nextEditRevision();
+  if (clientRevision === undefined) return;
+  pendingRhaiScriptRevision = clientRevision;
+  rhaiEvaluationComplete = false;
+  rhaiEvaluationIssue = undefined;
+  rhaiEditor.setDiagnostic(undefined);
+  updateRhaiScriptStatus();
+  host.postMessage({
+    type: "editRhaiScript",
+    clientRevision,
+    source: source.name,
+    logicalPath: currentRhaiScriptPath,
+    text: rhaiEditor.value,
+  });
+  renderValidation(undefined, false);
+  queuePreview();
+}
+
 function queuePreview(): void {
   if (!revision.initialized) return;
   clearTimeout(previewTimer);
@@ -194,6 +293,11 @@ function queuePreview(): void {
   }, PREVIEW_DEBOUNCE_MS);
 }
 
+function queueRhaiEvaluation(): void {
+  clearTimeout(rhaiEvaluationTimer);
+  rhaiEvaluationTimer = setTimeout(() => requestTableSource(), RHAI_EVALUATION_DEBOUNCE_MS);
+}
+
 function applyModel(model: EditorModelMessage): void {
   if (
     !revision.acceptAuthoritativeState({
@@ -204,6 +308,8 @@ function applyModel(model: EditorModelMessage): void {
     return;
   }
   clearTimeout(previewTimer);
+  clearTimeout(rhaiEvaluationTimer);
+  pendingRhaiScriptRevision = undefined;
   title.value = model.title;
   markdown.value = model.markdown;
   title.disabled = model.editingLocked;
@@ -214,11 +320,224 @@ function applyModel(model: EditorModelMessage): void {
   );
   renderDataViewReferences(model.inspection.validation, model.validationCurrent);
   renderDataSourceRegistry(model.dataSourceRegistry, model.editingLocked);
+  renderTableSourceOptions(model.dataSourceRegistry.sources);
   renderAttachments(model);
   renderDatabaseObjects(model);
   renderValidation(model.inspection.validation, model.validationCurrent);
   preview.innerHTML = model.previewHtml;
   root.dataset.state = "ready";
+}
+
+function renderTableSourceOptions(sources: readonly DataSource[]): void {
+  const tabularSources = sources.filter(isTabularSource);
+  tableSourceDefinitions = tabularSources.map(cloneDataSource);
+  const names = new Set(tabularSources.map((source) => source.name));
+  if (!selectedTableSource || !names.has(selectedTableSource)) {
+    selectedTableSource = tabularSources[0]?.name;
+  }
+
+  tableSource.replaceChildren();
+  for (const source of tabularSources) {
+    const option = document.createElement("option");
+    option.value = source.name;
+    option.textContent = `${source.name} · ${source.type}`;
+    option.selected = source.name === selectedTableSource;
+    tableSource.append(option);
+  }
+  tableSource.disabled = tabularSources.length === 0;
+  host.setState({
+    ...(host.getState() ?? {}),
+    selectedTableSource,
+  });
+  requestTableSource();
+  requestRhaiScript();
+}
+
+function isTabularSource(source: DataSource): boolean {
+  return source.type === "sqlite" || source.type === "rhai";
+}
+
+function requestTableSource(): void {
+  tableRequestId += 1;
+  currentTable = undefined;
+  tableGridHost.hidden = true;
+  if (!selectedTableSource) {
+    setStatus(
+      tableSourceStatus,
+      "No table-compatible sources are defined. Add one in the Sources tab.",
+      "stale",
+    );
+    return;
+  }
+  if (!revision.initialized) return;
+  if (selectedRhaiSource()) {
+    rhaiEvaluationComplete = false;
+    rhaiEvaluationIssue = undefined;
+    rhaiEditor.setDiagnostic(undefined);
+    updateRhaiScriptStatus();
+  }
+  setStatus(tableSourceStatus, `Loading ${selectedTableSource}…`, "stale");
+  host.postMessage({
+    type: "dataSourceTable",
+    clientRevision: revision.clientRevision,
+    requestId: tableRequestId,
+    source: selectedTableSource,
+  });
+}
+
+function renderTableSourceResult(
+  message: Extract<EditorHostMessage, { type: "dataSourceTable" }>,
+): void {
+  if (
+    message.requestId !== tableRequestId ||
+    message.source !== selectedTableSource
+  ) {
+    return;
+  }
+  if (!message.table) {
+    currentTable = undefined;
+    tableGridHost.hidden = true;
+    setStatus(
+      tableSourceStatus,
+      message.issue ?? "The selected source could not be displayed as a table.",
+      "invalid",
+    );
+    applyRhaiEvaluationIssue(message.issue);
+    return;
+  }
+  currentTable = message.table;
+  tableGridHost.hidden = false;
+  renderTableGrid(message.table);
+  setStatus(
+    tableSourceStatus,
+    `${message.table.rows.length.toLocaleString()} row${message.table.rows.length === 1 ? "" : "s"} · ${message.table.columns.length.toLocaleString()} column${message.table.columns.length === 1 ? "" : "s"}`,
+    "valid",
+  );
+  applyRhaiEvaluationIssue(undefined);
+}
+
+function requestRhaiScript(): void {
+  rhaiScriptRequestId += 1;
+  currentRhaiScriptPath = undefined;
+  rhaiEvaluationComplete = false;
+  rhaiEvaluationIssue = undefined;
+  rhaiEditor.setDiagnostic(undefined);
+  const source = selectedRhaiSource();
+  if (!source) {
+    rhaiScriptPanel.hidden = true;
+    rhaiEditor.disabled = true;
+    rhaiEditor.value = "";
+    return;
+  }
+  rhaiScriptPanel.hidden = false;
+  rhaiScriptPath.textContent = source.script;
+  rhaiScriptError.hidden = true;
+  rhaiScriptError.textContent = "";
+  rhaiEditor.disabled = true;
+  setStatus(rhaiScriptStatus, "Loading script…", "stale");
+  if (!revision.initialized) return;
+  host.postMessage({
+    type: "rhaiScript",
+    clientRevision: revision.clientRevision,
+    requestId: rhaiScriptRequestId,
+    source: source.name,
+  });
+}
+
+function renderRhaiScriptResult(
+  message: Extract<EditorHostMessage, { type: "rhaiScript" }>,
+): void {
+  const source = selectedRhaiSource();
+  if (
+    !source ||
+    message.requestId !== rhaiScriptRequestId ||
+    message.source !== source.name
+  ) {
+    return;
+  }
+  if (!message.script) {
+    currentRhaiScriptPath = undefined;
+    rhaiEditor.disabled = true;
+    rhaiScriptError.hidden = false;
+    rhaiScriptError.textContent =
+      message.issue ?? "The Rhai script attachment could not be loaded.";
+    setStatus(rhaiScriptStatus, "Script unavailable", "invalid");
+    return;
+  }
+  currentRhaiScriptPath = message.script.logicalPath;
+  rhaiScriptPath.textContent = message.script.logicalPath;
+  rhaiEditor.value = message.script.text;
+  rhaiEditor.disabled = !dataSourcesEditable || dataSourceEditingLocked;
+  rhaiScriptError.hidden = true;
+  rhaiScriptError.textContent = "";
+  updateRhaiScriptStatus();
+}
+
+function selectedRhaiSource(): RhaiDataSource | undefined {
+  const source = tableSourceDefinitions.find(
+    (candidate) => candidate.name === selectedTableSource,
+  );
+  return source?.type === "rhai" ? source : undefined;
+}
+
+function applyRhaiEvaluationIssue(issue: string | undefined): void {
+  if (!selectedRhaiSource()) return;
+  rhaiEvaluationComplete = true;
+  rhaiEvaluationIssue = issue;
+  rhaiEditor.setDiagnostic(issue ? rhaiDiagnosticFromIssue(issue) : undefined);
+  updateRhaiScriptStatus();
+}
+
+function updateRhaiScriptStatus(): void {
+  if (!selectedRhaiSource() || currentRhaiScriptPath === undefined) return;
+  if (rhaiEvaluationIssue) {
+    setStatus(rhaiScriptStatus, "Error", "invalid");
+    rhaiScriptError.hidden = false;
+    rhaiScriptError.textContent = rhaiEvaluationIssue;
+  } else if (!rhaiEvaluationComplete) {
+    setStatus(rhaiScriptStatus, "Checking…", "stale");
+    rhaiScriptError.hidden = true;
+    rhaiScriptError.textContent = "";
+  } else {
+    setStatus(rhaiScriptStatus, "No errors", "valid");
+    rhaiScriptError.hidden = true;
+    rhaiScriptError.textContent = "";
+  }
+}
+
+function renderTableGrid(table: DataSourceTable): void {
+  if (!tableGrid) return;
+  tableGrid.columns = table.columns.map(
+    (name, index): ColumnRegular => ({
+      name,
+      prop: tableColumnProp(index),
+      readonly: true,
+      sortable: true,
+      size: Math.min(360, Math.max(120, name.length * 8 + 36)),
+    }),
+  );
+  tableGrid.source = table.rows.map((row) =>
+    Object.fromEntries(
+      row.map((cell, index) => [tableColumnProp(index), tableCellValue(cell)]),
+    ) as DataType,
+  );
+}
+
+function tableColumnProp(index: number): string {
+  return `column-${index}`;
+}
+
+function tableCellValue(cell: DataTableCell): string | number | boolean {
+  switch (cell.type) {
+    case "null":
+      return "NULL";
+    case "integer": {
+      const number = Number(cell.value);
+      return Number.isSafeInteger(number) ? number : cell.value;
+    }
+    default:
+      return cell.value;
+  }
 }
 
 function renderAttachments(model: EditorModelMessage): void {
@@ -586,6 +905,10 @@ function isEditorHostMessage(value: unknown): value is EditorHostMessage {
     typeof value === "object" &&
     value !== null &&
     "type" in value &&
-    (value.type === "model" || value.type === "editAck" || value.type === "preview")
+    (value.type === "model" ||
+      value.type === "editAck" ||
+      value.type === "preview" ||
+      value.type === "dataSourceTable" ||
+      value.type === "rhaiScript")
   );
 }

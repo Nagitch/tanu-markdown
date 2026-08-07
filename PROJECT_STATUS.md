@@ -1,6 +1,6 @@
 # Project Status
 
-Last reviewed: 2026-08-04
+Last reviewed: 2026-08-07
 
 Tanu Markdown is an early-stage, pre-1.0 project. The core Rust implementation
 supports document creation, `.tmd` round trips, attachment metadata
@@ -14,9 +14,9 @@ a functional custom editor backed exclusively by that bridge.
 | Component | Current state |
 | --- | --- |
 | `tmd-core` | Implements the document model, structured validation, safe attachment handling, atomic writes, SQLite import/export/migration, dynamic SQLite source evaluation, sandboxed Rhai-to-table transformations, ZIP I/O, and optional C ABI functions |
-| `tmd-cli` | Installs `tmd`; implements document create/inspect/update/publish/validate, attachment lifecycle, shared safe preview/HTML rendering, dynamic `scalar`/`table` views, and embedded database lifecycle/query commands |
+| `tmd-cli` | Installs `tmd`; implements document create/inspect/update/publish/validate, attachment lifecycle including bounded UTF-8 reads and draft overrides, shared safe preview/HTML rendering, typed table-source evaluation, dynamic `scalar`/`table` views, and embedded database lifecycle/query commands |
 | `tmd-core-ffi` | Builds a `cdylib` wrapper and retains the exported `tmd-core` FFI symbols |
-| `tmd-vscode` | Implements a CSP-restricted static SvelteKit Web UI, a VS Code host bridge, and a shared local document session with edit/save/revert/backup, dynamic view/source inspection and SQLite source editing, CLI-rendered live preview including unsaved source changes and attachments, validation, and HTML export workflows through `tmd` |
+| `tmd-vscode` | Implements a CSP-restricted static SvelteKit Web UI with a read-only RevoGrid source viewer and syntax-highlighted Rhai script panel with sandbox diagnostics, a VS Code host bridge, and a shared local document session with edit/save/revert/backup, dynamic view/source inspection and source editing, CLI-rendered live preview including unsaved source and script changes, validation, and HTML export workflows through `tmd` |
 | `tmd-sample` | Contains a `.tmd` sample with text, image, and Rhai attachments plus inline `scalar`, direct SQLite `table`, and Rhai-transformed `table` views |
 
 ## Verified behavior
@@ -35,8 +35,9 @@ The `tmd-core` test suite covers:
 - path-based read/write helpers;
 - optional FFI null-pointer behavior.
 
-CLI integration tests exercise the full `.tmd` lifecycle. Extension
-tests cover its process boundary and safe preview. Repository CI additionally
+CLI integration tests exercise the full `.tmd` lifecycle, including draft Rhai
+attachment evaluation and persistence. Extension tests cover its process
+boundary, script diagnostics, document-state integration, and safe preview. Repository CI additionally
 checks formatting, Clippy, rustdoc, samples, extension tests, generic VSIX
 packaging, static Linux CLI verification, and native CLI staging for
 platform-specific VSIX artifacts.
@@ -55,8 +56,9 @@ platform-specific VSIX artifacts.
   JSON/YAML/TOML attachments, Rhai-to-Rhai pipelines, `list`, and `code` remain
   planned in
   [issue #35](https://github.com/Nagitch/tanu-markdown/issues/35).
-- Spreadsheet-style editing and its RevoGrid-based interaction model remain
-  planned in [issue #43](https://github.com/Nagitch/tanu-markdown/issues/43).
+- RevoGrid currently displays selected table sources read-only. Persisted
+  spreadsheet-style editing and its broader interaction model remain planned
+  in [issue #43](https://github.com/Nagitch/tanu-markdown/issues/43).
 - The C ABI does not ship generated headers or a stable ABI compatibility
   policy.
 - Malformed containers are generated in tests rather than retained as binary

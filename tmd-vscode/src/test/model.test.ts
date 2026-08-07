@@ -6,7 +6,11 @@ import {
   TanuMarkdownModel,
   type EditorState,
 } from "../model.js";
-import type { DataSource, DocumentInspection } from "../types.js";
+import type {
+  DataSource,
+  DocumentInspection,
+  TextAttachmentEdit,
+} from "../types.js";
 
 function inspection(
   markdown: string,
@@ -42,8 +46,9 @@ function state(
   markdown: string,
   title: string,
   dataSources: DataSource[] = [],
+  textAttachmentEdits: TextAttachmentEdit[] = [],
 ): EditorState {
-  return { dataSources, markdown, title };
+  return { dataSources, markdown, textAttachmentEdits, title };
 }
 
 test("persisted inspection preserves edits made while an operation was pending", () => {
@@ -59,6 +64,7 @@ test("persisted inspection preserves edits made while an operation was pending",
   assert.deepEqual(model.snapshot(), {
     dataSources: [],
     markdown: "newer edit",
+    textAttachmentEdits: [],
     title: "Newer title",
   });
   assert.equal(model.inspection.database_user_version, 2);
@@ -80,6 +86,7 @@ test("save response replaces state when no newer edit exists", () => {
   assert.deepEqual(model.snapshot(), {
     dataSources: [],
     markdown: "saved snapshot",
+    textAttachmentEdits: [],
     title: "Saved title",
   });
   assert.equal(model.persistedRevision, model.contentRevision);
@@ -195,6 +202,30 @@ test("Rhai source edits preserve schema version 2 and ordered output columns", (
   });
 });
 
+test("Rhai script attachment edits participate in dirty state and persistence", () => {
+  const model = new TanuMarkdownModel(inspection("initial", "Initial", 0));
+  const initial = model.snapshot();
+  const edited = state("initial", "Initial", [], [
+    { logicalPath: "views/summary.rhai", text: "inputs.rows" },
+  ]);
+
+  model.applyState(edited);
+  assert.equal(model.isCurrentRevisionPersisted, false);
+  assert.deepEqual(model.snapshot().textAttachmentEdits, edited.textAttachmentEdits);
+
+  model.applyState(initial);
+  assert.equal(model.isCurrentRevisionPersisted, true);
+
+  model.applyState(edited);
+  const savedRevision = model.contentRevision;
+  model.applyPersistedInspection(
+    inspection("initial", "Initial", 0),
+    savedRevision,
+  );
+  assert.equal(model.isCurrentRevisionPersisted, true);
+  assert.deepEqual(model.snapshot().textAttachmentEdits, []);
+});
+
 test("inspection replacement is rejected after a newer edit", () => {
   const model = new TanuMarkdownModel(inspection("initial", "Initial", 0));
   const revertedRevision = model.contentRevision;
@@ -210,6 +241,7 @@ test("inspection replacement is rejected after a newer edit", () => {
   assert.deepEqual(model.snapshot(), {
     dataSources: [],
     markdown: "typed during revert",
+    textAttachmentEdits: [],
     title: "Current",
   });
   assert.equal(model.isCurrentRevisionPersisted, false);

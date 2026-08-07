@@ -1,6 +1,6 @@
 //! Tanu Markdown command-line interface.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -22,11 +22,13 @@ use sha2::{Digest, Sha256};
 use tmd_core::{
     attachment_references, evaluate_data_source, export_db, import_db, inline_data_view_references,
     migrate, parse_data_view_block, read_tmd, reset_db, validate_document, write_bytes_to_path,
-    write_to_path, AttachmentMeta, DataValue, DataViewRenderKind, ReadMode, TmdDoc,
+    write_to_path, AttachmentMeta, DataScalar, DataValue, DataViewRenderKind, ReadMode, TmdDoc,
     ValidationSeverity, SQLITE_MAX_USER_VERSION,
 };
 
 const JSON_SCHEMA_VERSION: u32 = 1;
+const MAX_TEXT_ATTACHMENT_EDITS: usize = 16;
+const MAX_TEXT_ATTACHMENT_BYTES: usize = 256 * 1024;
 const URL_SEGMENT_ENCODE_SET: &AsciiSet = &CONTROLS
     .add(b' ')
     .add(b'"')
@@ -100,6 +102,12 @@ enum Commands {
         #[arg(long)]
         json_stdin: bool,
     },
+    /// Evaluate a named tabular data source using a JSON request from stdin.
+    DataSource {
+        input: PathBuf,
+        #[arg(long)]
+        json_stdin: bool,
+    },
     /// Manage embedded attachments.
     Attachment {
         #[command(subcommand)]
@@ -127,6 +135,14 @@ enum AttachmentCommands {
     /// List attachment metadata.
     List {
         doc: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Read one UTF-8 attachment through the editor JSON bridge.
+    Text {
+        doc: PathBuf,
+        #[arg(long = "path")]
+        logical_path: String,
         #[arg(long)]
         json: bool,
     },
@@ -215,6 +231,7 @@ struct DocumentUpdate {
     authors: Option<Vec<String>>,
     tags: Option<Vec<String>>,
     extras: Option<JsonValue>,
+    text_attachments: Option<Vec<TextAttachmentUpdate>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -223,6 +240,23 @@ struct PreviewRequest {
     schema_version: u32,
     markdown: String,
     extras: Option<JsonValue>,
+    text_attachments: Option<Vec<TextAttachmentUpdate>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DataSourceRequest {
+    schema_version: u32,
+    source: String,
+    extras: Option<JsonValue>,
+    text_attachments: Option<Vec<TextAttachmentUpdate>>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TextAttachmentUpdate {
+    logical_path: String,
+    text: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -244,8 +278,14 @@ fn main() -> Result<()> {
         Commands::Inspect { input, json } => cmd_inspect(&input, json),
         Commands::Update { input, json_stdin } => cmd_update(&input, json_stdin),
         Commands::Preview { input, json_stdin } => cmd_preview(&input, json_stdin),
+        Commands::DataSource { input, json_stdin } => cmd_data_source(&input, json_stdin),
         Commands::Attachment { command } => match command {
             AttachmentCommands::List { doc, json } => cmd_attachment_list(&doc, json),
+            AttachmentCommands::Text {
+                doc,
+                logical_path,
+                json,
+            } => cmd_attachment_text(&doc, &logical_path, json),
             AttachmentCommands::Add {
                 doc,
                 source,
@@ -452,6 +492,9 @@ fn cmd_update(input: &Path, json_stdin: bool) -> Result<()> {
     if let Some(extras) = update.extras {
         doc.manifest.extras = extras;
     }
+    if let Some(text_attachments) = update.text_attachments {
+        apply_text_attachment_updates(&mut doc, &text_attachments)?;
+    }
     doc.touch();
     write_document_if_expected(input, &doc, Some(&expected))?;
     let persisted_doc = read_document(input)?;
@@ -483,6 +526,9 @@ fn cmd_preview(input: &Path, json_stdin: bool) -> Result<()> {
     if let Some(extras) = request.extras {
         doc.manifest.extras = extras;
     }
+    if let Some(text_attachments) = request.text_attachments {
+        apply_text_attachment_updates(&mut doc, &text_attachments)?;
+    }
     let attachment_urls = embedded_attachment_urls(&doc);
     let preview_html = render_markdown_body(&doc, &request.markdown, &attachment_urls)?;
     println!(
@@ -493,6 +539,62 @@ fn cmd_preview(input: &Path, json_stdin: bool) -> Result<()> {
         }))?
     );
     Ok(())
+}
+
+fn cmd_data_source(input: &Path, json_stdin: bool) -> Result<()> {
+    ensure!(
+        json_stdin,
+        "`data-source` requires --json-stdin to make the input contract explicit"
+    );
+    let mut payload = String::new();
+    io::stdin()
+        .read_to_string(&mut payload)
+        .context("failed to read JSON data-source request from stdin")?;
+    let request: DataSourceRequest =
+        serde_json::from_str(&payload).context("failed to parse data-source request JSON")?;
+    ensure!(
+        request.schema_version == JSON_SCHEMA_VERSION,
+        "unsupported data-source schema_version {}; expected {}",
+        request.schema_version,
+        JSON_SCHEMA_VERSION
+    );
+    let mut doc = read_document(input)?;
+    if let Some(extras) = request.extras {
+        doc.manifest.extras = extras;
+    }
+    if let Some(text_attachments) = request.text_attachments {
+        apply_text_attachment_updates(&mut doc, &text_attachments)?;
+    }
+    let value = evaluate_data_source(&doc, &request.source)?;
+    let table = value.as_table()?;
+    let rows = table
+        .rows
+        .iter()
+        .map(|row| row.iter().map(data_scalar_json).collect::<Vec<_>>())
+        .collect::<Vec<_>>();
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({
+            "schema_version": JSON_SCHEMA_VERSION,
+            "source": request.source,
+            "kind": "table",
+            "columns": table.columns,
+            "rows": rows,
+        }))?
+    );
+    Ok(())
+}
+
+fn data_scalar_json(value: &DataScalar) -> JsonValue {
+    match value {
+        DataScalar::Null => json!({ "type": "null" }),
+        DataScalar::Boolean(value) => json!({ "type": "boolean", "value": value }),
+        DataScalar::Integer(value) => {
+            json!({ "type": "integer", "value": value.to_string() })
+        }
+        DataScalar::Real(value) => json!({ "type": "real", "value": value }),
+        DataScalar::String(value) => json!({ "type": "string", "value": value }),
+    }
 }
 
 fn cmd_attachment_list(doc_path: &Path, json_output: bool) -> Result<()> {
@@ -517,6 +619,62 @@ fn cmd_attachment_list(doc_path: &Path, json_output: bool) -> Result<()> {
                 attachment["length"].as_u64().unwrap_or_default()
             );
         }
+    }
+    Ok(())
+}
+
+fn cmd_attachment_text(doc_path: &Path, logical_path: &str, json_output: bool) -> Result<()> {
+    let doc = read_document(doc_path)?;
+    let id = attachment_id_by_path(&doc, logical_path)?;
+    let data = doc
+        .attachments
+        .data(id)
+        .ok_or_else(|| anyhow!("attachment `{logical_path}` has no data"))?;
+    ensure!(
+        data.len() <= MAX_TEXT_ATTACHMENT_BYTES,
+        "attachment `{logical_path}` exceeds the {MAX_TEXT_ATTACHMENT_BYTES}-byte text limit"
+    );
+    let text = std::str::from_utf8(data)
+        .with_context(|| format!("attachment `{logical_path}` is not UTF-8"))?;
+    if json_output {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "schema_version": JSON_SCHEMA_VERSION,
+                "logical_path": logical_path,
+                "text": text,
+            }))?
+        );
+    } else {
+        print!("{text}");
+    }
+    Ok(())
+}
+
+fn apply_text_attachment_updates(doc: &mut TmdDoc, updates: &[TextAttachmentUpdate]) -> Result<()> {
+    ensure!(
+        updates.len() <= MAX_TEXT_ATTACHMENT_EDITS,
+        "a document update may replace at most {MAX_TEXT_ATTACHMENT_EDITS} text attachments"
+    );
+    let mut paths = HashSet::new();
+    for update in updates {
+        ensure!(
+            paths.insert(update.logical_path.as_str()),
+            "text attachment `{}` is updated more than once",
+            update.logical_path
+        );
+        ensure!(
+            update.text.len() <= MAX_TEXT_ATTACHMENT_BYTES,
+            "text attachment `{}` exceeds the {MAX_TEXT_ATTACHMENT_BYTES}-byte limit",
+            update.logical_path
+        );
+        let id = attachment_id_by_path(doc, &update.logical_path)?;
+        let mut data = doc
+            .attachments
+            .data_mut(id)
+            .ok_or_else(|| anyhow!("attachment `{}` has no data", update.logical_path))?;
+        data.clear();
+        data.extend_from_slice(update.text.as_bytes());
     }
     Ok(())
 }

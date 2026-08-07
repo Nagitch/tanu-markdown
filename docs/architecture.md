@@ -88,8 +88,15 @@ host can provide the same small host adapter instead of the VS Code API. The
 current local session invokes the existing one-shot CLI JSON operations, so
 terminal commands and editor use coexist. A future persistent stdio or remote
 collaborative session can sit behind the host bridge without moving document
-authority into the editing surface. RevoGrid and the table-specific interaction
-model are deliberately deferred to
+authority into the editing surface. The table tab asks the session to evaluate
+a selected named source through the versioned `data-source` CLI bridge and
+renders the typed result in a bundled, read-only RevoGrid. For Rhai sources,
+the session also reads the referenced UTF-8 attachment through the CLI and the
+table tab displays a CodeMirror editor with a small Rhai lexer. Script drafts
+are document edits, while preview and table evaluation receive them as bounded
+in-memory attachment overrides. Debounced evaluation failures are translated
+to CodeMirror lint diagnostics when the Rhai runtime reports a source
+location. Persisted grid edits and the broader table interaction model remain tracked in
 [issue #43](https://github.com/Nagitch/tanu-markdown/issues/43).
 
 Platform-specific VSIX packages carry the matching native CLI. A machine-level

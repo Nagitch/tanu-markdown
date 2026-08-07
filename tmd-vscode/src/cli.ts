@@ -1,8 +1,12 @@
 import { spawn } from "node:child_process";
 import type {
+  DataSourceTable,
+  DataTableCell,
   DocumentInspection,
   DocumentUpdate,
   JsonValue,
+  TextAttachmentEdit,
+  TextAttachmentView,
   ValidationReport,
 } from "./types.js";
 
@@ -41,6 +45,16 @@ interface PreviewResponse {
   preview_html: string;
 }
 
+interface DataSourceResponse extends DataSourceTable {
+  schema_version: number;
+}
+
+interface TextAttachmentResponse {
+  schema_version: number;
+  logical_path: string;
+  text: string;
+}
+
 export class TmdCliClient {
   constructor(
     private readonly executable: string,
@@ -61,10 +75,20 @@ export class TmdCliClient {
     return this.assertInspectionSchema(inspection);
   }
 
-  async preview(path: string, markdown: string, extras: JsonValue): Promise<string> {
+  async preview(
+    path: string,
+    markdown: string,
+    extras: JsonValue,
+    textAttachments: readonly TextAttachmentEdit[] = [],
+  ): Promise<string> {
     const preview = await this.runJson<PreviewResponse>(
       ["preview", path, "--json-stdin"],
-      { schema_version: 1, markdown, extras },
+      {
+        schema_version: 1,
+        markdown,
+        extras,
+        text_attachments: textAttachmentUpdates(textAttachments),
+      },
     );
     if (preview.schema_version !== 1) {
       throw new CliError(
@@ -85,6 +109,83 @@ export class TmdCliClient {
       );
     }
     return preview.preview_html;
+  }
+
+  async dataSource(
+    path: string,
+    source: string,
+    extras: JsonValue,
+    textAttachments: readonly TextAttachmentEdit[] = [],
+  ): Promise<DataSourceTable> {
+    const response = await this.runJson<DataSourceResponse>(
+      ["data-source", path, "--json-stdin"],
+      {
+        schema_version: 1,
+        source,
+        extras,
+        text_attachments: textAttachmentUpdates(textAttachments),
+      },
+    );
+    if (response.schema_version !== 1) {
+      throw new CliError(
+        `Unsupported TMD CLI data-source schema_version ${String(response.schema_version)}; expected 1.`,
+        0,
+        JSON.stringify(response),
+        "",
+        "incompatible-schema",
+      );
+    }
+    if (!isDataSourceTable(response) || response.source !== source) {
+      throw new CliError(
+        "The TMD CLI returned an invalid tabular data-source response.",
+        0,
+        JSON.stringify(response),
+        "",
+        "invalid-output",
+      );
+    }
+    return {
+      source: response.source,
+      kind: response.kind,
+      columns: response.columns,
+      rows: response.rows,
+    };
+  }
+
+  async textAttachment(
+    path: string,
+    logicalPath: string,
+  ): Promise<TextAttachmentView> {
+    const response = await this.runJson<TextAttachmentResponse>([
+      "attachment",
+      "text",
+      path,
+      "--path",
+      logicalPath,
+      "--json",
+    ]);
+    if (response.schema_version !== 1) {
+      throw new CliError(
+        `Unsupported TMD CLI text-attachment schema_version ${String(response.schema_version)}; expected 1.`,
+        0,
+        JSON.stringify(response),
+        "",
+        "incompatible-schema",
+      );
+    }
+    if (
+      response.logical_path !== logicalPath ||
+      typeof response.text !== "string"
+    ) {
+      throw new CliError(
+        "The TMD CLI returned an invalid text-attachment response.",
+        0,
+        JSON.stringify(response),
+        "",
+        "invalid-output",
+      );
+    }
+    return { logicalPath: response.logical_path, text: response.text };
   }
 
   async validate(path: string): Promise<ValidationReport> {
@@ -322,5 +423,64 @@ export class TmdCliClient {
       result.stdout,
       result.stderr,
     );
+  }
+}
+
+function textAttachmentUpdates(
+  edits: readonly TextAttachmentEdit[],
+): Array<{ logical_path: string; text: string }> {
+  return edits.map((edit) => ({
+    logical_path: edit.logicalPath,
+    text: edit.text,
+  }));
+}
+
+function isDataSourceTable(value: unknown): value is DataSourceTable {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !("source" in value) ||
+    typeof value.source !== "string" ||
+    !("kind" in value) ||
+    value.kind !== "table" ||
+    !("columns" in value) ||
+    !Array.isArray(value.columns) ||
+    !value.columns.every((column) => typeof column === "string") ||
+    !("rows" in value) ||
+    !Array.isArray(value.rows)
+  ) {
+    return false;
+  }
+  const columnCount = value.columns.length;
+  return value.rows.every(
+    (row) =>
+      Array.isArray(row) &&
+      row.length === columnCount &&
+      row.every(isDataTableCell),
+  );
+}
+
+function isDataTableCell(value: unknown): value is DataTableCell {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !("type" in value) ||
+    typeof value.type !== "string"
+  ) {
+    return false;
+  }
+  if (value.type === "null") return true;
+  if (!("value" in value)) return false;
+  switch (value.type) {
+    case "boolean":
+      return typeof value.value === "boolean";
+    case "integer":
+      return typeof value.value === "string" && /^-?\d+$/.test(value.value);
+    case "real":
+      return typeof value.value === "number" && Number.isFinite(value.value);
+    case "string":
+      return typeof value.value === "string";
+    default:
+      return false;
   }
 }

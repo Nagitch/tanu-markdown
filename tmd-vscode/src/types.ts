@@ -29,6 +29,27 @@ export interface RhaiDataSource {
 
 export type DataSource = SqliteDataSource | RhaiDataSource;
 
+export type DataTableCell =
+  | { type: "null" }
+  | { type: "boolean"; value: boolean }
+  | { type: "integer"; value: string }
+  | { type: "real"; value: number }
+  | { type: "string"; value: string };
+
+export interface DataSourceTable {
+  source: string;
+  kind: "table";
+  columns: string[];
+  rows: DataTableCell[][];
+}
+
+export interface TextAttachmentEdit {
+  logicalPath: string;
+  text: string;
+}
+
+export interface TextAttachmentView extends TextAttachmentEdit {}
+
 export interface DataSourceRegistryView {
   editable: boolean;
   schemaVersion?: 1 | 2;
@@ -99,4 +120,8 @@ export interface DocumentUpdate {
   markdown: string;
   title: string;
   extras: JsonValue;
+  text_attachments?: Array<{
+    logical_path: string;
+    text: string;
+  }>;
 }

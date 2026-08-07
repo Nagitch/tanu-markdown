@@ -205,6 +205,104 @@ fn renders_dynamic_sqlite_and_rhai_views() {
     .expect("Rhai script attachment");
     write_to_path(&doc_path, &doc).expect("write fixture");
 
+    let script_attachment = parse_json(&run(
+        vec![
+            text("attachment"),
+            text("text"),
+            argument(&doc_path),
+            text("--path"),
+            text("views/category-summary.rhai"),
+            text("--json"),
+        ],
+        None,
+    ));
+    assert_eq!(
+        script_attachment["logical_path"],
+        "views/category-summary.rhai"
+    );
+    assert!(script_attachment["text"]
+        .as_str()
+        .expect("script text")
+        .contains("total_cents"));
+
+    let source_table = parse_json(&run(
+        vec![
+            text("data-source"),
+            argument(&doc_path),
+            text("--json-stdin"),
+        ],
+        Some(
+            &json!({
+                "schema_version": 1,
+                "source": "sample-notes",
+            })
+            .to_string(),
+        ),
+    ));
+    assert_eq!(source_table["source"], "sample-notes");
+    assert_eq!(source_table["kind"], "table");
+    assert_eq!(source_table["columns"], json!(["id", "body"]));
+    assert_eq!(
+        source_table["rows"][0],
+        json!([
+            { "type": "integer", "value": "1" },
+            { "type": "string", "value": "Hello from SQLite" }
+        ])
+    );
+
+    let transformed_table = parse_json(&run(
+        vec![
+            text("data-source"),
+            argument(&doc_path),
+            text("--json-stdin"),
+        ],
+        Some(
+            &json!({
+                "schema_version": 1,
+                "source": "category-summary",
+            })
+            .to_string(),
+        ),
+    ));
+    assert_eq!(
+        transformed_table["columns"],
+        json!(["category", "total_cents"])
+    );
+    assert_eq!(
+        transformed_table["rows"][0],
+        json!([
+            { "type": "string", "value": "books" },
+            { "type": "integer", "value": "2000" }
+        ])
+    );
+
+    let replacement_script = "[#{ category: \"edited\", total_cents: 42 }]";
+    let edited_script_table = parse_json(&run(
+        vec![
+            text("data-source"),
+            argument(&doc_path),
+            text("--json-stdin"),
+        ],
+        Some(
+            &json!({
+                "schema_version": 1,
+                "source": "category-summary",
+                "text_attachments": [{
+                    "logical_path": "views/category-summary.rhai",
+                    "text": replacement_script,
+                }],
+            })
+            .to_string(),
+        ),
+    ));
+    assert_eq!(
+        edited_script_table["rows"],
+        json!([[
+            { "type": "string", "value": "edited" },
+            { "type": "integer", "value": "42" }
+        ]])
+    );
+
     let preview = parse_json(&run(
         vec![text("preview"), argument(&doc_path), text("--json-stdin")],
         Some(
@@ -279,6 +377,32 @@ fn renders_dynamic_sqlite_and_rhai_views() {
         validation["data_view_references"].as_array().map(Vec::len),
         Some(4)
     );
+
+    run(
+        vec![text("update"), argument(&doc_path), text("--json-stdin")],
+        Some(
+            &json!({
+                "schema_version": 1,
+                "text_attachments": [{
+                    "logical_path": "views/category-summary.rhai",
+                    "text": replacement_script,
+                }],
+            })
+            .to_string(),
+        ),
+    );
+    let persisted_script = parse_json(&run(
+        vec![
+            text("attachment"),
+            text("text"),
+            argument(&doc_path),
+            text("--path"),
+            text("views/category-summary.rhai"),
+            text("--json"),
+        ],
+        None,
+    ));
+    assert_eq!(persisted_script["text"], replacement_script);
 }
 
 #[test]

@@ -317,6 +317,126 @@ export class TanuMarkdownEditorProvider
         });
         break;
       }
+      case "dataSourceTable": {
+        if (
+          typeof message.source !== "string" ||
+          typeof message.requestId !== "number" ||
+          !Number.isSafeInteger(message.requestId) ||
+          message.requestId <= 0 ||
+          typeof message.clientRevision !== "number" ||
+          !Number.isSafeInteger(message.clientRevision) ||
+          message.clientRevision < 0 ||
+          message.clientRevision !== this.panelClientRevisions.latest(panel)
+        ) {
+          return;
+        }
+        const state = document.snapshot();
+        if (!state.dataSources.some((source) => source.name === message.source)) {
+          return;
+        }
+        const contentRevision = document.contentRevision;
+        try {
+          const table = await document.session.dataSourceTable(message.source, state);
+          await panel.webview.postMessage({
+            type: "dataSourceTable",
+            clientRevision: message.clientRevision,
+            contentRevision,
+            requestId: message.requestId,
+            source: message.source,
+            table,
+          });
+        } catch (error) {
+          await panel.webview.postMessage({
+            type: "dataSourceTable",
+            clientRevision: message.clientRevision,
+            contentRevision,
+            requestId: message.requestId,
+            source: message.source,
+            issue: boundedMessage(error),
+          });
+        }
+        break;
+      }
+      case "rhaiScript": {
+        if (
+          typeof message.source !== "string" ||
+          typeof message.requestId !== "number" ||
+          !Number.isSafeInteger(message.requestId) ||
+          message.requestId <= 0 ||
+          typeof message.clientRevision !== "number" ||
+          !Number.isSafeInteger(message.clientRevision) ||
+          message.clientRevision < 0 ||
+          message.clientRevision !== this.panelClientRevisions.latest(panel)
+        ) {
+          return;
+        }
+        const state = document.snapshot();
+        const source = state.dataSources.find(
+          (candidate) =>
+            candidate.name === message.source && candidate.type === "rhai",
+        );
+        if (!source || source.type !== "rhai") return;
+        const contentRevision = document.contentRevision;
+        try {
+          const script = await document.session.textAttachment(source.script, state);
+          await panel.webview.postMessage({
+            type: "rhaiScript",
+            clientRevision: message.clientRevision,
+            contentRevision,
+            requestId: message.requestId,
+            source: message.source,
+            script,
+          });
+        } catch (error) {
+          await panel.webview.postMessage({
+            type: "rhaiScript",
+            clientRevision: message.clientRevision,
+            contentRevision,
+            requestId: message.requestId,
+            source: message.source,
+            issue: boundedMessage(error),
+          });
+        }
+        break;
+      }
+      case "editRhaiScript": {
+        if (
+          typeof message.source !== "string" ||
+          typeof message.logicalPath !== "string" ||
+          typeof message.text !== "string" ||
+          new TextEncoder().encode(message.text).length > 256 * 1024 ||
+          typeof message.clientRevision !== "number" ||
+          !Number.isSafeInteger(message.clientRevision) ||
+          message.clientRevision <= 0
+        ) {
+          return;
+        }
+        const before = document.snapshot();
+        const source = before.dataSources.find(
+          (candidate) =>
+            candidate.name === message.source && candidate.type === "rhai",
+        );
+        if (
+          !source ||
+          source.type !== "rhai" ||
+          source.script !== message.logicalPath
+        ) {
+          return;
+        }
+        const after = await document.session.stateWithTextAttachmentEdit(
+          before,
+          message.logicalPath,
+          message.text,
+        );
+        await this.applyEditorState(
+          document,
+          panel,
+          message.clientRevision,
+          after,
+          `Edit Rhai script ${message.logicalPath}`,
+        );
+        break;
+      }
       case "validate":
         await vscode.commands.executeCommand("tmd.validate", document);
         break;
@@ -507,6 +627,13 @@ async function showError(error: unknown): Promise<void> {
   await vscode.window.showErrorMessage(message);
 }
 
+function boundedMessage(error: unknown, maximumCharacters = 2_000): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.length <= maximumCharacters
+    ? message
+    : `${message.slice(0, maximumCharacters)}…`;
+}
+
 export function editorHtml(
   webview: vscode.Webview,
   webviewRootUri: vscode.Uri,
@@ -531,7 +658,7 @@ export function editorHtml(
   return rewritten
     .replace(
       "<head>",
-      `<head>\n    <meta http-equiv="Content-Security-Policy" content="${csp}">\n    <meta id="tmd-csp-nonce" name="tmd-csp-nonce" content="${nonce}">`,
+      `<head>\n    <meta http-equiv="Content-Security-Policy" content="${csp}">\n    <meta id="tmd-csp-nonce" name="csp-nonce" content="${nonce}">`,
     )
     .replace(/<script(?=[\s>])/g, `<script nonce="${nonce}"`);
 }
