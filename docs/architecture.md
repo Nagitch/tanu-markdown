@@ -1,34 +1,52 @@
 # Architecture
 
-Tanu Markdown separates the file-format implementation from delivery surfaces
-so that the Rust core remains the single source of truth.
+Tanu Markdown separates reusable data and Formula semantics, TMD document
+integration, and delivery surfaces so the Rust workspace remains the single
+source of truth for implemented behavior.
 
 ## Component relationships
 
-```text
-+------------------+     +------------------+     +------------------+
-| SvelteKit Web UI | --> | VS Code bridge   | --> | local TMD session|
-| editing surface  |     | lifecycle + I/O  |     | draft + revisions|
-+------------------+     +------------------+     +------------------+
-                                                      |
-                                                      v
-                         +------------------+     +------------------+
-                         | tmd-core         | <-- | tmd CLI/JSON     |
-                         | model and I/O    |     | operation API    |
-                         +------------------+     +------------------+
-                                  ^
-                                  |
-                         +------------------+
-                         | tmd-core-ffi     |
-                         | C ABI cdylib     |
-                         +------------------+
+```mermaid
+flowchart LR
+    UI["SvelteKit Web UI"] --> Bridge["VS Code bridge"]
+    Bridge --> Session["Local TMD session"]
+    Session --> CLI["tmd CLI / JSON"]
+    CLI --> Core["tmd-core"]
+    FFI["tmd-core-ffi"] --> Core
+    Core --> Formula["tmd-formula"]
+    Core --> Data["tmd-data"]
+    Formula --> Data
 ```
 
-`tmd-cli` and `tmd-core-ffi` depend on `tmd-core`. The VS Code extension calls
-the bundled or explicitly configured `tmd` binary through its schema-versioned
-JSON bridge and never parses `.tmd` containers in TypeScript. Preview requests
-send the current unsaved Markdown with retained document bytes so the Rust
-renderer can query the embedded database and resolve attachments.
+`tmd-formula` depends only on `tmd-data`. `tmd-core` depends on both crates and
+owns their integration with TMD documents. `tmd-cli` and `tmd-core-ffi` depend
+on `tmd-core`. The VS Code extension calls the bundled or explicitly configured
+`tmd` binary through its schema-versioned JSON bridge and never parses `.tmd`
+containers in TypeScript. Preview requests send the current unsaved Markdown
+with retained document bytes so the Rust renderer can query the embedded
+database and resolve attachments.
+
+## `tmd-data`
+
+The data crate owns transport-neutral `DataScalar` and `DataTable` types. It
+does not know about TMD documents, manifests, SQLite, rendering, or Formula
+syntax. `tmd-core` re-exports these types to preserve its existing public API.
+
+## `tmd-formula`
+
+The Formula crate owns the bounded language engine:
+
+- tokenization, parsing, and the opaque compiled program representation;
+- A1, range, header, and dependency semantics;
+- built-in functions and typed evaluation;
+- Formula-specific safety limits and caller-supplied table-size limits; and
+- structured errors with spreadsheet codes, source locations, and target
+  cells.
+
+The engine accepts and returns `tmd-data` tables. It has no dependency on TMD
+containers, manifests, SQLite, rendering, the CLI, or editor code. A future
+source-preserving cell-editing model or WASM adapter can therefore build on the
+same language semantics without depending on `tmd-core`.
 
 ## `tmd-core`
 
@@ -38,8 +56,8 @@ The core crate owns:
 - logical attachment path normalization and SHA-256 validation;
 - embedded SQLite lifecycle and migration helpers;
 - named dynamic-data registry parsing, read-only SQLite evaluation, sandboxed
-  Rhai transformation, bounded Formula AST evaluation, and typed scalar/table
-  values;
+  Rhai transformation, Formula source resolution, and adaptation between
+  document data sources and the standalone Formula engine;
 - `.tmd` ZIP serialization;
 - optional C ABI functions behind the `ffi` feature.
 

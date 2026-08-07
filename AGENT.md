@@ -14,8 +14,12 @@ does.
 
 ## Repository boundaries
 
+- `tmd-data/` owns transport-neutral scalar and ordered-table value types.
+- `tmd-formula/` owns Formula parsing, evaluation, functions, limits, and
+  structured diagnostics; it must not depend on TMD containers or SQLite.
 - `tmd-core/` owns the document model, serialization, validation, attachments,
-  embedded SQLite lifecycle, and optional FFI definitions.
+  embedded SQLite lifecycle, data-source integration, and optional FFI
+  definitions.
 - `tmd-cli/` owns command parsing and user-facing terminal behavior.
 - `tmd-core-ffi/` owns the dynamic-library wrapper that retains exported C ABI
   symbols.

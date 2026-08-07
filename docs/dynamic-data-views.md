@@ -297,8 +297,9 @@ presentation-only and do not change formula coordinates.
 
 The program contains one assignment per non-empty line. `//` introduces a
 comment. The target is an A1-style cell and the right-hand side is parsed into
-an AST and evaluated by the Rust core; Formula text is never interpolated into
-Rhai or SQL. A leading second `=` on the expression is accepted, so both
+an AST and evaluated by the standalone `tmd-formula` Rust engine through the
+`tmd-core` data-source adapter; Formula text is never interpolated into Rhai or
+SQL. A leading second `=` on the expression is accepted, so both
 `C1 = SUM(B1:B3)` and `C1 = =SUM(B1:B3)` are valid.
 
 Coordinates are one-based over data cells: `A1` is the first SQLite result

@@ -25,7 +25,9 @@ normative implemented contract and the
 
 | Path | Responsibility |
 | --- | --- |
-| `tmd-core/` | Rust document model, attachment handling, SQLite lifecycle/data views, and `.tmd` I/O |
+| `tmd-data/` | Transport-neutral typed scalar and ordered-table values |
+| `tmd-formula/` | Bounded Formula parser, evaluator, functions, and structured diagnostics |
+| `tmd-core/` | Rust document model, attachment handling, SQLite lifecycle/data-source integration, and `.tmd` I/O |
 | `tmd-cli/` | CLI for creating, validating, publishing, exporting, and editing documents |
 | `tmd-core-ffi/` | C ABI dynamic-library wrapper around the optional `tmd-core` FFI surface |
 | `tmd-vscode/` | VS Code custom editor using the `tmd` JSON bridge |
@@ -41,7 +43,7 @@ the repository with the Dev Containers extension, run **Dev Containers: Reopen
 in Container** (or **Rebuild and Reopen in Container** for an existing setup),
 then press **F5** with **Run Tanu Markdown Editor (sample)** selected. The
 container setup builds and stages the CLI automatically and the debug host
-opens the Rhai-enabled reference sample.
+opens the Rhai- and Formula-enabled reference sample.
 
 From a terminal with Docker:
 

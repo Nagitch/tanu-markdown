@@ -1,5 +1,7 @@
 [workspace]
 members = [
+    "tmd-data",
+    "tmd-formula",
     "tmd-core",
     "tmd-cli",
     "tmd-core-ffi",
@@ -35,6 +37,8 @@ serde_json = "1.0.151"
 sha2 = "0.11.0"
 tempfile = "3.27.0"
 thiserror = "2.0.19"
+tmd-data = { path = "tmd-data" }
+tmd-formula = { path = "tmd-formula" }
 uuid = { version = "1.24.0", features = ["serde", "v4"] }
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem"] }
 xattr = "1.6.1"

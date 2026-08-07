@@ -9,6 +9,7 @@ pub use format::{
     WriteMode, Writer,
 };
 pub use manifest::{AttachmentMeta, AttachmentRef, LinkRef, Manifest, Semver};
+pub use tmd_data::{DataScalar, DataTable};
 pub use util::{normalize_logical_path, now_utc};
 pub use validation::{
     attachment_references, validate_document, AttachmentReference, DataViewReferenceValidation,
@@ -16,12 +17,10 @@ pub use validation::{
 };
 pub use views::{
     data_view_references, evaluate_data_source, inline_data_view_references, parse_data_view_block,
-    DataScalar, DataSourceDefinition, DataSourceOutput, DataSourceRegistry, DataTable, DataValue,
-    DataViewParseReport, DataViewReference, DataViewRenderKind, InlineDataViewReference,
-    DATA_SOURCES_EXTRAS_KEY,
+    DataSourceDefinition, DataSourceOutput, DataSourceRegistry, DataValue, DataViewParseReport,
+    DataViewReference, DataViewRenderKind, InlineDataViewReference, DATA_SOURCES_EXTRAS_KEY,
 };
 
-mod formula;
 mod validation;
 mod views;
 

@@ -13,13 +13,19 @@ a functional custom editor backed exclusively by that bridge.
 
 | Component | Current state |
 | --- | --- |
-| `tmd-core` | Implements the document model, structured validation, safe attachment handling, atomic writes, SQLite import/export/migration, dynamic SQLite source evaluation, sandboxed Rhai-to-table transformations, bounded Formula AST evaluation, ZIP I/O, and optional C ABI functions |
+| `tmd-data` | Defines transport-neutral, serde-compatible scalar and ordered-table values shared by data-source adapters and computation engines |
+| `tmd-formula` | Implements the bounded Formula parser, opaque program representation, dependency-aware evaluator, built-in functions, caller-supplied table limits, and structured diagnostics without depending on TMD or SQLite |
+| `tmd-core` | Implements the document model, structured validation, safe attachment handling, atomic writes, SQLite import/export/migration, dynamic SQLite source evaluation, sandboxed Rhai-to-table transformations, Formula source integration, ZIP I/O, and optional C ABI functions |
 | `tmd-cli` | Installs `tmd`; implements document create/inspect/update/publish/validate, attachment lifecycle including bounded UTF-8 reads and draft overrides, shared safe preview/HTML rendering, typed table-source evaluation, dynamic `scalar`/`table` views, and embedded database lifecycle/query commands |
 | `tmd-core-ffi` | Builds a `cdylib` wrapper and retains the exported `tmd-core` FFI symbols |
 | `tmd-vscode` | Implements a CSP-restricted static SvelteKit Web UI with a read-only RevoGrid source viewer and syntax-highlighted Rhai and Formula panels with runtime diagnostics, a VS Code host bridge, and a shared local document session with edit/save/revert/backup, dynamic view/source inspection and source editing, CLI-rendered live preview including unsaved source and script changes, validation, and HTML export workflows through `tmd` |
-| `tmd-sample` | Contains a `.tmd` sample with text, image, and Rhai attachments plus inline `scalar`, direct SQLite `table`, and Rhai-transformed `table` views |
+| `tmd-sample` | Contains a `.tmd` sample with text, image, and Rhai attachments plus inline `scalar`, direct SQLite `table`, Rhai-transformed `table`, and Formula-transformed `table` views |
 
 ## Verified behavior
+
+The `tmd-data` and `tmd-formula` test suites cover typed scalar formatting plus
+Formula parsing, references, functions, dependency evaluation, limits,
+structured diagnostics, and the engine's public API without `tmd-core`.
 
 The `tmd-core` test suite covers:
 
@@ -31,8 +37,8 @@ The `tmd-core` test suite covers:
 - `.tmd` round trips;
 - embedded SQLite export, import, reset, and migration;
 - named read-only SQLite source evaluation, bounded Rhai aggregation, Formula
-  parsing/typed evaluation/dependency cycles, strict table-output validation,
-  and dynamic-view validation;
+  source integration, strict table-output validation, and dynamic-view
+  validation;
 - path-based read/write helpers;
 - optional FFI null-pointer behavior.
 

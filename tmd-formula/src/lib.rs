@@ -1,9 +1,12 @@
-use crate::views::{DataScalar, DataTable, MAX_TABLE_CELLS, MAX_TABLE_ROWS};
+//! Bounded spreadsheet-style Formula parsing and evaluation.
+
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use tmd_data::{DataScalar, DataTable};
 
-pub(crate) const MAX_FORMULA_PROGRAM_BYTES: usize = 256 * 1024;
+/// Maximum accepted Formula program size in UTF-8 bytes.
+pub const MAX_FORMULA_PROGRAM_BYTES: usize = 256 * 1024;
 const MAX_FORMULA_ASSIGNMENTS: usize = 2_000;
 const MAX_EXPRESSION_NODES: usize = 1_024;
 const MAX_EXPRESSION_DEPTH: usize = 64;
@@ -11,9 +14,36 @@ const MAX_EVALUATION_STEPS: usize = 100_000;
 const MAX_FORMULA_TEXT_BYTES: usize = 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct CellRef {
-    pub(crate) column: usize,
-    pub(crate) row: usize,
+pub struct CellRef {
+    column: usize,
+    row: usize,
+}
+
+impl CellRef {
+    /// Create a cell reference from zero-based column and row indexes.
+    ///
+    /// Returns `None` when either index cannot be represented safely as a
+    /// one-based spreadsheet coordinate.
+    #[must_use]
+    pub const fn from_indexes(column: usize, row: usize) -> Option<Self> {
+        if column == usize::MAX || row == usize::MAX {
+            None
+        } else {
+            Some(Self { column, row })
+        }
+    }
+
+    /// Return the zero-based column index.
+    #[must_use]
+    pub const fn column_index(self) -> usize {
+        self.column
+    }
+
+    /// Return the zero-based row index.
+    #[must_use]
+    pub const fn row_index(self) -> usize {
+        self.row
+    }
 }
 
 impl fmt::Display for CellRef {
@@ -63,7 +93,7 @@ impl FormulaErrorKind {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct FormulaError {
+pub struct FormulaError {
     kind: FormulaErrorKind,
     message: String,
     span: Span,
@@ -86,6 +116,42 @@ impl FormulaError {
         }
         self
     }
+
+    /// Return the spreadsheet-style error code such as `#REF!`.
+    #[must_use]
+    pub fn code(&self) -> &'static str {
+        self.kind.code()
+    }
+
+    /// Return the one-based source line where the diagnostic begins.
+    #[must_use]
+    pub const fn line(&self) -> usize {
+        self.span.line
+    }
+
+    /// Return the one-based Unicode-scalar source column where the diagnostic begins.
+    #[must_use]
+    pub const fn column(&self) -> usize {
+        self.span.start + 1
+    }
+
+    /// Return the one-based exclusive Unicode-scalar source column where the diagnostic ends.
+    #[must_use]
+    pub const fn end_column(&self) -> usize {
+        self.span.end + 1
+    }
+
+    /// Return the human-readable diagnostic detail without its code or location.
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    /// Return the target cell when evaluation could associate the failure with one.
+    #[must_use]
+    pub const fn target(&self) -> Option<CellRef> {
+        self.target
+    }
 }
 
 impl fmt::Display for FormulaError {
@@ -104,9 +170,20 @@ impl fmt::Display for FormulaError {
     }
 }
 
+impl std::error::Error for FormulaError {}
+
+/// Parsed Formula program with an opaque, dependency-aware representation.
 #[derive(Clone, Debug)]
-pub(crate) struct FormulaProgram {
+pub struct FormulaProgram {
     assignments: BTreeMap<CellRef, Assignment>,
+}
+
+impl FormulaProgram {
+    /// Return the number of assigned cells in the program.
+    #[must_use]
+    pub fn assignment_count(&self) -> usize {
+        self.assignments.len()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -197,7 +274,8 @@ struct Token {
     span: Span,
 }
 
-pub(crate) fn parse_formula_program(program: &str) -> Result<FormulaProgram, FormulaError> {
+/// Parse and validate one Formula assignment program.
+pub fn parse_formula_program(program: &str) -> Result<FormulaProgram, FormulaError> {
     if program.len() > MAX_FORMULA_PROGRAM_BYTES {
         return Err(FormulaError::new(
             FormulaErrorKind::Limit,
@@ -223,7 +301,7 @@ pub(crate) fn parse_formula_program(program: &str) -> Result<FormulaProgram, For
                 Span {
                     line: line_number,
                     start: 0,
-                    end: line.len(),
+                    end: line.chars().count(),
                 },
                 format!("program exceeds {MAX_FORMULA_ASSIGNMENTS} assignments"),
             ));
@@ -883,10 +961,62 @@ fn parse_column(letters: &str) -> Option<usize> {
     value.checked_sub(1)
 }
 
-pub(crate) fn evaluate_formula_program(
+/// Table-size policy supplied by the Formula engine caller.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FormulaEvaluationLimits {
+    max_table_rows: usize,
+    max_table_cells: usize,
+}
+
+impl FormulaEvaluationLimits {
+    /// Create table limits from maximum row and total-cell counts.
+    #[must_use]
+    pub const fn new(max_table_rows: usize, max_table_cells: usize) -> Self {
+        Self {
+            max_table_rows,
+            max_table_cells,
+        }
+    }
+
+    /// Return the maximum output row count.
+    #[must_use]
+    pub const fn max_table_rows(self) -> usize {
+        self.max_table_rows
+    }
+
+    /// Return the maximum total output cell count.
+    #[must_use]
+    pub const fn max_table_cells(self) -> usize {
+        self.max_table_cells
+    }
+}
+
+impl Default for FormulaEvaluationLimits {
+    fn default() -> Self {
+        Self::new(1_000, 10_000)
+    }
+}
+
+/// Evaluate a parsed Formula program with the engine's default table limits.
+pub fn evaluate_formula_program(
     program: &FormulaProgram,
     input: &DataTable,
     output_columns: &[String],
+) -> Result<DataTable, FormulaError> {
+    evaluate_formula_program_with_limits(
+        program,
+        input,
+        output_columns,
+        FormulaEvaluationLimits::default(),
+    )
+}
+
+/// Evaluate a parsed Formula program with caller-supplied table limits.
+pub fn evaluate_formula_program_with_limits(
+    program: &FormulaProgram,
+    input: &DataTable,
+    output_columns: &[String],
+    limits: FormulaEvaluationLimits,
 ) -> Result<DataTable, FormulaError> {
     let fallback_span = program.assignments.values().next().map_or(
         Span {
@@ -906,7 +1036,7 @@ pub(crate) fn evaluate_formula_program(
         return Err(FormulaError::new(
             FormulaErrorKind::Ref,
             fallback_span,
-            "output columns must begin with the input SQLite columns in the same order",
+            "output columns must begin with the input table columns in the same order",
         ));
     }
     let unique = output_columns.iter().collect::<BTreeSet<_>>();
@@ -932,14 +1062,14 @@ pub(crate) fn evaluate_formula_program(
             return Err(FormulaError::new(
                 FormulaErrorKind::Ref,
                 assignment.target_span,
-                "formula targets cannot overwrite the input SQLite table",
+                "formula targets cannot overwrite the input table",
             )
             .at_target(*target));
         }
         row_count = row_count.max(target.row + 1);
     }
-    if row_count > MAX_TABLE_ROWS
-        || row_count.saturating_mul(output_columns.len()) > MAX_TABLE_CELLS
+    if row_count > limits.max_table_rows
+        || row_count.saturating_mul(output_columns.len()) > limits.max_table_cells
     {
         return Err(FormulaError::new(
             FormulaErrorKind::Limit,

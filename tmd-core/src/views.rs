@@ -1,4 +1,3 @@
-use crate::formula::{evaluate_formula_program, parse_formula_program};
 use crate::{normalize_logical_path, TmdDoc, TmdError, TmdResult};
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use rhai::{Array, Dynamic, Engine, ImmutableString, Map, Scope, FLOAT, INT};
@@ -7,6 +6,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::time::{Duration, Instant};
+use tmd_data::{DataScalar, DataTable};
+use tmd_formula::{
+    evaluate_formula_program_with_limits, parse_formula_program, FormulaEvaluationLimits,
+};
 
 /// Manifest `extras` key containing versioned dynamic-data source definitions.
 pub const DATA_SOURCES_EXTRAS_KEY: &str = "tmd_data_sources";
@@ -298,44 +301,6 @@ impl DataSourceOutput {
     }
 }
 
-/// Scalar value shared by dynamic-data sources and renderers.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", content = "value", rename_all = "snake_case")]
-pub enum DataScalar {
-    /// SQL or structured-data null.
-    Null,
-    /// Boolean value.
-    Boolean(bool),
-    /// Signed 64-bit integer.
-    Integer(i64),
-    /// Finite floating-point number.
-    Real(f64),
-    /// UTF-8 string.
-    String(String),
-}
-
-impl DataScalar {
-    /// Convert the scalar to its passive display representation.
-    pub fn display_text(&self) -> String {
-        match self {
-            Self::Null => "NULL".to_owned(),
-            Self::Boolean(value) => value.to_string(),
-            Self::Integer(value) => value.to_string(),
-            Self::Real(value) => value.to_string(),
-            Self::String(value) => value.clone(),
-        }
-    }
-}
-
-/// Ordered table returned by a tabular data source.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct DataTable {
-    /// Ordered result-column labels.
-    pub columns: Vec<String>,
-    /// Ordered result rows containing scalar cells.
-    pub rows: Vec<Vec<DataScalar>>,
-}
-
 /// Common typed value returned by a dynamic-data source.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
@@ -603,15 +568,18 @@ fn evaluate_formula(
         TmdError::DataView(format!("Formula source `{name}` program failed: {error}"))
     })?;
     match output {
-        DataSourceOutput::Table { columns } => {
-            evaluate_formula_program(&program, &input_table, columns)
-                .map(DataValue::Table)
-                .map_err(|error| {
-                    TmdError::DataView(format!(
-                        "Formula source `{name}` evaluation failed: {error}"
-                    ))
-                })
-        }
+        DataSourceOutput::Table { columns } => evaluate_formula_program_with_limits(
+            &program,
+            &input_table,
+            columns,
+            FormulaEvaluationLimits::new(MAX_TABLE_ROWS, MAX_TABLE_CELLS),
+        )
+        .map(DataValue::Table)
+        .map_err(|error| {
+            TmdError::DataView(format!(
+                "Formula source `{name}` evaluation failed: {error}"
+            ))
+        }),
     }
 }
 
@@ -1168,7 +1136,7 @@ mod tests {
             .expect_err("input columns must be an output prefix");
         assert!(error
             .to_string()
-            .contains("must begin with the input SQLite columns"));
+            .contains("must begin with the input table columns"));
 
         let mut schema_three_rhai = document_with_rhai("[]", &["category"]);
         schema_three_rhai.manifest.extras[DATA_SOURCES_EXTRAS_KEY]["schema_version"] = json!(3);
