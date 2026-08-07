@@ -18,6 +18,10 @@ import {
 import { EditorClientState, PREVIEW_DEBOUNCE_MS } from "../../../src/input.js";
 import { setupEditorTabs } from "../../../src/tabs.js";
 import { rhaiDiagnosticFromIssue } from "../../../src/rhai-diagnostics.js";
+import {
+  changedTableCells,
+  tablesHaveSameShape,
+} from "../../../src/table-refresh.js";
 import type {
   DataSource,
   DataSourceRegistryView,
@@ -125,10 +129,13 @@ let dataSourceEditingLocked = true;
 let pendingDataSourceRevision: number | undefined;
 let pendingRhaiScriptRevision: number | undefined;
 let pendingFormulaRevision: number | undefined;
+let pendingSpreadsheetEdit: SpreadsheetEditMeasurement | undefined;
+let tableRenderMeasurement: TableRenderMeasurement | undefined;
 let selectedTableSource = host.getState()?.selectedTableSource;
 let tableRequestId = 0;
 let rhaiScriptRequestId = 0;
 let currentTable: DataSourceTable | undefined;
+let currentTableSource: string | undefined;
 let tableGrid: HTMLRevoGridElement | undefined;
 let currentRhaiScriptPath: string | undefined;
 let rhaiEvaluationComplete = false;
@@ -143,6 +150,18 @@ let insertedReference: { start: number; end: number } | undefined;
 interface TableCellPosition {
   row: number;
   column: number;
+}
+
+interface SpreadsheetEditMeasurement {
+  clientRevision: number;
+  startedAt: number;
+  operation: "Cell edit" | "Fill";
+  optimisticRenderMs?: number;
+}
+
+interface TableRenderMeasurement
+  extends Omit<SpreadsheetEditMeasurement, "clientRevision"> {
+  requestId: number;
 }
 
 void Promise.resolve(defineCustomElements()).then(() => {
@@ -163,7 +182,7 @@ void Promise.resolve(defineCustomElements()).then(() => {
   grid.addEventListener("beforerange", handleTableRangeSelection);
   tableGrid = grid;
   tableGridHost.replaceChildren(grid);
-  if (currentTable) renderTableGrid(currentTable);
+  if (currentTable) void renderTableGrid(currentTable);
 });
 
 setupEditorTabs(
@@ -317,10 +336,15 @@ window.addEventListener("message", (event: MessageEvent<unknown>) => {
       renderDataSourceDrafts();
       queueFormulaEvaluation();
     }
+    if (message.clientRevision === pendingSpreadsheetEdit?.clientRevision) {
+      const measurement = pendingSpreadsheetEdit;
+      pendingSpreadsheetEdit = undefined;
+      requestTableSource(measurement);
+    }
     return;
   }
   if (message.type === "dataSourceTable") {
-    renderTableSourceResult(message);
+    void renderTableSourceResult(message);
     return;
   }
   if (message.type === "rhaiScript") {
@@ -417,6 +441,8 @@ function applyFormulaProgramEdit(): void {
   );
   if (!draft || draft.type !== "formula") return;
   draft.program = program;
+  pendingSpreadsheetEdit = undefined;
+  tableRenderMeasurement = undefined;
   pendingFormulaRevision = sendDataSourceEdit(
     dataSourceDrafts.map(cloneDataSource),
   );
@@ -463,6 +489,8 @@ function applyModel(model: EditorModelMessage): void {
   clearTimeout(formulaEvaluationTimer);
   pendingRhaiScriptRevision = undefined;
   pendingFormulaRevision = undefined;
+  pendingSpreadsheetEdit = undefined;
+  tableRenderMeasurement = undefined;
   title.value = model.title;
   markdown.value = model.markdown;
   title.disabled = model.editingLocked;
@@ -515,18 +543,39 @@ function isTabularSource(source: DataSource): boolean {
   );
 }
 
-function requestTableSource(): void {
+function requestTableSource(
+  measurement?: SpreadsheetEditMeasurement,
+): void {
   tableRequestId += 1;
-  currentTable = undefined;
-  cellFormulaBar.hidden = true;
-  tableGridHost.hidden = true;
+  tableRenderMeasurement = measurement
+    ? {
+        requestId: tableRequestId,
+        startedAt: measurement.startedAt,
+        operation: measurement.operation,
+        ...(measurement.optimisticRenderMs === undefined
+          ? {}
+          : { optimisticRenderMs: measurement.optimisticRenderMs }),
+      }
+    : undefined;
   if (!selectedTableSource) {
+    currentTable = undefined;
+    currentTableSource = undefined;
+    cellFormulaBar.hidden = true;
+    tableGridHost.hidden = true;
     setStatus(
       tableSourceStatus,
       "No table-compatible sources are defined. Add one in the Sources tab.",
       "stale",
     );
     return;
+  }
+  const canKeepCurrentTable =
+    currentTable !== undefined && currentTableSource === selectedTableSource;
+  if (!canKeepCurrentTable) {
+    currentTable = undefined;
+    currentTableSource = undefined;
+    cellFormulaBar.hidden = true;
+    tableGridHost.hidden = true;
   }
   if (!revision.initialized) return;
   if (selectedRhaiSource()) {
@@ -550,9 +599,9 @@ function requestTableSource(): void {
   });
 }
 
-function renderTableSourceResult(
+async function renderTableSourceResult(
   message: Extract<EditorHostMessage, { type: "dataSourceTable" }>,
-): void {
+): Promise<void> {
   if (
     message.requestId !== tableRequestId ||
     message.source !== selectedTableSource
@@ -560,9 +609,13 @@ function renderTableSourceResult(
     return;
   }
   if (!message.table) {
-    currentTable = undefined;
-    tableGridHost.hidden = true;
-    resetCellEditor();
+    const measurement = takeTableRenderMeasurement(message.requestId);
+    if (!currentTable || currentTableSource !== message.source) {
+      currentTable = undefined;
+      currentTableSource = undefined;
+      tableGridHost.hidden = true;
+      resetCellEditor();
+    }
     setStatus(
       tableSourceStatus,
       message.issue ?? "The selected source could not be displayed as a table.",
@@ -570,11 +623,26 @@ function renderTableSourceResult(
     );
     applyRhaiEvaluationIssue(message.issue);
     applyFormulaEvaluationIssue(message.issue);
+    if (measurement) {
+      setCellEditStatus(
+        `${measurement.operation} failed after ${formatDuration(performance.now() - measurement.startedAt)}.`,
+        "invalid",
+      );
+    }
     return;
   }
+  const previousTable =
+    currentTableSource === message.source ? currentTable : undefined;
   currentTable = message.table;
+  currentTableSource = message.source;
   tableGridHost.hidden = false;
-  renderTableGrid(message.table);
+  const preservedGrid = await renderTableGrid(message.table, previousTable);
+  if (
+    message.requestId !== tableRequestId ||
+    message.source !== selectedTableSource
+  ) {
+    return;
+  }
   if (
     selectedFormulaSource() &&
     message.table.rows.length > 0 &&
@@ -588,10 +656,12 @@ function renderTableSourceResult(
       selectedCell = { row: 0, column: 0 };
     }
     renderSelectedCell();
-    void tableGrid?.setCellsFocus(
-      { x: selectedCell.column, y: selectedCell.row },
-      { x: selectedCell.column, y: selectedCell.row },
-    );
+    if (!preservedGrid) {
+      void tableGrid?.setCellsFocus(
+        { x: selectedCell.column, y: selectedCell.row },
+        { x: selectedCell.column, y: selectedCell.row },
+      );
+    }
   }
   setStatus(
     tableSourceStatus,
@@ -600,6 +670,17 @@ function renderTableSourceResult(
   );
   applyRhaiEvaluationIssue(undefined);
   applyFormulaEvaluationIssue(undefined);
+  const measurement = takeTableRenderMeasurement(message.requestId);
+  if (measurement) {
+    const optimistic =
+      measurement.optimisticRenderMs === undefined
+        ? ""
+        : ` (input shown in ${formatDuration(measurement.optimisticRenderMs)})`;
+    setCellEditStatus(
+      `${measurement.operation} rendered in ${formatDuration(performance.now() - measurement.startedAt)}${optimistic}. Save the document to persist it.`,
+      "valid",
+    );
+  }
 }
 
 function renderFormulaProgram(): void {
@@ -797,13 +878,20 @@ function handleTableEdit(event: CustomEvent<BeforeSaveDataDetails>): void {
   void applyCellText(position, String(event.detail.val ?? ""));
 }
 
-function handleTableAutofill(event: CustomEvent<ChangedRange>): void {
+async function handleTableAutofill(
+  event: CustomEvent<ChangedRange>,
+): Promise<void> {
   event.preventDefault();
   const source = selectedFormulaSource();
   if (!source || !currentTable) return;
+  const startedAt = performance.now();
   try {
     let program = source.program;
     const databaseEdits: DatabaseCellEdit[] = [];
+    const optimisticCells: Array<{
+      position: TableCellPosition;
+      value: DataTableCell;
+    }> = [];
     for (const [destinationRowText, rowMapping] of Object.entries(
       event.detail.mapping,
     )) {
@@ -844,6 +932,7 @@ function handleTableAutofill(event: CustomEvent<ChangedRange>): void {
           );
         }
         databaseEdits.push(databaseEditForCell(destination, copiedValue));
+        optimisticCells.push({ position: destination, value: copiedValue });
         program = setFormulaCellExpression(
           program,
           destination.row,
@@ -853,8 +942,22 @@ function handleTableAutofill(event: CustomEvent<ChangedRange>): void {
       }
     }
     if (program === source.program && databaseEdits.length === 0) return;
-    sendSpreadsheetEdit(program, databaseEdits);
-    setCellEditStatus("Fill applied. Save the document to persist it.", "valid");
+    setCellEditStatus("Applying fill…", "stale");
+    const optimisticRenderMs = await renderOptimisticCells(
+      optimisticCells,
+      startedAt,
+    );
+    sendSpreadsheetEdit(program, databaseEdits, {
+      startedAt,
+      operation: "Fill",
+      ...(optimisticRenderMs === undefined ? {} : { optimisticRenderMs }),
+    });
+    setCellEditStatus(
+      optimisticRenderMs === undefined
+        ? "Recalculating fill…"
+        : `Input shown in ${formatDuration(optimisticRenderMs)}; recalculating fill…`,
+      "stale",
+    );
   } catch (error) {
     setCellEditStatus(errorMessage(error), "invalid");
   }
@@ -872,9 +975,14 @@ async function applyCellText(
 ): Promise<void> {
   const source = selectedFormulaSource();
   if (!source || !currentTable) return;
+  const startedAt = performance.now();
   try {
     let program = source.program;
     const databaseEdits: DatabaseCellEdit[] = [];
+    const optimisticCells: Array<{
+      position: TableCellPosition;
+      value: DataTableCell;
+    }> = [];
     if (text.startsWith("=")) {
       const expression = text.slice(1).trim();
       if (expression === "") throw new Error("Formula expressions cannot be empty.");
@@ -887,6 +995,7 @@ async function applyCellText(
     } else {
       const value = parseDirectCellValue(position, text);
       databaseEdits.push(databaseEditForCell(position, value));
+      optimisticCells.push({ position, value });
       program = setFormulaCellExpression(
         program,
         position.row,
@@ -894,7 +1003,16 @@ async function applyCellText(
         undefined,
       );
     }
-    sendSpreadsheetEdit(program, databaseEdits);
+    setCellEditStatus("Applying cell edit…", "stale");
+    const optimisticRenderMs = await renderOptimisticCells(
+      optimisticCells,
+      startedAt,
+    );
+    sendSpreadsheetEdit(program, databaseEdits, {
+      startedAt,
+      operation: "Cell edit",
+      ...(optimisticRenderMs === undefined ? {} : { optimisticRenderMs }),
+    });
     selectedCell = { ...position };
     formulaBarEditing = false;
     editingCell = undefined;
@@ -902,7 +1020,12 @@ async function applyCellText(
     cellFormulaBar.hidden = false;
     cellName.value = spreadsheetCellName(position.row, position.column);
     cellInput.value = text;
-    setCellEditStatus("Cell edit applied. Save the document to persist it.", "valid");
+    setCellEditStatus(
+      optimisticRenderMs === undefined
+        ? "Recalculating cell…"
+        : `Input shown in ${formatDuration(optimisticRenderMs)}; recalculating cell…`,
+      "stale",
+    );
   } catch (error) {
     setCellEditStatus(errorMessage(error), "invalid");
   }
@@ -911,13 +1034,18 @@ async function applyCellText(
 function sendSpreadsheetEdit(
   program: string,
   databaseEdits: DatabaseCellEdit[],
+  measurement: Omit<SpreadsheetEditMeasurement, "clientRevision">,
 ): void {
   const source = selectedFormulaSource();
   if (!source) return;
   const clientRevision = revision.nextEditRevision();
   if (clientRevision === undefined) return;
   updateLocalFormulaProgram(source.name, program);
-  pendingFormulaRevision = clientRevision;
+  clearTimeout(formulaEvaluationTimer);
+  tableRequestId += 1;
+  tableRenderMeasurement = undefined;
+  pendingFormulaRevision = undefined;
+  pendingSpreadsheetEdit = { clientRevision, ...measurement };
   formulaEvaluationComplete = false;
   formulaEvaluationIssue = undefined;
   formulaEditor.setDiagnostic(undefined);
@@ -1127,13 +1255,85 @@ function setCellEditStatus(
   setStatus(cellEditStatus, message, state);
 }
 
+async function renderOptimisticCells(
+  cells: ReadonlyArray<{
+    position: TableCellPosition;
+    value: DataTableCell;
+  }>,
+  startedAt: number,
+): Promise<number | undefined> {
+  const table = currentTable;
+  const grid = tableGrid;
+  if (cells.length === 0 || !table || !grid) return undefined;
+  const updates: Array<{
+    position: TableCellPosition;
+    value: DataTableCell;
+  }> = [];
+  for (const { position, value } of cells) {
+    const displayRow = table.rows[position.row];
+    if (!displayRow || position.column >= displayRow.length) continue;
+    displayRow[position.column] = { ...value };
+    const inputRow = table.editable?.inputRows[position.row];
+    if (inputRow && position.column < inputRow.length) {
+      inputRow[position.column] = { ...value };
+    }
+    updates.push({ position, value });
+  }
+  await Promise.all(
+    updates.map(({ position, value }) =>
+      grid.setDataAt({
+        row: position.row,
+        col: position.column,
+        rowType: "rgRow",
+        colType: "rgCol",
+        val: tableCellValue(value),
+      }),
+    ),
+  );
+  return performance.now() - startedAt;
+}
+
+function takeTableRenderMeasurement(
+  requestId: number,
+): TableRenderMeasurement | undefined {
+  if (tableRenderMeasurement?.requestId !== requestId) return undefined;
+  const measurement = tableRenderMeasurement;
+  tableRenderMeasurement = undefined;
+  return measurement;
+}
+
+function formatDuration(durationMs: number): string {
+  return durationMs < 1 ? "<1 ms" : `${Math.round(durationMs)} ms`;
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function renderTableGrid(table: DataSourceTable): void {
-  if (!tableGrid) return;
+async function renderTableGrid(
+  table: DataSourceTable,
+  previousTable?: DataSourceTable,
+): Promise<boolean> {
+  if (!tableGrid) return false;
   const spreadsheetEditable = selectedFormulaSource() !== undefined;
+  if (
+    spreadsheetEditable &&
+    previousTable &&
+    tablesHaveSameShape(previousTable, table)
+  ) {
+    await Promise.all(
+      changedTableCells(previousTable, table).map(({ row, column }) =>
+        tableGrid?.setDataAt({
+          row,
+          col: column,
+          rowType: "rgRow",
+          colType: "rgCol",
+          val: tableCellValue(table.rows[row][column]),
+        }),
+      ),
+    );
+    return true;
+  }
   tableGrid.columns = table.columns.map(
     (name, index): ColumnRegular => ({
       name,
@@ -1152,6 +1352,7 @@ function renderTableGrid(table: DataSourceTable): void {
         __tmdRowIndex: rowIndex,
       }) as DataType,
   );
+  return false;
 }
 
 function tableColumnProp(index: number): string {
