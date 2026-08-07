@@ -1,0 +1,21 @@
+[package]
+name = "tmd-data"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
+description = "Shared typed scalar and table values for Tanu Markdown data sources"
+readme = "README.md"
+keywords = ["markdown", "table", "data"]
+categories = ["data-structures"]
+include = ["src/**", "Cargo.toml", "README.md"]
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+serde.workspace = true

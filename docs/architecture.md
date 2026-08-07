@@ -1,34 +1,52 @@
 # Architecture
 
-Tanu Markdown separates the file-format implementation from delivery surfaces
-so that the Rust core remains the single source of truth.
+Tanu Markdown separates reusable data and Formula semantics, TMD document
+integration, and delivery surfaces so the Rust workspace remains the single
+source of truth for implemented behavior.
 
 ## Component relationships
 
-```text
-+------------------+     +------------------+     +------------------+
-| SvelteKit Web UI | --> | VS Code bridge   | --> | local TMD session|
-| editing surface  |     | lifecycle + I/O  |     | draft + revisions|
-+------------------+     +------------------+     +------------------+
-                                                      |
-                                                      v
-                         +------------------+     +------------------+
-                         | tmd-core         | <-- | tmd CLI/JSON     |
-                         | model and I/O    |     | operation API    |
-                         +------------------+     +------------------+
-                                  ^
-                                  |
-                         +------------------+
-                         | tmd-core-ffi     |
-                         | C ABI cdylib     |
-                         +------------------+
+```mermaid
+flowchart LR
+    UI["SvelteKit Web UI"] --> Bridge["VS Code bridge"]
+    Bridge --> Session["Local TMD session"]
+    Session --> CLI["tmd CLI / JSON"]
+    CLI --> Core["tmd-core"]
+    FFI["tmd-core-ffi"] --> Core
+    Core --> Formula["tmd-formula"]
+    Core --> Data["tmd-data"]
+    Formula --> Data
 ```
 
-`tmd-cli` and `tmd-core-ffi` depend on `tmd-core`. The VS Code extension calls
-the bundled or explicitly configured `tmd` binary through its schema-versioned
-JSON bridge and never parses `.tmd` containers in TypeScript. Preview requests
-send the current unsaved Markdown with retained document bytes so the Rust
-renderer can query the embedded database and resolve attachments.
+`tmd-formula` depends only on `tmd-data`. `tmd-core` depends on both crates and
+owns their integration with TMD documents. `tmd-cli` and `tmd-core-ffi` depend
+on `tmd-core`. The VS Code extension calls the bundled or explicitly configured
+`tmd` binary through its schema-versioned JSON bridge and never parses `.tmd`
+containers in TypeScript. Preview requests send the current unsaved Markdown
+with retained document bytes so the Rust renderer can query the embedded
+database and resolve attachments.
+
+## `tmd-data`
+
+The data crate owns transport-neutral `DataScalar` and `DataTable` types. It
+does not know about TMD documents, manifests, SQLite, rendering, or Formula
+syntax. `tmd-core` re-exports these types to preserve its existing public API.
+
+## `tmd-formula`
+
+The Formula crate owns the bounded language engine:
+
+- tokenization, parsing, and the opaque compiled program representation;
+- A1, range, header, and dependency semantics;
+- built-in functions and typed evaluation;
+- Formula-specific safety limits and caller-supplied table-size limits; and
+- structured errors with spreadsheet codes, source locations, and target
+  cells.
+
+The engine accepts and returns `tmd-data` tables. It has no dependency on TMD
+containers, manifests, SQLite, rendering, the CLI, or editor code. A future
+source-preserving cell-editing model or WASM adapter can therefore build on the
+same language semantics without depending on `tmd-core`.
 
 ## `tmd-core`
 
@@ -37,8 +55,9 @@ The core crate owns:
 - `TmdDoc`, `Manifest`, and attachment metadata;
 - logical attachment path normalization and SHA-256 validation;
 - embedded SQLite lifecycle and migration helpers;
-- named dynamic-data registry parsing, read-only SQLite evaluation, and typed
-  scalar/table values;
+- named dynamic-data registry parsing, read-only SQLite evaluation, sandboxed
+  Rhai transformation, Formula source resolution, and adaptation between
+  document data sources and the standalone Formula engine;
 - `.tmd` ZIP serialization;
 - optional C ABI functions behind the `ffi` feature.
 
@@ -55,7 +74,7 @@ The CLI translates terminal inputs into `tmd-core` operations. It owns:
 - human-readable and schema-versioned JSON inspection/updates;
 - attachment and SQLite lifecycle UX;
 - Markdown-to-HTML and schema-versioned preview rendering with real `attach:`
-  URL rewriting and dynamic SQLite views.
+  URL rewriting and dynamic SQLite, Rhai, and Formula views.
 
 HTML rendering neutralizes raw markup and executable URL schemes. Self-contained
 exports retain passive raster-image and plain-text MIME types and downgrade
@@ -88,9 +107,27 @@ host can provide the same small host adapter instead of the VS Code API. The
 current local session invokes the existing one-shot CLI JSON operations, so
 terminal commands and editor use coexist. A future persistent stdio or remote
 collaborative session can sit behind the host bridge without moving document
-authority into the editing surface. RevoGrid and the table-specific interaction
-model are deliberately deferred to
-[issue #43](https://github.com/Nagitch/tanu-markdown/issues/43).
+authority into the editing surface. The table tab asks the session to evaluate
+a selected named source through the versioned `data-source` CLI bridge and
+renders the typed result in a bundled RevoGrid. For Rhai sources,
+the session also reads the referenced UTF-8 attachment through the CLI and the
+table tab displays a CodeMirror editor with a small Rhai lexer. Script drafts
+are document edits, while preview and table evaluation receive them as bounded
+in-memory attachment overrides. Debounced evaluation failures are translated
+to CodeMirror lint diagnostics when the Rhai runtime reports a source
+location. Formula programs are stored inline in schema-version-3 source
+definitions. Selecting a Formula source shows a separate CodeMirror editor,
+column legend, and syntax highlighting below the grid. Program edits flow
+immediately through the ordinary source-definition dirty/save/backup/undo
+lifecycle; table reevaluation is debounced, and the CLI/core returns typed
+line-and-column errors for editor diagnostics.
+For a Formula source whose SQLite input declares a schema-version-4 `edit`
+contract, the grid and formula bar stage either a primary-keyed database update
+or a Formula assignment. Cell/range selection inserts A1 references, and the
+fill handle translates relative references while preserving `$` components.
+The host stores database edits with the Formula program in revisioned editor
+state, applies them to temporary snapshots for preview and evaluation, and
+commits them transactionally only when the document is saved.
 
 Platform-specific VSIX packages carry the matching native CLI. A machine-level
 setting may select an external CLI, while generic development packages fall

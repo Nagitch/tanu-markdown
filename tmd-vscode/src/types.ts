@@ -12,6 +12,17 @@ export interface SqliteDataSource {
   name: string;
   type: "sqlite";
   query: string;
+  edit?: SqliteEditDefinition;
+}
+
+export interface SqliteEditDefinition {
+  table: string;
+  keySourceColumn: string;
+  keyTableColumn: string;
+  columns: Array<{
+    sourceColumn: string;
+    tableColumn: string;
+  }>;
 }
 
 export interface RhaiDataSourceInput {
@@ -27,11 +38,56 @@ export interface RhaiDataSource {
   outputColumns: string[];
 }
 
-export type DataSource = SqliteDataSource | RhaiDataSource;
+export interface FormulaDataSource {
+  name: string;
+  type: "formula";
+  input: string;
+  program: string;
+  outputColumns: string[];
+}
+
+export type DataSource = SqliteDataSource | RhaiDataSource | FormulaDataSource;
+
+export type DataTableCell =
+  | { type: "null" }
+  | { type: "boolean"; value: boolean }
+  | { type: "integer"; value: string }
+  | { type: "real"; value: number }
+  | { type: "string"; value: string };
+
+export interface DataSourceTable {
+  source: string;
+  kind: "table";
+  columns: string[];
+  rows: DataTableCell[][];
+  editable?: DataSourceTableEditInfo;
+}
+
+export interface DataSourceTableEditInfo {
+  inputSource: string;
+  keyColumn: string;
+  editableColumns: string[];
+  rowKeys: DataTableCell[];
+  inputRows: DataTableCell[][];
+}
+
+export interface DatabaseCellEdit {
+  source: string;
+  key: DataTableCell;
+  column: string;
+  value: DataTableCell;
+}
+
+export interface TextAttachmentEdit {
+  logicalPath: string;
+  text: string;
+}
+
+export interface TextAttachmentView extends TextAttachmentEdit {}
 
 export interface DataSourceRegistryView {
   editable: boolean;
-  schemaVersion?: 1 | 2;
+  schemaVersion?: 1 | 2 | 3 | 4;
   sources: DataSource[];
   issue?: string;
   rawRegistry?: string;
@@ -99,4 +155,14 @@ export interface DocumentUpdate {
   markdown: string;
   title: string;
   extras: JsonValue;
+  text_attachments?: Array<{
+    logical_path: string;
+    text: string;
+  }>;
+  database_edits?: Array<{
+    source: string;
+    key: DataTableCell;
+    column: string;
+    value: DataTableCell;
+  }>;
 }

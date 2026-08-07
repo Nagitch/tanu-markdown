@@ -1094,6 +1094,8 @@ dependencies = [
  "sha2",
  "tempfile",
  "thiserror",
+ "tmd-data",
+ "tmd-formula",
  "uuid",
  "windows-sys",
  "xattr",
@@ -1105,6 +1107,21 @@ name = "tmd-core-ffi"
 version = "0.0.1"
 dependencies = [
  "tmd-core",
+]
+
+[[package]]
+name = "tmd-data"
+version = "0.0.1"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "tmd-formula"
+version = "0.0.1"
+dependencies = [
+ "serde_json",
+ "tmd-data",
 ]
 
 [[package]]

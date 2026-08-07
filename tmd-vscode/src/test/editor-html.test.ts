@@ -44,6 +44,13 @@ test("custom editor loads the bundled SvelteKit app with webview resource URIs",
 
   assert.match(html, /id="tmd-editor-root"/);
   assert.match(html, /id="tmd-csp-nonce"/);
+  assert.match(html, /id="formula-program-editor"/);
+  assert.match(html, /id="formula-program-status"/);
+  assert.match(html, /id="formula-program-error"/);
+  assert.match(html, /id="formula-column-legend"/);
+  assert.match(html, /SUM\(B1:B3\)/);
+  assert.match(html, /id="add-formula-data-source"/);
+  assert.match(html, /name="csp-nonce"/);
   assert.match(
     html,
     /href="vscode-webview:\/\/test\/webview\/_app\/[^"\s]+\.css" rel="stylesheet"/,

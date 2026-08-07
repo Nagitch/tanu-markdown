@@ -33,6 +33,8 @@ serde_json.workspace = true
 sha2.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
+tmd-data.workspace = true
+tmd-formula.workspace = true
 uuid.workspace = true
 zip.workspace = true
 

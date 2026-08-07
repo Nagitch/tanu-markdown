@@ -1,7 +1,10 @@
 import type {
   DataSource,
   DataSourceRegistryView,
+  DataSourceTable,
+  DatabaseCellEdit,
   DocumentInspection,
+  TextAttachmentView,
 } from "./types.js";
 
 /** Messages emitted by the bundled editor web app. */
@@ -19,9 +22,35 @@ export type EditorRequest =
       dataSources: DataSource[];
     }
   | {
+      type: "editSpreadsheet";
+      clientRevision: number;
+      source: string;
+      formulaProgram: string;
+      databaseEdits: DatabaseCellEdit[];
+    }
+  | {
       type: "preview";
       clientRevision: number;
       markdown: string;
+    }
+  | {
+      type: "dataSourceTable";
+      clientRevision: number;
+      requestId: number;
+      source: string;
+    }
+  | {
+      type: "rhaiScript";
+      clientRevision: number;
+      requestId: number;
+      source: string;
+    }
+  | {
+      type: "editRhaiScript";
+      clientRevision: number;
+      source: string;
+      logicalPath: string;
+      text: string;
     }
   | { type: "validate" }
   | { type: "addAttachment" }
@@ -54,11 +83,33 @@ export interface EditorPreviewMessage {
   previewHtml: string;
 }
 
+export interface EditorDataSourceTableMessage {
+  type: "dataSourceTable";
+  clientRevision: number;
+  contentRevision: number;
+  requestId: number;
+  source: string;
+  table?: DataSourceTable;
+  issue?: string;
+}
+
+export interface EditorRhaiScriptMessage {
+  type: "rhaiScript";
+  clientRevision: number;
+  contentRevision: number;
+  requestId: number;
+  source: string;
+  script?: TextAttachmentView;
+  issue?: string;
+}
+
 /** Messages emitted by the VS Code host bridge to an editor surface. */
 export type EditorHostMessage =
   | EditorModelMessage
   | EditorAcknowledgementMessage
-  | EditorPreviewMessage;
+  | EditorPreviewMessage
+  | EditorDataSourceTableMessage
+  | EditorRhaiScriptMessage;
 
 export function isEditorRequest(value: unknown): value is EditorRequest {
   if (
@@ -73,7 +124,11 @@ export function isEditorRequest(value: unknown): value is EditorRequest {
     "ready",
     "edit",
     "editDataSources",
+    "editSpreadsheet",
     "preview",
+    "dataSourceTable",
+    "rhaiScript",
+    "editRhaiScript",
     "validate",
     "addAttachment",
     "removeAttachment",

@@ -91,7 +91,7 @@ canonical attachment logical path and MUST resolve to one declared attachment.
 
 ### 4.1 Dynamic data views
 
-Markdown may select a named SQLite source inline or in a fenced block:
+Markdown may select a named data source inline or in a fenced block:
 
 ````markdown
 The first note is **{{tmd-view:first-note}}**.
@@ -171,6 +171,56 @@ string. Scripts and results are bounded. The implemented host exposes no
 filesystem, process, environment, network, module, or time API and suppresses
 script print/debug output. Evaluation failures, resource-limit violations, and
 result-shape mismatches produce diagnostics.
+
+Registry schema version 3 retains SQLite and Rhai sources and adds bounded
+Formula table transformations. A Formula definition has this shape:
+
+```json
+{
+  "type": "formula",
+  "input": "sales",
+  "program": "C1 = SUM(B1:B3)\nC2 = C1\nC3 = [@amount_cents] * 2",
+  "output": {
+    "type": "table",
+    "columns": ["category", "amount_cents", "total_cents"]
+  }
+}
+```
+
+`input` MUST resolve directly to a SQLite source in the same registry. Its
+query result order defines the Formula sheet order. The declared
+`output.columns` MUST begin with the input's exact ordered column labels and MAY
+append derived columns. Formula assignments MAY overlay the input rectangle,
+populate appended columns, and extend the row count; unassigned derived cells
+are null.
+
+`program` MUST be non-empty UTF-8 containing one `cell = expression`
+assignment per non-comment line. `//` starts a comment outside string and
+header references. A cell uses one-based A1 notation over data rows, so `A1`
+is the first query-result cell and headers are not rows. `$A$1` is accepted as
+the same coordinate without relative-copy semantics. `A1:C3` is a rectangular
+range, `[header]` selects that exact output column across the original input row
+extent, `[@header]` selects the target row in that output column, and
+`HEADER(B)` returns an output label.
+
+The language supports null, boolean, signed integer, finite real, and string
+literals; arithmetic, comparison, and unary operators; and `SUM`, `AVERAGE`,
+`MIN`, `MAX`, `COUNT`, `IF`, `AND`, `OR`, `NOT`, `ROUND`, `ABS`, `CONCAT`,
+`LEN`, and `ISNULL`. Types are strict. Formula dependencies are evaluated
+independent of program order; cycles produce diagnostics. Implementations MUST
+parse into an internal representation rather than interpolate Formula text
+into Rhai or SQL. Programs, syntax complexity, evaluation work, generated
+text, and table shape are bounded. Parse and runtime diagnostics identify a
+source line and column and use a stable typed error category.
+
+Registry schema version 4 retains all earlier source types and adds an optional
+SQLite `edit` contract. It declares a target table, a query-result key mapped
+to its table key column, and the exact query-result-to-table column mappings
+that may be written. Identifiers are bounded and restricted. The key MUST be
+non-null and unique in the evaluated query result, and an update MUST match
+exactly one table row. Implementations MUST apply a staged edit batch in one
+transaction and MUST NOT infer write-back identity from a displayed row index
+or arbitrary SELECT shape.
 
 These references use ordinary Markdown text and fenced blocks, so unaware
 readers retain passive placeholders rather than executing a query. The source
@@ -252,4 +302,10 @@ representation and removed alternate-format APIs and tooling. Draft 3 defines
 the implemented, backward-readable SQLite `scalar` and `table` dynamic-view
 extension under `manifest.extras.tmd_data_sources`. Draft 4 adds registry
 schema version 2 and sandboxed Rhai-to-table transformations while retaining
-schema version 1 reads.
+schema version 1 reads. Draft 5 adds registry schema version 3 and bounded
+Formula table transformations while retaining schema version 1 and 2 reads.
+This addition is tracked in
+[issue #45](https://github.com/Nagitch/tanu-markdown/issues/45).
+Draft 6 adds registry schema version 4, explicit primary-keyed SQLite
+write-back contracts, and Formula assignments over input cells while retaining
+schema version 1 through 3 reads.

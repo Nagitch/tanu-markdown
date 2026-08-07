@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   extrasWithDataSources,
   inspectDataSourceRegistry,
+  sameDataSources,
   validateDataSources,
 } from "../data-sources.js";
 
@@ -69,6 +70,110 @@ test("schema-version-2 registries expose SQLite and Rhai table sources", () => {
       name: "sales",
       type: "sqlite",
       query: "SELECT category, amount_cents FROM sales ORDER BY id",
+    },
+  ]);
+});
+
+test("schema-version-3 registries expose Formula sources and retain Rhai", () => {
+  const registry = inspectDataSourceRegistry({
+    tmd_data_sources: {
+      schema_version: 3,
+      sources: {
+        sales: {
+          type: "sqlite",
+          query: "SELECT category, amount_cents FROM sales ORDER BY id",
+        },
+        summary: {
+          type: "formula",
+          input: "sales",
+          program: "C1 = SUM(B1:B3)",
+          output: {
+            type: "table",
+            columns: ["category", "amount_cents", "total_cents"],
+          },
+        },
+        projected: {
+          type: "rhai",
+          script: "views/projected.rhai",
+          inputs: { rows: "sales" },
+          output: { type: "table", columns: ["category"] },
+        },
+      },
+    },
+  });
+
+  assert.equal(registry.editable, true);
+  assert.equal(registry.schemaVersion, 3);
+  assert.deepEqual(registry.sources, [
+    {
+      name: "projected",
+      type: "rhai",
+      script: "views/projected.rhai",
+      inputs: [{ alias: "rows", source: "sales" }],
+      outputColumns: ["category"],
+    },
+    {
+      name: "sales",
+      type: "sqlite",
+      query: "SELECT category, amount_cents FROM sales ORDER BY id",
+    },
+    {
+      name: "summary",
+      type: "formula",
+      input: "sales",
+      program: "C1 = SUM(B1:B3)",
+      outputColumns: ["category", "amount_cents", "total_cents"],
+    },
+  ]);
+});
+
+test("schema-version-4 registries round-trip an explicit SQLite edit contract", () => {
+  const sources = [
+    {
+      name: "sales",
+      type: "sqlite" as const,
+      query: "SELECT id, category, amount_cents FROM sales ORDER BY id",
+      edit: {
+        table: "sales",
+        keySourceColumn: "id",
+        keyTableColumn: "id",
+        columns: [
+          { sourceColumn: "category", tableColumn: "category" },
+          { sourceColumn: "amount_cents", tableColumn: "amount_cents" },
+        ],
+      },
+    },
+  ];
+  const extras = extrasWithDataSources(null, sources);
+  assert.deepEqual(extras, {
+    tmd_data_sources: {
+      schema_version: 4,
+      sources: {
+        sales: {
+          type: "sqlite",
+          query: "SELECT id, category, amount_cents FROM sales ORDER BY id",
+          edit: {
+            table: "sales",
+            key: { source_column: "id", table_column: "id" },
+            columns: {
+              amount_cents: "amount_cents",
+              category: "category",
+            },
+          },
+        },
+      },
+    },
+  });
+  assert.deepEqual(inspectDataSourceRegistry(extras).sources, [
+    {
+      ...sources[0],
+      edit: {
+        ...sources[0]?.edit,
+        columns: [
+          { sourceColumn: "amount_cents", tableColumn: "amount_cents" },
+          { sourceColumn: "category", tableColumn: "category" },
+        ],
+      },
     },
   ]);
 });
@@ -161,6 +266,62 @@ test("editing Rhai sources writes schema version 2 and preserves output order", 
   });
 });
 
+test("editing Formula sources upgrades the registry to version 3 and round trips", () => {
+  const extras = extrasWithDataSources(
+    { application: { retained: true } },
+    [
+      {
+        name: "sales",
+        type: "sqlite",
+        query: "SELECT category, amount_cents FROM sales ORDER BY id",
+      },
+      {
+        name: "summary",
+        type: "formula",
+        input: "sales",
+        program: "C1 = SUM(B1:B3)",
+        outputColumns: ["category", "amount_cents", "total_cents"],
+      },
+    ],
+  );
+
+  assert.deepEqual(extras, {
+    application: { retained: true },
+    tmd_data_sources: {
+      schema_version: 3,
+      sources: {
+        sales: {
+          type: "sqlite",
+          query: "SELECT category, amount_cents FROM sales ORDER BY id",
+        },
+        summary: {
+          type: "formula",
+          input: "sales",
+          program: "C1 = SUM(B1:B3)",
+          output: {
+            type: "table",
+            columns: ["category", "amount_cents", "total_cents"],
+          },
+        },
+      },
+    },
+  });
+  assert.deepEqual(inspectDataSourceRegistry(extras).sources, [
+    {
+      name: "sales",
+      type: "sqlite",
+      query: "SELECT category, amount_cents FROM sales ORDER BY id",
+    },
+    {
+      name: "summary",
+      type: "formula",
+      input: "sales",
+      program: "C1 = SUM(B1:B3)",
+      outputColumns: ["category", "amount_cents", "total_cents"],
+    },
+  ]);
+});
+
 test("unsupported registries remain visible and read-only", () => {
   const registry = inspectDataSourceRegistry({
     tmd_data_sources: {
@@ -178,11 +339,31 @@ test("unsupported registries remain visible and read-only", () => {
 
 test("unknown registry versions remain visible and read-only", () => {
   const registry = inspectDataSourceRegistry({
-    tmd_data_sources: { schema_version: 3, sources: {} },
+    tmd_data_sources: { schema_version: 5, sources: {} },
   });
 
   assert.equal(registry.editable, false);
-  assert.match(registry.issue ?? "", /expected 1 or 2/);
+  assert.match(registry.issue ?? "", /expected 1, 2, 3 or 4/);
+});
+
+test("Formula sources require schema version 3", () => {
+  const registry = inspectDataSourceRegistry({
+    tmd_data_sources: {
+      schema_version: 2,
+      sources: {
+        sales: { type: "sqlite", query: "SELECT amount FROM sales" },
+        summary: {
+          type: "formula",
+          input: "sales",
+          program: "B1 = SUM(A1:A3)",
+          output: { type: "table", columns: ["amount", "total"] },
+        },
+      },
+    },
+  });
+
+  assert.equal(registry.editable, false);
+  assert.match(registry.issue ?? "", /requires schema_version 3/);
 });
 
 test("source edits reject duplicate and invalid names", () => {
@@ -223,5 +404,96 @@ test("Rhai inputs must resolve directly to SQLite sources", () => {
         },
       ]),
     /must reference a SQLite source/,
+  );
+});
+
+test("Formula input must resolve directly to a SQLite source", () => {
+  assert.throws(
+    () =>
+      validateDataSources([
+        {
+          name: "summary",
+          type: "formula",
+          input: "missing",
+          program: "A1 = SUM(A1:A3)",
+          outputColumns: ["total"],
+        },
+      ]),
+    /references undefined source `missing`/,
+  );
+  assert.throws(
+    () =>
+      validateDataSources([
+        { name: "sales", type: "sqlite", query: "SELECT amount FROM sales" },
+        {
+          name: "projected",
+          type: "rhai",
+          script: "views/projected.rhai",
+          inputs: [{ alias: "rows", source: "sales" }],
+          outputColumns: ["amount"],
+        },
+        {
+          name: "summary",
+          type: "formula",
+          input: "projected",
+          program: "A1 = SUM(A1:A3)",
+          outputColumns: ["total"],
+        },
+      ]),
+    /must reference a SQLite source.*is rhai/,
+  );
+});
+
+test("Formula programs and output columns use bounded registry values", () => {
+  assert.throws(
+    () =>
+      validateDataSources([
+        { name: "sales", type: "sqlite", query: "SELECT amount FROM sales" },
+        {
+          name: "summary",
+          type: "formula",
+          input: "sales",
+          program: "x".repeat(256 * 1024 + 1),
+          outputColumns: ["total"],
+        },
+      ]),
+    /program exceeds 262144 bytes/,
+  );
+  assert.throws(
+    () =>
+      validateDataSources([
+        { name: "sales", type: "sqlite", query: "SELECT amount FROM sales" },
+        {
+          name: "summary",
+          type: "formula",
+          input: "sales",
+          program: "A1 = SUM(A1:A3)",
+          outputColumns: ["total", "total"],
+        },
+      ]),
+    /repeats output column `total`/,
+  );
+});
+
+test("Formula program changes participate in data-source equality", () => {
+  const initial = [
+    { name: "sales", type: "sqlite" as const, query: "SELECT amount FROM sales" },
+    {
+      name: "summary",
+      type: "formula" as const,
+      input: "sales",
+      program: "A1 = SUM(A1:A3)",
+      outputColumns: ["total"],
+    },
+  ];
+  assert.equal(sameDataSources(initial, initial.map((source) => ({ ...source }))), true);
+  const edited = initial.map((source) =>
+    source.type === "formula"
+      ? { ...source, program: "A1 = A1" }
+      : { ...source },
+  );
+  assert.equal(
+    sameDataSources(initial, edited),
+    false,
   );
 });

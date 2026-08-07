@@ -3,7 +3,9 @@
 Tanu Markdown (TMD) is a self-contained document format that keeps Markdown,
 metadata, attachments, and a SQLite database in one portable file. Markdown
 can render named, read-only SQLite sources as inline scalars or block tables,
-and sandboxed Rhai scripts can transform declared SQLite inputs into tables.
+and sandboxed Rhai scripts or bounded spreadsheet-style Formula programs can
+transform declared SQLite inputs into tables. Formula tables backed by an
+explicit keyed edit contract can also stage safe SQLite cell updates.
 
 This repository contains the Rust document library, the installed `tmd`
 command-line interface, a C-compatible dynamic library, a VS Code custom
@@ -24,7 +26,9 @@ normative implemented contract and the
 
 | Path | Responsibility |
 | --- | --- |
-| `tmd-core/` | Rust document model, attachment handling, SQLite lifecycle/data views, and `.tmd` I/O |
+| `tmd-data/` | Transport-neutral typed scalar and ordered-table values |
+| `tmd-formula/` | Bounded Formula parser, evaluator, functions, and structured diagnostics |
+| `tmd-core/` | Rust document model, attachment handling, SQLite lifecycle/data-source integration, and `.tmd` I/O |
 | `tmd-cli/` | CLI for creating, validating, publishing, exporting, and editing documents |
 | `tmd-core-ffi/` | C ABI dynamic-library wrapper around the optional `tmd-core` FFI surface |
 | `tmd-vscode/` | VS Code custom editor using the `tmd` JSON bridge |
@@ -40,7 +44,7 @@ the repository with the Dev Containers extension, run **Dev Containers: Reopen
 in Container** (or **Rebuild and Reopen in Container** for an existing setup),
 then press **F5** with **Run Tanu Markdown Editor (sample)** selected. The
 container setup builds and stages the CLI automatically and the debug host
-opens the Rhai-enabled reference sample.
+opens the Rhai- and Formula-enabled reference sample.
 
 From a terminal with Docker:
 
@@ -71,7 +75,7 @@ The CLI also exposes schema-versioned JSON updates and previews, complete
 attachment lifecycle commands, read-only JSON database queries, migrations,
 and database import/export. HTML export and VS Code preview share the same safe
 Rust renderer for attachments, read-only SQLite sources, and sandboxed
-Rhai-to-table transformations. Configure
+Rhai-to-table and Formula transformations. Configure
 `tanuMarkdown.cliPath` if `tmd` is not on the VS Code process `PATH`.
 
 ## Validation

@@ -1,16 +1,22 @@
 use crate::{normalize_logical_path, TmdDoc, TmdError, TmdResult};
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use rhai::{Array, Dynamic, Engine, ImmutableString, Map, Scope, FLOAT, INT};
-use rusqlite::types::ValueRef;
+use rusqlite::types::{Value, ValueRef};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::time::{Duration, Instant};
+use tmd_data::{DataScalar, DataTable};
+use tmd_formula::{
+    evaluate_formula_program_with_limits, parse_formula_program, FormulaEvaluationLimits,
+};
 
 /// Manifest `extras` key containing versioned dynamic-data source definitions.
 pub const DATA_SOURCES_EXTRAS_KEY: &str = "tmd_data_sources";
 
-const DATA_SOURCES_SCHEMA_VERSION: u32 = 2;
+const DATA_SOURCES_SCHEMA_VERSION: u32 = 4;
+const FORMULA_DATA_SOURCES_SCHEMA_VERSION: u32 = 3;
+const RHAI_DATA_SOURCES_SCHEMA_VERSION: u32 = 2;
 const LEGACY_DATA_SOURCES_SCHEMA_VERSION: u32 = 1;
 const MAX_SOURCE_NAME_BYTES: usize = 128;
 const MAX_QUERY_BYTES: usize = 64 * 1024;
@@ -25,11 +31,12 @@ const MAX_RHAI_CALL_LEVELS: usize = 32;
 const MAX_RHAI_EXPR_DEPTH: usize = 64;
 const MAX_RHAI_FUNCTION_EXPR_DEPTH: usize = 32;
 const MAX_RHAI_RUN_TIME: Duration = Duration::from_millis(250);
-const MAX_TABLE_ROWS: usize = 1_000;
+pub(crate) const MAX_TABLE_ROWS: usize = 1_000;
 const MAX_TABLE_COLUMNS: usize = 128;
-const MAX_TABLE_CELLS: usize = 10_000;
+pub(crate) const MAX_TABLE_CELLS: usize = 10_000;
 const MAX_TEXT_BYTES: usize = 1024 * 1024;
 const MAX_COLUMN_NAME_BYTES: usize = 256;
+const MAX_SQLITE_IDENTIFIER_BYTES: usize = 128;
 
 /// Versioned collection of named dynamic-data sources.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -67,26 +74,42 @@ impl DataSourceRegistry {
         let registry: Self = serde_json::from_value(value.clone()).map_err(|error| {
             TmdError::DataView(format!("invalid data-source registry: {error}"))
         })?;
-        if !matches!(
-            registry.schema_version,
-            LEGACY_DATA_SOURCES_SCHEMA_VERSION | DATA_SOURCES_SCHEMA_VERSION
-        ) {
+        if !matches!(registry.schema_version, 1..=DATA_SOURCES_SCHEMA_VERSION) {
             return Err(TmdError::DataView(format!(
-                "unsupported data-source schema_version {}; expected {} or {}",
+                "unsupported data-source schema_version {}; expected {}, {}, {}, or {}",
                 registry.schema_version,
                 LEGACY_DATA_SOURCES_SCHEMA_VERSION,
+                RHAI_DATA_SOURCES_SCHEMA_VERSION,
+                FORMULA_DATA_SOURCES_SCHEMA_VERSION,
                 DATA_SOURCES_SCHEMA_VERSION
             )));
         }
         for (name, definition) in &registry.sources {
             validate_source_name(name)?;
             definition.validate(name)?;
-            if registry.schema_version == LEGACY_DATA_SOURCES_SCHEMA_VERSION
-                && matches!(definition, DataSourceDefinition::Rhai { .. })
-            {
-                return Err(TmdError::DataView(format!(
-                    "Rhai source `{name}` requires data-source schema_version {DATA_SOURCES_SCHEMA_VERSION}"
-                )));
+            match definition {
+                DataSourceDefinition::Rhai { .. }
+                    if registry.schema_version < RHAI_DATA_SOURCES_SCHEMA_VERSION =>
+                {
+                    return Err(TmdError::DataView(format!(
+                        "Rhai source `{name}` requires data-source schema_version {RHAI_DATA_SOURCES_SCHEMA_VERSION}"
+                    )));
+                }
+                DataSourceDefinition::Formula { .. }
+                    if registry.schema_version < FORMULA_DATA_SOURCES_SCHEMA_VERSION =>
+                {
+                    return Err(TmdError::DataView(format!(
+                        "Formula source `{name}` requires data-source schema_version {FORMULA_DATA_SOURCES_SCHEMA_VERSION}"
+                    )));
+                }
+                DataSourceDefinition::Sqlite { edit: Some(_), .. }
+                    if registry.schema_version < DATA_SOURCES_SCHEMA_VERSION =>
+                {
+                    return Err(TmdError::DataView(format!(
+                        "editable SQLite source `{name}` requires data-source schema_version {DATA_SOURCES_SCHEMA_VERSION}"
+                    )));
+                }
+                _ => {}
             }
         }
         registry.validate_input_references()?;
@@ -95,23 +118,40 @@ impl DataSourceRegistry {
 
     fn validate_input_references(&self) -> TmdResult<()> {
         for (name, definition) in &self.sources {
-            let DataSourceDefinition::Rhai { inputs, .. } = definition else {
-                continue;
-            };
-            for (alias, source_name) in inputs {
-                match self.sources.get(source_name) {
+            match definition {
+                DataSourceDefinition::Rhai { inputs, .. } => {
+                    for (alias, source_name) in inputs {
+                        match self.sources.get(source_name) {
+                            Some(DataSourceDefinition::Sqlite { .. }) => {}
+                            Some(other) => {
+                                return Err(TmdError::DataView(format!(
+                                    "Rhai source `{name}` input `{alias}` must reference a SQLite source; `{source_name}` is {}",
+                                    other.kind_name()
+                                )));
+                            }
+                            None => {
+                                return Err(TmdError::DataView(format!(
+                                    "Rhai source `{name}` input `{alias}` references undefined source `{source_name}`"
+                                )));
+                            }
+                        }
+                    }
+                }
+                DataSourceDefinition::Formula { input, .. } => match self.sources.get(input) {
                     Some(DataSourceDefinition::Sqlite { .. }) => {}
-                    Some(DataSourceDefinition::Rhai { .. }) => {
+                    Some(other) => {
                         return Err(TmdError::DataView(format!(
-                            "Rhai source `{name}` input `{alias}` must reference a SQLite source; `{source_name}` is Rhai"
+                            "Formula source `{name}` input must reference a SQLite source; `{input}` is {}",
+                            other.kind_name()
                         )));
                     }
                     None => {
                         return Err(TmdError::DataView(format!(
-                            "Rhai source `{name}` input `{alias}` references undefined source `{source_name}`"
+                            "Formula source `{name}` input references undefined source `{input}`"
                         )));
                     }
-                }
+                },
+                DataSourceDefinition::Sqlite { .. } => {}
             }
         }
         Ok(())
@@ -126,6 +166,9 @@ pub enum DataSourceDefinition {
     Sqlite {
         /// SQL statement evaluated when the source is rendered.
         query: String,
+        /// Explicit primary-keyed write-back contract for table editing.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        edit: Option<SqliteEditDefinition>,
     },
     /// A sandboxed Rhai transformation over declared SQLite table inputs.
     Rhai {
@@ -136,15 +179,75 @@ pub enum DataSourceDefinition {
         /// Required output shape for the script result.
         output: DataSourceOutput,
     },
+    /// An Excel-like formula program over one declared SQLite table input.
+    Formula {
+        /// Named SQLite source used as the program's initial table.
+        input: String,
+        /// Inline formula program containing one cell assignment per line.
+        program: String,
+        /// Required output table columns.
+        output: DataSourceOutput,
+    },
 }
 
-/// Declared output shape for a scripted data source.
+/// Safe write-back contract for an editable SQLite data source.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SqliteEditDefinition {
+    /// SQLite table receiving updates.
+    pub table: String,
+    /// Mapping from the query result's stable key to the table key column.
+    pub key: SqliteEditKey,
+    /// Query-result columns mapped to writable SQLite table columns.
+    pub columns: BTreeMap<String, String>,
+}
+
+/// Stable key mapping used by an editable SQLite source.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SqliteEditKey {
+    /// Column name exposed by the SQLite source query.
+    pub source_column: String,
+    /// Corresponding key column in the target table.
+    pub table_column: String,
+}
+
+/// One primary-keyed SQLite cell update staged by an editor.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DataCellEdit {
+    /// Editable SQLite source owning the update contract.
+    pub source: String,
+    /// Stable query-result key identifying the row.
+    pub key: DataScalar,
+    /// Query-result column being changed.
+    pub column: String,
+    /// New typed scalar value.
+    pub value: DataScalar,
+}
+
+/// Metadata needed to edit a direct or Formula-derived table safely.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DataSourceEditInfo {
+    /// SQLite source whose contract receives updates.
+    pub input_source: String,
+    /// Stable key column in the input query.
+    pub key_column: String,
+    /// Query-result columns that may be edited.
+    pub editable_columns: Vec<String>,
+    /// Stable keys in input-row order.
+    pub row_keys: Vec<DataScalar>,
+    /// Current input rows before Formula evaluation.
+    pub input_rows: Vec<Vec<DataScalar>>,
+}
+
+/// Declared output shape for a computed data source.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
 pub enum DataSourceOutput {
-    /// An ordered table built from an array of Rhai object maps.
+    /// An ordered table with declared column labels.
     Table {
-        /// Ordered output columns. Every result map must contain exactly these keys.
+        /// Ordered output columns.
         columns: Vec<String>,
     },
 }
@@ -152,7 +255,7 @@ pub enum DataSourceOutput {
 impl DataSourceDefinition {
     fn validate(&self, name: &str) -> TmdResult<()> {
         match self {
-            Self::Sqlite { query } => {
+            Self::Sqlite { query, edit } => {
                 if query.trim().is_empty() {
                     return Err(TmdError::DataView(format!(
                         "SQLite source `{name}` has an empty query"
@@ -162,6 +265,9 @@ impl DataSourceDefinition {
                     return Err(TmdError::DataView(format!(
                         "SQLite source `{name}` query exceeds {MAX_QUERY_BYTES} bytes"
                     )));
+                }
+                if let Some(edit) = edit {
+                    edit.validate(name)?;
                 }
             }
             Self::Rhai {
@@ -197,37 +303,99 @@ impl DataSourceDefinition {
                     })?;
                     validate_source_name(source_name)?;
                 }
-                output.validate(name)?;
+                output.validate(name, "Rhai")?;
             }
+            Self::Formula {
+                input,
+                program,
+                output,
+            } => {
+                validate_source_name(input).map_err(|_| {
+                    TmdError::DataView(format!(
+                        "Formula source `{name}` has invalid SQLite input name `{input}`"
+                    ))
+                })?;
+                parse_formula_program(program).map_err(|error| {
+                    TmdError::DataView(format!(
+                        "Formula source `{name}` program is invalid: {error}"
+                    ))
+                })?;
+                output.validate(name, "Formula")?;
+            }
+        }
+        Ok(())
+    }
+
+    fn kind_name(&self) -> &'static str {
+        match self {
+            Self::Sqlite { .. } => "SQLite",
+            Self::Rhai { .. } => "Rhai",
+            Self::Formula { .. } => "Formula",
+        }
+    }
+}
+
+impl SqliteEditDefinition {
+    fn validate(&self, source_name: &str) -> TmdResult<()> {
+        validate_sqlite_identifier(&self.table).map_err(|message| {
+            TmdError::DataView(format!(
+                "editable SQLite source `{source_name}` has invalid table `{}`: {message}",
+                self.table
+            ))
+        })?;
+        validate_output_column_name(source_name, &self.key.source_column)?;
+        validate_sqlite_identifier(&self.key.table_column).map_err(|message| {
+            TmdError::DataView(format!(
+                "editable SQLite source `{source_name}` has invalid key table column `{}`: {message}",
+                self.key.table_column
+            ))
+        })?;
+        if self.columns.is_empty() {
+            return Err(TmdError::DataView(format!(
+                "editable SQLite source `{source_name}` requires at least one writable column"
+            )));
+        }
+        for (source_column, table_column) in &self.columns {
+            validate_output_column_name(source_name, source_column)?;
+            if source_column == &self.key.source_column {
+                return Err(TmdError::DataView(format!(
+                    "editable SQLite source `{source_name}` cannot make its stable key column `{source_column}` writable"
+                )));
+            }
+            validate_sqlite_identifier(table_column).map_err(|message| {
+                TmdError::DataView(format!(
+                    "editable SQLite source `{source_name}` has invalid table column `{table_column}`: {message}"
+                ))
+            })?;
         }
         Ok(())
     }
 }
 
 impl DataSourceOutput {
-    fn validate(&self, name: &str) -> TmdResult<()> {
+    fn validate(&self, name: &str, source_kind: &str) -> TmdResult<()> {
         match self {
             Self::Table { columns } => {
                 if columns.is_empty() {
                     return Err(TmdError::DataView(format!(
-                        "Rhai source `{name}` table output requires at least one column"
+                        "{source_kind} source `{name}` table output requires at least one column"
                     )));
                 }
                 if columns.len() > MAX_TABLE_COLUMNS {
                     return Err(TmdError::DataView(format!(
-                        "Rhai source `{name}` table output exceeds {MAX_TABLE_COLUMNS} columns"
+                        "{source_kind} source `{name}` table output exceeds {MAX_TABLE_COLUMNS} columns"
                     )));
                 }
                 let mut seen = BTreeSet::new();
                 for column in columns {
                     if column.is_empty() || column.len() > MAX_COLUMN_NAME_BYTES {
                         return Err(TmdError::DataView(format!(
-                            "Rhai source `{name}` has an empty or overlong output column"
+                            "{source_kind} source `{name}` has an empty or overlong output column"
                         )));
                     }
                     if !seen.insert(column) {
                         return Err(TmdError::DataView(format!(
-                            "Rhai source `{name}` repeats output column `{column}`"
+                            "{source_kind} source `{name}` repeats output column `{column}`"
                         )));
                     }
                 }
@@ -235,44 +403,6 @@ impl DataSourceOutput {
         }
         Ok(())
     }
-}
-
-/// Scalar value shared by dynamic-data sources and renderers.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", content = "value", rename_all = "snake_case")]
-pub enum DataScalar {
-    /// SQL or structured-data null.
-    Null,
-    /// Boolean value.
-    Boolean(bool),
-    /// Signed 64-bit integer.
-    Integer(i64),
-    /// Finite floating-point number.
-    Real(f64),
-    /// UTF-8 string.
-    String(String),
-}
-
-impl DataScalar {
-    /// Convert the scalar to its passive display representation.
-    pub fn display_text(&self) -> String {
-        match self {
-            Self::Null => "NULL".to_owned(),
-            Self::Boolean(value) => value.to_string(),
-            Self::Integer(value) => value.to_string(),
-            Self::Real(value) => value.to_string(),
-            Self::String(value) => value.clone(),
-        }
-    }
-}
-
-/// Ordered table returned by a tabular data source.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct DataTable {
-    /// Ordered result-column labels.
-    pub columns: Vec<String>,
-    /// Ordered result rows containing scalar cells.
-    pub rows: Vec<Vec<DataScalar>>,
 }
 
 /// Common typed value returned by a dynamic-data source.
@@ -505,12 +635,205 @@ pub fn evaluate_data_source(doc: &TmdDoc, name: &str) -> TmdResult<DataValue> {
         .get(name)
         .ok_or_else(|| TmdError::DataView(format!("data source `{name}` is not defined")))?;
     match definition {
-        DataSourceDefinition::Sqlite { query } => evaluate_sqlite(doc, name, query),
+        DataSourceDefinition::Sqlite { query, .. } => evaluate_sqlite(doc, name, query),
         DataSourceDefinition::Rhai {
             script,
             inputs,
             output,
         } => evaluate_rhai(doc, &registry, name, script, inputs, output),
+        DataSourceDefinition::Formula {
+            input,
+            program,
+            output,
+        } => evaluate_formula(doc, &registry, name, input, program, output),
+    }
+}
+
+/// Return safe write-back metadata for a direct SQLite table or its Formula view.
+pub fn data_source_edit_info(doc: &TmdDoc, name: &str) -> TmdResult<Option<DataSourceEditInfo>> {
+    validate_source_name(name)?;
+    let registry = DataSourceRegistry::from_manifest_extras(&doc.manifest.extras)?;
+    let definition = registry
+        .sources
+        .get(name)
+        .ok_or_else(|| TmdError::DataView(format!("data source `{name}` is not defined")))?;
+    let input_source = match definition {
+        DataSourceDefinition::Sqlite { .. } => name,
+        DataSourceDefinition::Formula { input, .. } => input,
+        DataSourceDefinition::Rhai { .. } => return Ok(None),
+    };
+    let DataSourceDefinition::Sqlite {
+        query,
+        edit: Some(edit),
+    } = registry
+        .sources
+        .get(input_source)
+        .expect("data-source input references were validated")
+    else {
+        return Ok(None);
+    };
+
+    let DataValue::Table(table) = evaluate_sqlite(doc, input_source, query)? else {
+        unreachable!("SQLite sources always produce tables");
+    };
+    let key_indexes = table
+        .columns
+        .iter()
+        .enumerate()
+        .filter_map(|(index, column)| (column == &edit.key.source_column).then_some(index))
+        .collect::<Vec<_>>();
+    let [key_index] = key_indexes.as_slice() else {
+        return Err(TmdError::DataView(format!(
+            "editable SQLite source `{input_source}` query must return key column `{}` exactly once",
+            edit.key.source_column
+        )));
+    };
+    for column in edit.columns.keys() {
+        if table
+            .columns
+            .iter()
+            .filter(|candidate| *candidate == column)
+            .count()
+            != 1
+        {
+            return Err(TmdError::DataView(format!(
+                "editable SQLite source `{input_source}` query must return writable column `{column}` exactly once"
+            )));
+        }
+    }
+
+    let mut row_keys = Vec::with_capacity(table.rows.len());
+    for (row_index, row) in table.rows.iter().enumerate() {
+        let key = row.get(*key_index).ok_or_else(|| {
+            TmdError::DataView(format!(
+                "editable SQLite source `{input_source}` row {} does not contain its key column",
+                row_index + 1
+            ))
+        })?;
+        if matches!(key, DataScalar::Null) {
+            return Err(TmdError::DataView(format!(
+                "editable SQLite source `{input_source}` row {} has a null key",
+                row_index + 1
+            )));
+        }
+        if row_keys.iter().any(|candidate| candidate == key) {
+            return Err(TmdError::DataView(format!(
+                "editable SQLite source `{input_source}` query returned duplicate key `{}`",
+                key.display_text()
+            )));
+        }
+        row_keys.push(key.clone());
+    }
+
+    Ok(Some(DataSourceEditInfo {
+        input_source: input_source.to_owned(),
+        key_column: edit.key.source_column.clone(),
+        editable_columns: edit.columns.keys().cloned().collect(),
+        row_keys,
+        input_rows: table.rows,
+    }))
+}
+
+/// Apply staged primary-keyed cell updates to a document's embedded database.
+pub fn apply_data_cell_edits(doc: &mut TmdDoc, edits: &[DataCellEdit]) -> TmdResult<()> {
+    if edits.is_empty() {
+        return Ok(());
+    }
+    let registry = DataSourceRegistry::from_manifest_extras(&doc.manifest.extras)?;
+    doc.db_with_conn_mut(|connection| -> TmdResult<()> {
+        let transaction = connection.transaction().map_err(|error| {
+            TmdError::DataView(format!("could not begin SQLite table edit: {error}"))
+        })?;
+        for cell_edit in edits {
+            validate_source_name(&cell_edit.source)?;
+            let Some(DataSourceDefinition::Sqlite {
+                edit: Some(definition),
+                ..
+            }) = registry.sources.get(&cell_edit.source)
+            else {
+                return Err(TmdError::DataView(format!(
+                    "SQLite source `{}` is not editable",
+                    cell_edit.source
+                )));
+            };
+            let table_column = definition.columns.get(&cell_edit.column).ok_or_else(|| {
+                TmdError::DataView(format!(
+                    "SQLite source `{}` column `{}` is not editable",
+                    cell_edit.source, cell_edit.column
+                ))
+            })?;
+            if matches!(cell_edit.key, DataScalar::Null) {
+                return Err(TmdError::DataView(format!(
+                    "SQLite source `{}` cannot update a row with a null key",
+                    cell_edit.source
+                )));
+            }
+            let value = sqlite_value(&cell_edit.value, "cell value")?;
+            let key = sqlite_value(&cell_edit.key, "row key")?;
+            let sql = format!(
+                "UPDATE {} SET {} = ?1 WHERE {} = ?2",
+                quote_sqlite_identifier(&definition.table),
+                quote_sqlite_identifier(table_column),
+                quote_sqlite_identifier(&definition.key.table_column)
+            );
+            let changed = transaction
+                .execute(&sql, rusqlite::params![value, key])
+                .map_err(|error| {
+                    TmdError::DataView(format!(
+                        "SQLite source `{}` could not update column `{}`: {error}",
+                        cell_edit.source, cell_edit.column
+                    ))
+                })?;
+            if changed != 1 {
+                return Err(TmdError::DataView(format!(
+                    "SQLite source `{}` update for key `{}` matched {changed} rows; expected exactly one",
+                    cell_edit.source,
+                    cell_edit.key.display_text()
+                )));
+            }
+        }
+        transaction.commit().map_err(|error| {
+            TmdError::DataView(format!("could not commit SQLite table edits: {error}"))
+        })?;
+        Ok(())
+    })?
+}
+
+fn evaluate_formula(
+    doc: &TmdDoc,
+    registry: &DataSourceRegistry,
+    name: &str,
+    input: &str,
+    program: &str,
+    output: &DataSourceOutput,
+) -> TmdResult<DataValue> {
+    let DataSourceDefinition::Sqlite { query, .. } = registry
+        .sources
+        .get(input)
+        .expect("formula input reference was validated")
+    else {
+        unreachable!("Formula sources accept only SQLite inputs");
+    };
+    let input_value = evaluate_sqlite(doc, input, query)?;
+    let DataValue::Table(input_table) = input_value else {
+        unreachable!("SQLite sources always produce tables");
+    };
+    let program = parse_formula_program(program).map_err(|error| {
+        TmdError::DataView(format!("Formula source `{name}` program failed: {error}"))
+    })?;
+    match output {
+        DataSourceOutput::Table { columns } => evaluate_formula_program_with_limits(
+            &program,
+            &input_table,
+            columns,
+            FormulaEvaluationLimits::new(MAX_TABLE_ROWS, MAX_TABLE_CELLS),
+        )
+        .map(DataValue::Table)
+        .map_err(|error| {
+            TmdError::DataView(format!(
+                "Formula source `{name}` evaluation failed: {error}"
+            ))
+        }),
     }
 }
 
@@ -545,7 +868,7 @@ fn evaluate_rhai(
 
     let mut rhai_inputs = Map::new();
     for (alias, source_name) in inputs {
-        let DataSourceDefinition::Sqlite { query } = registry
+        let DataSourceDefinition::Sqlite { query, .. } = registry
             .sources
             .get(source_name)
             .expect("registry input references were validated")
@@ -802,6 +1125,56 @@ fn sqlite_scalar(name: &str, value: ValueRef<'_>) -> TmdResult<DataScalar> {
     }
 }
 
+fn sqlite_value(value: &DataScalar, role: &str) -> TmdResult<Value> {
+    match value {
+        DataScalar::Null => Ok(Value::Null),
+        DataScalar::Boolean(value) => Ok(Value::Integer(i64::from(*value))),
+        DataScalar::Integer(value) => Ok(Value::Integer(*value)),
+        DataScalar::Real(value) if value.is_finite() => Ok(Value::Real(*value)),
+        DataScalar::Real(_) => Err(TmdError::DataView(format!(
+            "SQLite table edit {role} must be a finite real"
+        ))),
+        DataScalar::String(value) if value.len() <= MAX_TEXT_BYTES => {
+            Ok(Value::Text(value.clone()))
+        }
+        DataScalar::String(_) => Err(TmdError::DataView(format!(
+            "SQLite table edit {role} exceeds {MAX_TEXT_BYTES} bytes"
+        ))),
+    }
+}
+
+fn validate_output_column_name(source_name: &str, column: &str) -> TmdResult<()> {
+    if column.is_empty() || column.len() > MAX_COLUMN_NAME_BYTES {
+        return Err(TmdError::DataView(format!(
+            "editable SQLite source `{source_name}` has an empty or overlong query-result column"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_sqlite_identifier(identifier: &str) -> Result<(), &'static str> {
+    let mut bytes = identifier.bytes();
+    let Some(first) = bytes.next() else {
+        return Err("identifier is empty");
+    };
+    if identifier.len() > MAX_SQLITE_IDENTIFIER_BYTES {
+        return Err("identifier is too long");
+    }
+    if !(first.is_ascii_alphabetic() || first == b'_')
+        || !bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    {
+        return Err(
+            "use ASCII letters, digits, and underscores, starting with a letter or underscore",
+        );
+    }
+    Ok(())
+}
+
+fn quote_sqlite_identifier(identifier: &str) -> String {
+    debug_assert!(validate_sqlite_identifier(identifier).is_ok());
+    format!("\"{identifier}\"")
+}
+
 fn validate_source_name(name: &str) -> TmdResult<()> {
     if name.is_empty()
         || name.len() > MAX_SOURCE_NAME_BYTES
@@ -893,6 +1266,93 @@ mod tests {
         doc
     }
 
+    fn document_with_formula(program: &str) -> TmdDoc {
+        let mut doc = TmdDoc::new(String::new()).expect("document");
+        doc.manifest.extras = json!({
+            DATA_SOURCES_EXTRAS_KEY: {
+                "schema_version": 3,
+                "sources": {
+                    "sales": {
+                        "type": "sqlite",
+                        "query": "SELECT category, amount_cents FROM sample_sales ORDER BY id"
+                    },
+                    "sales-formulas": {
+                        "type": "formula",
+                        "input": "sales",
+                        "program": program,
+                        "output": {
+                            "type": "table",
+                            "columns": ["category", "amount_cents", "double_cents"]
+                        }
+                    }
+                }
+            }
+        });
+        doc.db_with_conn_mut(|connection| {
+            connection.execute_batch(
+                "CREATE TABLE sample_sales(\
+                    id INTEGER PRIMARY KEY,\
+                    category TEXT NOT NULL,\
+                    amount_cents INTEGER NOT NULL\
+                 );\
+                 INSERT INTO sample_sales(category, amount_cents) VALUES\
+                    ('books', 1200), ('games', 3500), ('books', 800);",
+            )
+        })
+        .expect("database access")
+        .expect("database fixture");
+        doc
+    }
+
+    fn document_with_editable_formula(program: &str) -> TmdDoc {
+        let mut doc = TmdDoc::new(String::new()).expect("document");
+        doc.manifest.extras = json!({
+            DATA_SOURCES_EXTRAS_KEY: {
+                "schema_version": 4,
+                "sources": {
+                    "sales": {
+                        "type": "sqlite",
+                        "query": "SELECT id, category, amount_cents FROM sample_sales ORDER BY id",
+                        "edit": {
+                            "table": "sample_sales",
+                            "key": {
+                                "source_column": "id",
+                                "table_column": "id"
+                            },
+                            "columns": {
+                                "category": "category",
+                                "amount_cents": "amount_cents"
+                            }
+                        }
+                    },
+                    "sales-formulas": {
+                        "type": "formula",
+                        "input": "sales",
+                        "program": program,
+                        "output": {
+                            "type": "table",
+                            "columns": ["id", "category", "amount_cents", "double_cents"]
+                        }
+                    }
+                }
+            }
+        });
+        doc.db_with_conn_mut(|connection| {
+            connection.execute_batch(
+                "CREATE TABLE sample_sales(\
+                    id INTEGER PRIMARY KEY,\
+                    category TEXT NOT NULL,\
+                    amount_cents INTEGER NOT NULL\
+                 );\
+                 INSERT INTO sample_sales(category, amount_cents) VALUES\
+                    ('books', 1200), ('games', 3500);",
+            )
+        })
+        .expect("database access")
+        .expect("database fixture");
+        doc
+    }
+
     #[test]
     fn evaluates_scalar_and_table_shapes() {
         let doc = document_with_sources("");
@@ -908,6 +1368,69 @@ mod tests {
             .clone();
         assert_eq!(table.columns, vec!["id", "body"]);
         assert_eq!(table.rows.len(), 2);
+    }
+
+    #[test]
+    fn exposes_formula_input_edit_metadata_and_applies_atomic_keyed_edits() {
+        let mut doc =
+            document_with_editable_formula("D1 = [@amount_cents] * 2\nD2 = [@amount_cents] * 2");
+        let info = data_source_edit_info(&doc, "sales-formulas")
+            .expect("edit metadata")
+            .expect("editable source");
+        assert_eq!(info.input_source, "sales");
+        assert_eq!(info.key_column, "id");
+        assert_eq!(
+            info.row_keys,
+            vec![DataScalar::Integer(1), DataScalar::Integer(2)]
+        );
+        assert_eq!(
+            info.editable_columns,
+            vec!["amount_cents".to_owned(), "category".to_owned()]
+        );
+
+        apply_data_cell_edits(
+            &mut doc,
+            &[DataCellEdit {
+                source: "sales".to_owned(),
+                key: DataScalar::Integer(2),
+                column: "amount_cents".to_owned(),
+                value: DataScalar::Integer(4_000),
+            }],
+        )
+        .expect("keyed update");
+        let table = evaluate_data_source(&doc, "sales-formulas")
+            .expect("Formula evaluation")
+            .as_table()
+            .expect("table")
+            .clone();
+        assert_eq!(table.rows[1][2], DataScalar::Integer(4_000));
+        assert_eq!(table.rows[1][3], DataScalar::Integer(8_000));
+
+        let error = apply_data_cell_edits(
+            &mut doc,
+            &[
+                DataCellEdit {
+                    source: "sales".to_owned(),
+                    key: DataScalar::Integer(1),
+                    column: "amount_cents".to_owned(),
+                    value: DataScalar::Integer(100),
+                },
+                DataCellEdit {
+                    source: "sales".to_owned(),
+                    key: DataScalar::Integer(99),
+                    column: "amount_cents".to_owned(),
+                    value: DataScalar::Integer(200),
+                },
+            ],
+        )
+        .expect_err("missing key must roll back the edit batch");
+        assert!(error.to_string().contains("matched 0 rows"));
+        let sales = evaluate_data_source(&doc, "sales")
+            .expect("sales")
+            .as_table()
+            .expect("table")
+            .clone();
+        assert_eq!(sales.rows[0][2], DataScalar::Integer(1_200));
     }
 
     #[test]
@@ -953,6 +1476,88 @@ mod tests {
                 ],
             })
         );
+    }
+
+    #[test]
+    fn evaluates_formula_table_with_derived_and_summary_cells() {
+        let doc = document_with_formula(
+            "C1 = [@amount_cents] * 2\n\
+             C2 = [@amount_cents] * 2\n\
+             C3 = [@amount_cents] * 2\n\
+             B4 = SUM([amount_cents])\n\
+             C4 = SUM(C1:C3)",
+        );
+
+        assert_eq!(
+            evaluate_data_source(&doc, "sales-formulas").expect("Formula table source"),
+            DataValue::Table(DataTable {
+                columns: vec![
+                    "category".to_owned(),
+                    "amount_cents".to_owned(),
+                    "double_cents".to_owned(),
+                ],
+                rows: vec![
+                    vec![
+                        DataScalar::String("books".to_owned()),
+                        DataScalar::Integer(1_200),
+                        DataScalar::Integer(2_400),
+                    ],
+                    vec![
+                        DataScalar::String("games".to_owned()),
+                        DataScalar::Integer(3_500),
+                        DataScalar::Integer(7_000),
+                    ],
+                    vec![
+                        DataScalar::String("books".to_owned()),
+                        DataScalar::Integer(800),
+                        DataScalar::Integer(1_600),
+                    ],
+                    vec![
+                        DataScalar::Null,
+                        DataScalar::Integer(5_500),
+                        DataScalar::Integer(11_000),
+                    ],
+                ],
+            })
+        );
+    }
+
+    #[test]
+    fn enforces_formula_schema_input_and_output_contracts() {
+        let mut version_two = document_with_formula("C1 = 1");
+        version_two.manifest.extras[DATA_SOURCES_EXTRAS_KEY]["schema_version"] = json!(2);
+        let error = evaluate_data_source(&version_two, "sales-formulas")
+            .expect_err("Formula requires schema version 3");
+        assert!(error
+            .to_string()
+            .contains("requires data-source schema_version 3"));
+
+        let mut wrong_input = document_with_formula("C1 = 1");
+        wrong_input.manifest.extras[DATA_SOURCES_EXTRAS_KEY]["sources"]["transform"] = json!({
+            "type": "rhai",
+            "script": "views/transform.rhai",
+            "inputs": { "sales": "sales" },
+            "output": { "type": "table", "columns": ["value"] }
+        });
+        wrong_input.manifest.extras[DATA_SOURCES_EXTRAS_KEY]["sources"]["sales-formulas"]
+            ["input"] = json!("transform");
+        let error = evaluate_data_source(&wrong_input, "sales-formulas")
+            .expect_err("Formula input must be SQLite");
+        assert!(error.to_string().contains("must reference a SQLite source"));
+
+        let mut wrong_output = document_with_formula("C1 = 1");
+        wrong_output.manifest.extras[DATA_SOURCES_EXTRAS_KEY]["sources"]["sales-formulas"]
+            ["output"]["columns"] = json!(["renamed", "amount_cents", "result"]);
+        let error = evaluate_data_source(&wrong_output, "sales-formulas")
+            .expect_err("input columns must be an output prefix");
+        assert!(error
+            .to_string()
+            .contains("must begin with the input table columns"));
+
+        let mut schema_three_rhai = document_with_rhai("[]", &["category"]);
+        schema_three_rhai.manifest.extras[DATA_SOURCES_EXTRAS_KEY]["schema_version"] = json!(3);
+        evaluate_data_source(&schema_three_rhai, "category-summary")
+            .expect("schema version 3 retains Rhai sources");
     }
 
     #[test]

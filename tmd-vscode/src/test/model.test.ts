@@ -6,7 +6,11 @@ import {
   TanuMarkdownModel,
   type EditorState,
 } from "../model.js";
-import type { DataSource, DocumentInspection } from "../types.js";
+import type {
+  DataSource,
+  DocumentInspection,
+  TextAttachmentEdit,
+} from "../types.js";
 
 function inspection(
   markdown: string,
@@ -42,8 +46,9 @@ function state(
   markdown: string,
   title: string,
   dataSources: DataSource[] = [],
+  textAttachmentEdits: TextAttachmentEdit[] = [],
 ): EditorState {
-  return { dataSources, markdown, title };
+  return { dataSources, databaseEdits: [], markdown, textAttachmentEdits, title };
 }
 
 test("persisted inspection preserves edits made while an operation was pending", () => {
@@ -58,7 +63,9 @@ test("persisted inspection preserves edits made while an operation was pending",
 
   assert.deepEqual(model.snapshot(), {
     dataSources: [],
+    databaseEdits: [],
     markdown: "newer edit",
+    textAttachmentEdits: [],
     title: "Newer title",
   });
   assert.equal(model.inspection.database_user_version, 2);
@@ -79,7 +86,9 @@ test("save response replaces state when no newer edit exists", () => {
 
   assert.deepEqual(model.snapshot(), {
     dataSources: [],
+    databaseEdits: [],
     markdown: "saved snapshot",
+    textAttachmentEdits: [],
     title: "Saved title",
   });
   assert.equal(model.persistedRevision, model.contentRevision);
@@ -153,6 +162,35 @@ test("SQLite source edits participate in document dirty state and undo", () => {
   assert.deepEqual(model.snapshot().dataSources, initial.dataSources);
 });
 
+test("staged database cell edits participate in dirty state and clear on save", () => {
+  const model = new TanuMarkdownModel(inspection("initial", "Initial", 0));
+  const initial = model.snapshot();
+  const edited = model.snapshot();
+  edited.databaseEdits = [
+    {
+      source: "sales",
+      key: { type: "integer", value: "2" },
+      column: "amount_cents",
+      value: { type: "integer", value: "4000" },
+    },
+  ];
+
+  model.applyState(edited);
+  assert.equal(model.isCurrentRevisionPersisted, false);
+  assert.deepEqual(model.snapshot().databaseEdits, edited.databaseEdits);
+
+  const savedRevision = model.contentRevision;
+  model.applyPersistedInspection(
+    inspection("initial", "Initial", 0),
+    savedRevision,
+  );
+  assert.deepEqual(model.snapshot().databaseEdits, []);
+  assert.equal(model.isCurrentRevisionPersisted, true);
+
+  model.applyState(initial);
+  assert.equal(model.isCurrentRevisionPersisted, true);
+});
+
 test("Rhai source edits preserve schema version 2 and ordered output columns", () => {
   const document = inspection("{{tmd-table:summary}}", "Summary", 0);
   document.manifest.extras = {
@@ -195,6 +233,66 @@ test("Rhai source edits preserve schema version 2 and ordered output columns", (
   });
 });
 
+test("Formula program edits participate in document dirty state and undo", () => {
+  const document = inspection("{{tmd-table:summary}}", "Summary", 0);
+  document.manifest.extras = {
+    tmd_data_sources: {
+      schema_version: 3,
+      sources: {
+        sales: { type: "sqlite", query: "SELECT amount FROM sales ORDER BY id" },
+        summary: {
+          type: "formula",
+          input: "sales",
+          program: "B1 = SUM(A1:A3)",
+          output: { type: "table", columns: ["amount", "total"] },
+        },
+      },
+    },
+  };
+  const model = new TanuMarkdownModel(document);
+  const initial = model.snapshot();
+  const edited = model.snapshot();
+  const summary = edited.dataSources.find((source) => source.name === "summary");
+  assert.equal(summary?.type, "formula");
+  if (summary?.type !== "formula") throw new Error("missing Formula source");
+  summary.program = "B1 = A1 + A2";
+
+  model.applyState(edited);
+
+  assert.equal(model.isCurrentRevisionPersisted, false);
+  assert.equal(
+    model.snapshot().dataSources.find((source) => source.type === "formula")
+      ?.program,
+    "B1 = A1 + A2",
+  );
+  model.applyState(initial);
+  assert.equal(model.isCurrentRevisionPersisted, true);
+});
+
+test("Rhai script attachment edits participate in dirty state and persistence", () => {
+  const model = new TanuMarkdownModel(inspection("initial", "Initial", 0));
+  const initial = model.snapshot();
+  const edited = state("initial", "Initial", [], [
+    { logicalPath: "views/summary.rhai", text: "inputs.rows" },
+  ]);
+
+  model.applyState(edited);
+  assert.equal(model.isCurrentRevisionPersisted, false);
+  assert.deepEqual(model.snapshot().textAttachmentEdits, edited.textAttachmentEdits);
+
+  model.applyState(initial);
+  assert.equal(model.isCurrentRevisionPersisted, true);
+
+  model.applyState(edited);
+  const savedRevision = model.contentRevision;
+  model.applyPersistedInspection(
+    inspection("initial", "Initial", 0),
+    savedRevision,
+  );
+  assert.equal(model.isCurrentRevisionPersisted, true);
+  assert.deepEqual(model.snapshot().textAttachmentEdits, []);
+});
+
 test("inspection replacement is rejected after a newer edit", () => {
   const model = new TanuMarkdownModel(inspection("initial", "Initial", 0));
   const revertedRevision = model.contentRevision;
@@ -209,7 +307,9 @@ test("inspection replacement is rejected after a newer edit", () => {
   );
   assert.deepEqual(model.snapshot(), {
     dataSources: [],
+    databaseEdits: [],
     markdown: "typed during revert",
+    textAttachmentEdits: [],
     title: "Current",
   });
   assert.equal(model.isCurrentRevisionPersisted, false);

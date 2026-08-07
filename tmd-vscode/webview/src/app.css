@@ -11,7 +11,7 @@ body {
   background: var(--vscode-editor-background);
   font-family: var(--vscode-font-family);
 }
-button, input, textarea { font: inherit; }
+button, input, select, textarea { font: inherit; }
 button {
   color: var(--vscode-button-foreground);
   background: var(--vscode-button-background);
@@ -21,7 +21,7 @@ button {
   cursor: pointer;
 }
 button:hover { background: var(--vscode-button-hoverBackground); }
-button:focus-visible, input:focus-visible, textarea:focus-visible {
+button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
   outline: 1px solid var(--vscode-focusBorder);
   outline-offset: 1px;
 }
@@ -88,7 +88,7 @@ button:disabled { cursor: default; opacity: .55; }
 [hidden] { display: none !important; }
 .field, .source-field { display: grid; gap: .35rem; margin-bottom: 1rem; font-weight: 600; }
 .field-label { display: block; margin-bottom: .35rem; font-weight: 600; }
-input, textarea {
+input, select, textarea {
   width: 100%;
   color: var(--vscode-input-foreground);
   background: var(--vscode-input-background);
@@ -96,6 +96,7 @@ input, textarea {
   border-radius: 3px;
   padding: .5rem;
 }
+select:disabled { opacity: .65; }
 textarea { resize: vertical; font-family: var(--vscode-editor-font-family); line-height: 1.5; }
 .markdown-editor {
   min-height: 22rem;
@@ -118,6 +119,119 @@ li { margin: .35rem 0; }
 .source-query { min-height: 7rem; }
 .source-definition { min-height: 5rem; }
 .registry-raw { overflow: auto; padding: .5rem; background: var(--vscode-textCodeBlock-background); white-space: pre-wrap; }
+.table-source-field { max-width: 28rem; }
+.table-result-heading { min-height: 2rem; }
+.table-result-heading p { margin: .25rem 0 .65rem; }
+.cell-formula-bar {
+  display: grid;
+  grid-template-columns: 5.5rem minmax(12rem, 1fr) auto auto;
+  gap: .35rem;
+  align-items: stretch;
+  margin: 0 0 .5rem;
+}
+.cell-formula-bar input { height: 100%; }
+.cell-name { text-align: center; font-family: var(--vscode-editor-font-family); }
+.cell-input-field { position: relative; }
+.cell-input-field input {
+  padding-left: 2.5rem;
+  font-family: var(--vscode-editor-font-family);
+}
+.formula-symbol {
+  position: absolute;
+  z-index: 1;
+  left: .7rem;
+  top: 50%;
+  color: var(--vscode-descriptionForeground);
+  font-family: Georgia, serif;
+  font-style: italic;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+.cell-edit-status { margin: 0 0 .5rem; }
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.table-grid-host {
+  height: min(32rem, calc(100vh - 14rem));
+  min-height: 18rem;
+  overflow: hidden;
+  border: 1px solid var(--card-border);
+  border-radius: 4px;
+}
+.table-grid-host revo-grid {
+  --revo-grid-primary: var(--vscode-focusBorder);
+  --revo-grid-background: var(--vscode-editor-background);
+  --revo-grid-foreground: var(--vscode-foreground);
+  --revo-grid-text: var(--vscode-foreground);
+  --revo-grid-border: var(--vscode-panel-border);
+  --revo-grid-header-bg: var(--muted-surface);
+  --revo-grid-header-color: var(--vscode-foreground);
+  --revo-grid-header-border: var(--vscode-panel-border);
+  --revo-grid-cell-border: var(--vscode-panel-border);
+  --revo-grid-focused-bg: var(--vscode-list-activeSelectionBackground);
+  --revo-grid-row-hover: var(--vscode-list-hoverBackground);
+  --revo-grid-font-family: var(--vscode-font-family);
+  --revo-grid-font-size: var(--vscode-font-size);
+}
+.source-script-panel {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--card-border);
+}
+.source-script-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 1rem;
+  margin-bottom: .6rem;
+}
+.source-script-heading h3, .source-script-heading p { margin: 0; }
+.source-script-heading code, .source-script-context {
+  color: var(--vscode-descriptionForeground);
+  font-family: var(--vscode-editor-font-family);
+  font-size: .8rem;
+  overflow-wrap: anywhere;
+}
+.source-script-editor {
+  overflow: hidden;
+  border: 1px solid var(--vscode-input-border, transparent);
+  border-radius: 4px;
+  background: var(--vscode-editor-background);
+}
+.source-script-editor[aria-disabled="true"] { opacity: .75; }
+.source-script-error {
+  margin: .6rem 0 0;
+  padding: .55rem .65rem;
+  border: 1px solid var(--vscode-inputValidation-errorBorder, currentColor);
+  background: var(--vscode-inputValidation-errorBackground, transparent);
+  white-space: pre-wrap;
+}
+.formula-help {
+  margin: 0 0 .55rem;
+  color: var(--vscode-descriptionForeground);
+  line-height: 1.5;
+}
+.formula-column-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .35rem;
+  margin: 0 0 .65rem;
+}
+.formula-column-legend code {
+  padding: .18rem .35rem;
+  border: 1px solid var(--card-border);
+  border-radius: 3px;
+  color: var(--vscode-foreground);
+  background: var(--vscode-textCodeBlock-background);
+}
 .preview { line-height: 1.6; }
 .preview pre { overflow: auto; padding: .75rem; background: var(--vscode-textCodeBlock-background); }
 .preview table { border-collapse: collapse; margin: .75rem 0; max-width: 100%; }
@@ -132,4 +246,6 @@ li { margin: .35rem 0; }
 @media (max-width: 900px) {
   .layout { grid-template-columns: 1fr; }
   .app-bar { align-items: flex-start; flex-direction: column; }
+  .source-script-heading { align-items: flex-start; flex-direction: column; }
+  .cell-formula-bar { grid-template-columns: 5rem minmax(8rem, 1fr); }
 }

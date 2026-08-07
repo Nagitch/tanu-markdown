@@ -9,16 +9,18 @@ pub use format::{
     WriteMode, Writer,
 };
 pub use manifest::{AttachmentMeta, AttachmentRef, LinkRef, Manifest, Semver};
+pub use tmd_data::{DataScalar, DataTable};
 pub use util::{normalize_logical_path, now_utc};
 pub use validation::{
     attachment_references, validate_document, AttachmentReference, DataViewReferenceValidation,
     ValidationIssue, ValidationReport, ValidationSeverity,
 };
 pub use views::{
-    data_view_references, evaluate_data_source, inline_data_view_references, parse_data_view_block,
-    DataScalar, DataSourceDefinition, DataSourceOutput, DataSourceRegistry, DataTable, DataValue,
-    DataViewParseReport, DataViewReference, DataViewRenderKind, InlineDataViewReference,
-    DATA_SOURCES_EXTRAS_KEY,
+    apply_data_cell_edits, data_source_edit_info, data_view_references, evaluate_data_source,
+    inline_data_view_references, parse_data_view_block, DataCellEdit, DataSourceDefinition,
+    DataSourceEditInfo, DataSourceOutput, DataSourceRegistry, DataValue, DataViewParseReport,
+    DataViewReference, DataViewRenderKind, InlineDataViewReference, SqliteEditDefinition,
+    SqliteEditKey, DATA_SOURCES_EXTRAS_KEY,
 };
 
 mod validation;

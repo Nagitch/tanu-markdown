@@ -34,7 +34,10 @@ printf '%s' '{"schema_version":1,"title":"Renamed","markdown":"# Renamed"}' \
 
 `update` preserves attachments, database content, manifest identity, and
 creation time. Payloads may also replace `extras`, including dynamic-data
-source definitions. It writes atomically.
+source definitions. Existing UTF-8 attachments can be replaced with bounded
+`text_attachments` entries such as
+`[{"logical_path":"scripts/report.rhai","text":"..."}]`. It writes
+atomically.
 
 ### Schema-versioned preview
 
@@ -44,10 +47,25 @@ printf '%s' '{"schema_version":1,"markdown":"{{tmd-view:first-note}}"}' \
 ```
 
 `preview` renders the supplied current Markdown against the document's retained
-database and attachments. The request may include `extras` to preview unsaved
-data-source edits without persisting them. It returns escaped HTML in
-`preview_html` and is the same rendering boundary used by HTML export and the
-VS Code editor.
+database and attachments. The request may include `extras` and
+`text_attachments` to preview unsaved data-source and script edits without
+persisting them. It returns escaped HTML in `preview_html` and is the same
+rendering boundary used by HTML export and the VS Code editor.
+
+### Schema-versioned table source data
+
+```bash
+printf '%s' '{"schema_version":1,"source":"sample-notes"}' \
+  | tmd data-source notes.tmd --json-stdin
+```
+
+`data-source` evaluates one named source and returns its ordered columns and
+typed table cells. Integer cells are encoded as decimal strings so editor
+integrations do not lose 64-bit precision. Like `preview`, the request accepts
+optional `extras` and `text_attachments` overrides for unsaved source and Rhai
+script edits; inline Formula program edits travel in `extras`. The VS Code
+table viewer uses this read-only bridge instead of
+opening the embedded database in JavaScript.
 
 ### Atomic publication
 
@@ -65,14 +83,17 @@ compare-and-publish boundary for race-safe saves.
 ```bash
 tmd attachment add notes.tmd diagram.png --path images/diagram.png
 tmd attachment list notes.tmd --json
+tmd attachment text notes.tmd --path scripts/report.rhai --json
 tmd attachment rename notes.tmd --from images/diagram.png --to images/final.png
 tmd attachment extract notes.tmd --path images/final.png final.png
 tmd attachment remove notes.tmd --path images/final.png
 ```
 
 Logical paths are normalized and checked against traversal, reserved-name, and
-duplicate-path rules. Extraction creates the destination with no-clobber
-semantics and refuses existing files and symbolic links.
+duplicate-path rules. `attachment text` reads an existing bounded UTF-8
+attachment and returns its logical path and contents in JSON mode. Extraction
+creates the destination with no-clobber semantics and refuses existing files
+and symbolic links.
 
 ### HTML
 
@@ -91,7 +112,7 @@ names, render Markdown attachment links as downloads, and permit only passive
 attachment types as inline image sources. Export refuses an output path that
 resolves to the source document.
 
-### Dynamic SQLite views
+### Dynamic table views
 
 Declare named sources under `manifest.extras.tmd_data_sources`, then reference
 one cell inline or select a block renderer:
@@ -104,10 +125,14 @@ source = "sample-notes"
 ```
 ````
 
-The implemented renderers are `scalar` and `table`. Sources execute exactly one
-bounded, read-only SQLite statement. Values are escaped and never reparsed as
-Markdown or HTML. Validation reports undefined sources, unsupported renderers,
-query failures, and shape mismatches.
+The implemented renderers are `scalar` and `table`. Sources may execute one
+bounded, read-only SQLite statement, transform declared SQLite inputs with
+sandboxed Rhai, or derive cells with a bounded Formula program. Values are
+escaped and never reparsed as Markdown or HTML. Validation reports undefined
+sources, unsupported renderers, query/formula failures, and shape mismatches.
+Formula uses A1 coordinates over data rows, rectangular ranges such as
+`B1:B3`, header references such as `[amount]`, and functions such as `SUM`.
+See [dynamic data views](../docs/dynamic-data-views.md) for schema version 3.
 
 ## Embedded database
 

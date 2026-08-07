@@ -28,6 +28,7 @@
       <div class="editor-tabs" role="tablist" aria-label="Document sections">
         <button class="editor-tab" type="button" role="tab" aria-controls="panel-document" aria-selected="true" data-editor-tab="document">Document</button>
         <button class="editor-tab" type="button" role="tab" aria-controls="panel-data" aria-selected="false" tabindex="-1" data-editor-tab="data">Data</button>
+        <button class="editor-tab" type="button" role="tab" aria-controls="panel-table" aria-selected="false" tabindex="-1" data-editor-tab="table">Table</button>
         <button class="editor-tab" type="button" role="tab" aria-controls="panel-sources" aria-selected="false" tabindex="-1" data-editor-tab="sources">Sources</button>
         <button class="editor-tab" type="button" role="tab" aria-controls="panel-attachments" aria-selected="false" tabindex="-1" data-editor-tab="attachments">Attachments</button>
         <button class="editor-tab" type="button" role="tab" aria-controls="panel-validation" aria-selected="false" tabindex="-1" data-editor-tab="validation">Validation</button>
@@ -46,6 +47,52 @@
           <h3>Database objects</h3>
           <ul id="database-objects"></ul>
         </section>
+        <section id="panel-table" class="editor-panel table-panel" role="tabpanel" data-editor-panel="table" hidden>
+          <h2>Table</h2>
+          <p class="section-description">Select a tabular source to inspect its current rows.</p>
+          <label class="field table-source-field"><span>Source</span><select id="table-source" disabled></select></label>
+          <div class="table-result-heading">
+            <p id="table-source-status" class="stale" role="status">Loading sources…</p>
+          </div>
+          <form id="cell-formula-bar" class="cell-formula-bar" hidden>
+            <label>
+              <span class="visually-hidden">Selected cell</span>
+              <input id="cell-name" class="cell-name" type="text" readonly aria-label="Selected cell" />
+            </label>
+            <label class="cell-input-field">
+              <span class="formula-symbol" aria-hidden="true">fx</span>
+              <input id="cell-input" type="text" autocomplete="off" spellcheck="false" aria-label="Cell value or formula" />
+            </label>
+            <button id="apply-cell-edit" type="submit">Apply</button>
+            <button id="cancel-cell-edit" type="button">Cancel</button>
+          </form>
+          <p id="cell-edit-status" class="cell-edit-status stale" role="status" hidden></p>
+          <div id="table-grid-host" class="table-grid-host" hidden></div>
+          <section id="formula-program-panel" class="source-script-panel" aria-labelledby="formula-program-heading" hidden>
+            <div class="source-script-heading">
+              <div>
+                <h3 id="formula-program-heading">Formula program</h3>
+                <p id="formula-program-input" class="source-script-context"></p>
+              </div>
+              <p id="formula-program-status" class="stale" role="status"></p>
+            </div>
+            <p class="formula-help"><code>A1</code> is the first data cell; headers are not rows. Start a cell value with <code>=</code> to create a Formula such as <code>SUM(B1:B3)</code>, then click or drag across cells to insert a reference. Drag the selected cell’s fill handle to copy it with relative references.</p>
+            <div id="formula-column-legend" class="formula-column-legend" aria-label="Formula column references"></div>
+            <div id="formula-program-editor" class="source-script-editor"></div>
+            <p id="formula-program-error" class="invalid source-script-error" role="alert" hidden></p>
+          </section>
+          <section id="rhai-script-panel" class="source-script-panel" aria-labelledby="rhai-script-heading" hidden>
+            <div class="source-script-heading">
+              <div>
+                <h3 id="rhai-script-heading">Rhai script</h3>
+                <code id="rhai-script-path"></code>
+              </div>
+              <p id="rhai-script-status" class="stale" role="status"></p>
+            </div>
+            <div id="rhai-script-editor" class="source-script-editor"></div>
+            <p id="rhai-script-error" class="invalid source-script-error" role="alert" hidden></p>
+          </section>
+        </section>
         <section id="panel-sources" class="editor-panel" role="tabpanel" data-editor-panel="sources" hidden>
           <h2>Data sources</h2>
           <p class="section-description">Define named sources that Markdown views can render.</p>
@@ -58,6 +105,7 @@
           <div class="data-source-actions">
             <button id="add-sqlite-data-source" type="button">Add SQLite source</button>
             <button id="add-rhai-data-source" type="button">Add Rhai source</button>
+            <button id="add-formula-data-source" type="button">Add Formula source</button>
             <button id="apply-data-sources" type="button">Apply source changes</button>
           </div>
           <p id="data-source-status" class="stale"></p>

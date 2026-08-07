@@ -10,14 +10,18 @@ import {
 import {
   persistLatestEditorState,
   persistRetainedDocument,
+  sameDatabaseCellEdits,
   TanuMarkdownModel,
   type EditorState,
 } from "./model.js";
 import { renderPreviewFallback } from "./preview.js";
 import { SerialTaskQueue } from "./queue.js";
 import type {
+  DataSourceTable,
   DocumentInspection,
   DocumentUpdate,
+  TextAttachmentEdit,
+  TextAttachmentView,
   ValidationReport,
 } from "./types.js";
 
@@ -52,6 +56,7 @@ export class LocalTmdSession {
   private persistedBytesValue: Uint8Array;
   private diskBytesValue: Uint8Array | undefined;
   private editingLockCount = 0;
+  private readonly persistedTextAttachments = new Map<string, string>();
 
   private constructor(
     readonly documentPath: string,
@@ -311,10 +316,62 @@ export class LocalTmdSession {
           this.inspection.manifest.extras,
           state.dataSources,
         ),
+        state.textAttachmentEdits,
+        state.databaseEdits,
       );
     } catch (error) {
       return renderPreviewFallback(state.markdown, error);
     }
+  }
+
+  async dataSourceTable(
+    source: string,
+    state: EditorState = this.snapshot(),
+  ): Promise<DataSourceTable> {
+    return dataSourceTableFromRetainedBytes(
+      this.clientFactory(),
+      this.documentPath,
+      this.persistedBytes,
+      source,
+      extrasWithDataSources(
+        this.inspection.manifest.extras,
+        state.dataSources,
+      ),
+      state.textAttachmentEdits,
+      state.databaseEdits,
+    );
+  }
+
+  async textAttachment(
+    logicalPath: string,
+    state: EditorState = this.snapshot(),
+  ): Promise<TextAttachmentView> {
+    const edit = state.textAttachmentEdits.find(
+      (candidate) => candidate.logicalPath === logicalPath,
+    );
+    if (edit) return { ...edit };
+    return {
+      logicalPath,
+      text: await this.persistedTextAttachment(logicalPath),
+    };
+  }
+
+  async stateWithTextAttachmentEdit(
+    state: EditorState,
+    logicalPath: string,
+    text: string,
+  ): Promise<EditorState> {
+    const persistedText = await this.persistedTextAttachment(logicalPath);
+    const textAttachmentEdits = state.textAttachmentEdits
+      .filter((edit) => edit.logicalPath !== logicalPath)
+      .map((edit) => ({ ...edit }));
+    if (text !== persistedText) {
+      textAttachmentEdits.push({ logicalPath, text });
+      textAttachmentEdits.sort((left, right) =>
+        left.logicalPath.localeCompare(right.logicalPath),
+      );
+    }
+    return { ...state, textAttachmentEdits };
   }
 
   private async reloadAfterExternalChange(persistedRevision: number): Promise<void> {
@@ -359,6 +416,20 @@ export class LocalTmdSession {
   private replacePersistedBytes(bytes: Uint8Array): void {
     this.persistedBytesValue = bytes;
     this.diskBytesValue = bytes;
+    this.persistedTextAttachments.clear();
+  }
+
+  private async persistedTextAttachment(logicalPath: string): Promise<string> {
+    const cached = this.persistedTextAttachments.get(logicalPath);
+    if (cached !== undefined) return cached;
+    const attachment = await textAttachmentFromRetainedBytes(
+      this.clientFactory(),
+      this.documentPath,
+      this.persistedBytes,
+      logicalPath,
+    );
+    this.persistedTextAttachments.set(logicalPath, attachment.text);
+    return attachment.text;
   }
 
   private requirePersistedRevision(operation: string): void {
@@ -399,14 +470,43 @@ function documentUpdate(
       session.inspection.manifest.extras,
       state.dataSources,
     ),
+    text_attachments: state.textAttachmentEdits.map((edit) => ({
+      logical_path: edit.logicalPath,
+      text: edit.text,
+    })),
+    database_edits: state.databaseEdits.map((edit) => ({
+      source: edit.source,
+      key: { ...edit.key },
+      column: edit.column,
+      value: { ...edit.value },
+    })),
   };
 }
 
 function sameEditorStates(left: EditorState, right: EditorState): boolean {
   return (
     sameDataSources(left.dataSources, right.dataSources) &&
+    sameDatabaseCellEdits(left.databaseEdits, right.databaseEdits) &&
     left.markdown === right.markdown &&
+    sameTextAttachmentEdits(
+      left.textAttachmentEdits,
+      right.textAttachmentEdits,
+    ) &&
     left.title === right.title
+  );
+}
+
+function sameTextAttachmentEdits(
+  left: readonly TextAttachmentEdit[],
+  right: readonly TextAttachmentEdit[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every(
+      (edit, index) =>
+        edit.logicalPath === right[index]?.logicalPath &&
+        edit.text === right[index]?.text,
+    )
   );
 }
 
@@ -432,13 +532,64 @@ async function previewRetainedBytes(
   bytes: Uint8Array,
   markdown: string,
   extras: DocumentInspection["manifest"]["extras"],
+  textAttachments: readonly TextAttachmentEdit[],
+  databaseEdits: EditorState["databaseEdits"],
 ): Promise<string> {
   ensureTmdPath(sourcePath);
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "tmd-preview-"));
   const snapshotPath = path.join(directory, "snapshot.tmd");
   try {
     await fs.writeFile(snapshotPath, bytes, { flag: "wx" });
-    return await client.preview(snapshotPath, markdown, extras);
+    return await client.preview(
+      snapshotPath,
+      markdown,
+      extras,
+      textAttachments,
+      databaseEdits,
+    );
+  } finally {
+    await fs.rm(directory, { force: true, recursive: true });
+  }
+}
+
+async function dataSourceTableFromRetainedBytes(
+  client: TmdCliClient,
+  sourcePath: string,
+  bytes: Uint8Array,
+  source: string,
+  extras: DocumentInspection["manifest"]["extras"],
+  textAttachments: readonly TextAttachmentEdit[],
+  databaseEdits: EditorState["databaseEdits"],
+): Promise<DataSourceTable> {
+  ensureTmdPath(sourcePath);
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "tmd-data-source-"));
+  const snapshotPath = path.join(directory, "snapshot.tmd");
+  try {
+    await fs.writeFile(snapshotPath, bytes, { flag: "wx" });
+    return await client.dataSource(
+      snapshotPath,
+      source,
+      extras,
+      textAttachments,
+      databaseEdits,
+    );
+  } finally {
+    await fs.rm(directory, { force: true, recursive: true });
+  }
+}
+
+async function textAttachmentFromRetainedBytes(
+  client: TmdCliClient,
+  sourcePath: string,
+  bytes: Uint8Array,
+  logicalPath: string,
+): Promise<TextAttachmentView> {
+  ensureTmdPath(sourcePath);
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "tmd-text-attachment-"));
+  const snapshotPath = path.join(directory, "snapshot.tmd");
+  try {
+    await fs.writeFile(snapshotPath, bytes, { flag: "wx" });
+    return await client.textAttachment(snapshotPath, logicalPath);
   } finally {
     await fs.rm(directory, { force: true, recursive: true });
   }

@@ -6,7 +6,9 @@ Follow [`AGENT.md`](../AGENT.md) and
 Key constraints:
 
 - `.tmd` is the ZIP representation.
-- `tmd-core` owns format logic; do not duplicate parsing in the CLI or editor.
+- `tmd-data` owns shared scalar/table values, `tmd-formula` owns Formula
+  language semantics, and `tmd-core` owns format and data-source integration;
+  do not duplicate these implementations in the CLI or editor.
 - Preserve file-format and CLI behavior unless a linked issue explicitly
   changes it.
 - Use the root Cargo workspace and lockfile.

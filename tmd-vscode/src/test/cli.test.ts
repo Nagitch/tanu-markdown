@@ -57,6 +57,85 @@ test("CLI client requests schema-versioned dynamic preview HTML", async () => {
   );
 });
 
+test("CLI client requests and validates typed table source data", async () => {
+  const script = [
+    'process.stdin.setEncoding("utf8");',
+    'let input = "";',
+    'process.stdin.on("data", (chunk) => input += chunk);',
+    'process.stdin.on("end", () => {',
+    '  const request = JSON.parse(input);',
+    '  process.stdout.write(JSON.stringify({',
+    '    schema_version: request.schema_version,',
+    '    source: request.source,',
+    '    kind: "table",',
+    '    columns: ["id", "label"],',
+    '    rows: [[{ type: "integer", value: "9007199254740993" }, { type: "string", value: request.text_attachments[0]?.text ?? "safe" }]],',
+    '    editable: { input_source: "rows-input", key_column: "id", editable_columns: ["label"], row_keys: [{ type: "integer", value: "9007199254740993" }], input_rows: [[{ type: "integer", value: "9007199254740993" }, request.database_edits[0]?.value ?? { type: "string", value: "safe" }]] }',
+    '  }));',
+    '});',
+  ].join("\n");
+  const client = new TmdCliClient(process.execPath, 2_000, [
+    "--no-inspect",
+    "-e",
+    script,
+  ]);
+
+  assert.deepEqual(
+    await client.dataSource("/tmp/document.tmd", "rows", {
+      tmd_data_sources: { schema_version: 1, sources: {} },
+    }, [
+      { logicalPath: "views/rows.rhai", text: "edited" },
+    ], [
+      {
+        source: "rows-input",
+        key: { type: "integer", value: "9007199254740993" },
+        column: "label",
+        value: { type: "string", value: "draft" },
+      },
+    ]),
+    {
+      source: "rows",
+      kind: "table",
+      columns: ["id", "label"],
+      rows: [
+        [
+          { type: "integer", value: "9007199254740993" },
+          { type: "string", value: "edited" },
+        ],
+      ],
+      editable: {
+        inputSource: "rows-input",
+        keyColumn: "id",
+        editableColumns: ["label"],
+        rowKeys: [{ type: "integer", value: "9007199254740993" }],
+        inputRows: [
+          [
+            { type: "integer", value: "9007199254740993" },
+            { type: "string", value: "draft" },
+          ],
+        ],
+      },
+    },
+  );
+});
+
+test("CLI client reads UTF-8 text attachments", async () => {
+  const client = new TmdCliClient("/usr/bin/printf", 2_000, [
+    '{"schema_version":1,"logical_path":"views/summary.rhai","text":"let value = 1;"}',
+  ]);
+
+  assert.deepEqual(
+    await client.textAttachment(
+      "/tmp/document.tmd",
+      "views/summary.rhai",
+    ),
+    {
+      logicalPath: "views/summary.rhai",
+      text: "let value = 1;",
+    },
+  );
+});
+
 test("CLI client rejects an incompatible JSON schema", async () => {
   const client = new TmdCliClient("/usr/bin/printf", 2_000, [
     '{"schema_version":2}',

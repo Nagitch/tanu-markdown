@@ -44,7 +44,7 @@ function tabFixture(initialState: Record<string, unknown>): {
   states: Array<Record<string, unknown>>;
   tabs: FakeElement[];
 } {
-  const ids = ["document", "data", "sources", "attachments", "validation"];
+  const ids = ["document", "data", "table", "sources", "attachments", "validation"];
   const tabs = ids.map((id) => new FakeElement({ editorTab: id }));
   const panels = ids.map((id) => new FakeElement({ editorPanel: id }));
   const states: Array<Record<string, unknown>> = [];
@@ -75,9 +75,9 @@ test("editor tabs restore presentation state without changing document state", (
     keep: 1,
   });
 
-  assert.equal(tabs[2]?.attributes.get("aria-selected"), "true");
-  assert.equal(tabs[2]?.tabIndex, 0);
-  assert.equal(panels[2]?.hidden, false);
+  assert.equal(tabs[3]?.attributes.get("aria-selected"), "true");
+  assert.equal(tabs[3]?.tabIndex, 0);
+  assert.equal(panels[3]?.hidden, false);
   assert.equal(panels[0]?.hidden, true);
   assert.deepEqual(states.at(-1), { activeEditorTab: "sources", keep: 1 });
 
@@ -95,10 +95,10 @@ test("editor tabs fall back to Document and support keyboard navigation", () => 
 
   const prevented = tabs[0]?.dispatch("keydown", "ArrowLeft");
   assert.equal(prevented, true);
-  assert.equal(tabs[4]?.attributes.get("aria-selected"), "true");
-  assert.equal(tabs[4]?.focused, true);
+  assert.equal(tabs[5]?.attributes.get("aria-selected"), "true");
+  assert.equal(tabs[5]?.focused, true);
 
-  tabs[4]?.dispatch("keydown", "Home");
+  tabs[5]?.dispatch("keydown", "Home");
   assert.equal(tabs[0]?.attributes.get("aria-selected"), "true");
   assert.equal(tabs[0]?.focused, true);
 });
