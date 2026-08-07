@@ -202,6 +202,42 @@ test("Rhai source edits preserve schema version 2 and ordered output columns", (
   });
 });
 
+test("Formula program edits participate in document dirty state and undo", () => {
+  const document = inspection("{{tmd-table:summary}}", "Summary", 0);
+  document.manifest.extras = {
+    tmd_data_sources: {
+      schema_version: 3,
+      sources: {
+        sales: { type: "sqlite", query: "SELECT amount FROM sales ORDER BY id" },
+        summary: {
+          type: "formula",
+          input: "sales",
+          program: "B1 = SUM(A1:A3)",
+          output: { type: "table", columns: ["amount", "total"] },
+        },
+      },
+    },
+  };
+  const model = new TanuMarkdownModel(document);
+  const initial = model.snapshot();
+  const edited = model.snapshot();
+  const summary = edited.dataSources.find((source) => source.name === "summary");
+  assert.equal(summary?.type, "formula");
+  if (summary?.type !== "formula") throw new Error("missing Formula source");
+  summary.program = "B1 = A1 + A2";
+
+  model.applyState(edited);
+
+  assert.equal(model.isCurrentRevisionPersisted, false);
+  assert.equal(
+    model.snapshot().dataSources.find((source) => source.type === "formula")
+      ?.program,
+    "B1 = A1 + A2",
+  );
+  model.applyState(initial);
+  assert.equal(model.isCurrentRevisionPersisted, true);
+});
+
 test("Rhai script attachment edits participate in dirty state and persistence", () => {
   const model = new TanuMarkdownModel(inspection("initial", "Initial", 0));
   const initial = model.snapshot();

@@ -37,8 +37,9 @@ The core crate owns:
 - `TmdDoc`, `Manifest`, and attachment metadata;
 - logical attachment path normalization and SHA-256 validation;
 - embedded SQLite lifecycle and migration helpers;
-- named dynamic-data registry parsing, read-only SQLite evaluation, and typed
-  scalar/table values;
+- named dynamic-data registry parsing, read-only SQLite evaluation, sandboxed
+  Rhai transformation, bounded Formula AST evaluation, and typed scalar/table
+  values;
 - `.tmd` ZIP serialization;
 - optional C ABI functions behind the `ffi` feature.
 
@@ -55,7 +56,7 @@ The CLI translates terminal inputs into `tmd-core` operations. It owns:
 - human-readable and schema-versioned JSON inspection/updates;
 - attachment and SQLite lifecycle UX;
 - Markdown-to-HTML and schema-versioned preview rendering with real `attach:`
-  URL rewriting and dynamic SQLite views.
+  URL rewriting and dynamic SQLite, Rhai, and Formula views.
 
 HTML rendering neutralizes raw markup and executable URL schemes. Self-contained
 exports retain passive raster-image and plain-text MIME types and downgrade
@@ -96,7 +97,13 @@ table tab displays a CodeMirror editor with a small Rhai lexer. Script drafts
 are document edits, while preview and table evaluation receive them as bounded
 in-memory attachment overrides. Debounced evaluation failures are translated
 to CodeMirror lint diagnostics when the Rhai runtime reports a source
-location. Persisted grid edits and the broader table interaction model remain tracked in
+location. Formula programs are stored inline in schema-version-3 source
+definitions. Selecting a Formula source shows a separate CodeMirror editor,
+column legend, and syntax highlighting below the grid. Program edits flow
+immediately through the ordinary source-definition dirty/save/backup/undo
+lifecycle; table reevaluation is debounced, and the CLI/core returns typed
+line-and-column errors for editor diagnostics.
+Persisted grid edits and the broader table interaction model remain tracked in
 [issue #43](https://github.com/Nagitch/tanu-markdown/issues/43).
 
 Platform-specific VSIX packages carry the matching native CLI. A machine-level

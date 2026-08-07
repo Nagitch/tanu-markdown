@@ -27,7 +27,15 @@ export interface RhaiDataSource {
   outputColumns: string[];
 }
 
-export type DataSource = SqliteDataSource | RhaiDataSource;
+export interface FormulaDataSource {
+  name: string;
+  type: "formula";
+  input: string;
+  program: string;
+  outputColumns: string[];
+}
+
+export type DataSource = SqliteDataSource | RhaiDataSource | FormulaDataSource;
 
 export type DataTableCell =
   | { type: "null" }
@@ -52,7 +60,7 @@ export interface TextAttachmentView extends TextAttachmentEdit {}
 
 export interface DataSourceRegistryView {
   editable: boolean;
-  schemaVersion?: 1 | 2;
+  schemaVersion?: 1 | 2 | 3;
   sources: DataSource[];
   issue?: string;
   rawRegistry?: string;

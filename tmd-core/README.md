@@ -10,7 +10,8 @@ It provides:
   `attach:` reference validation;
 - an embedded SQLite handle with import, export, reset, and migration helpers;
 - versioned named data sources, bounded read-only SQLite evaluation, sandboxed
-  Rhai-to-table transformations, and typed `scalar`/`table` values;
+  Rhai-to-table transformations, AST-evaluated Formula tables, and typed
+  `scalar`/`table` values;
 - structured version/database validation reports and atomic path writes;
 - optional C ABI entry points behind the `ffi` feature.
 
@@ -48,8 +49,8 @@ fn main() -> tmd_core::TmdResult<()> {
   embedded database. Reset and migration SQL may own a transaction; schema
   versions are constrained to SQLite's nonnegative 31-bit range.
 - `DataSourceRegistry`, `DataSourceOutput`, `evaluate_data_source`, and the
-  data-view parsers own SQLite/Rhai Markdown view semantics shared by delivery
-  surfaces.
+  data-view parsers own SQLite/Rhai/Formula Markdown view semantics shared by
+  delivery surfaces.
 - `validate_document` returns machine-readable issues, attachment/data-view
   references, and the embedded database version.
 - `read_from_path` and `write_to_path` provide the common path-based API;

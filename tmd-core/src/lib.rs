@@ -21,6 +21,7 @@ pub use views::{
     DATA_SOURCES_EXTRAS_KEY,
 };
 
+mod formula;
 mod validation;
 mod views;
 

@@ -144,38 +144,56 @@ li { margin: .35rem 0; }
   --revo-grid-font-family: var(--vscode-font-family);
   --revo-grid-font-size: var(--vscode-font-size);
 }
-.rhai-script-panel {
+.source-script-panel {
   margin-top: 1rem;
   padding-top: 1rem;
   border-top: 1px solid var(--card-border);
 }
-.rhai-script-heading {
+.source-script-heading {
   display: flex;
   justify-content: space-between;
   align-items: flex-end;
   gap: 1rem;
   margin-bottom: .6rem;
 }
-.rhai-script-heading h3, .rhai-script-heading p { margin: 0; }
-.rhai-script-heading code {
+.source-script-heading h3, .source-script-heading p { margin: 0; }
+.source-script-heading code, .source-script-context {
   color: var(--vscode-descriptionForeground);
   font-family: var(--vscode-editor-font-family);
   font-size: .8rem;
   overflow-wrap: anywhere;
 }
-.rhai-script-editor {
+.source-script-editor {
   overflow: hidden;
   border: 1px solid var(--vscode-input-border, transparent);
   border-radius: 4px;
   background: var(--vscode-editor-background);
 }
-.rhai-script-editor[aria-disabled="true"] { opacity: .75; }
-.rhai-script-error {
+.source-script-editor[aria-disabled="true"] { opacity: .75; }
+.source-script-error {
   margin: .6rem 0 0;
   padding: .55rem .65rem;
   border: 1px solid var(--vscode-inputValidation-errorBorder, currentColor);
   background: var(--vscode-inputValidation-errorBackground, transparent);
   white-space: pre-wrap;
+}
+.formula-help {
+  margin: 0 0 .55rem;
+  color: var(--vscode-descriptionForeground);
+  line-height: 1.5;
+}
+.formula-column-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .35rem;
+  margin: 0 0 .65rem;
+}
+.formula-column-legend code {
+  padding: .18rem .35rem;
+  border: 1px solid var(--card-border);
+  border-radius: 3px;
+  color: var(--vscode-foreground);
+  background: var(--vscode-textCodeBlock-background);
 }
 .preview { line-height: 1.6; }
 .preview pre { overflow: auto; padding: .75rem; background: var(--vscode-textCodeBlock-background); }
@@ -191,5 +209,5 @@ li { margin: .35rem 0; }
 @media (max-width: 900px) {
   .layout { grid-template-columns: 1fr; }
   .app-bar { align-items: flex-start; flex-direction: column; }
-  .rhai-script-heading { align-items: flex-start; flex-direction: column; }
+  .source-script-heading { align-items: flex-start; flex-direction: column; }
 }

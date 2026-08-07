@@ -1,13 +1,16 @@
 # Dynamic Data Views
 
-Status: SQLite sources and Rhai-to-table transformations implemented;
-additional adapters and renderers proposed
-Tracking issue: [#35](https://github.com/Nagitch/tanu-markdown/issues/35)
+Status: SQLite, Rhai-to-table, and Formula table sources implemented;
+additional adapters and renderers proposed.
+
+Tracking issues: [#35](https://github.com/Nagitch/tanu-markdown/issues/35),
+[#45](https://github.com/Nagitch/tanu-markdown/issues/45)
 
 This document defines the implemented TMD extension for rendering embedded
-SQLite data and sandboxed Rhai transformations inside document Markdown. It
-also records planned extension points for declared JSON, YAML, and TOML
-attachments. The implemented contract is summarized in the
+SQLite data, sandboxed Rhai transformations, and bounded spreadsheet-style
+formulas inside document Markdown. It also records planned extension points
+for declared JSON, YAML, and TOML attachments. The implemented contract is
+summarized in the
 [TMD 1.0 draft specification](spec-tmd-1.0-draft.md).
 
 ## Goals
@@ -24,8 +27,9 @@ attachments. The implemented contract is summarized in the
 - Keep evaluation read-only, bounded, deterministic where practical, and safe
   for HTML and editor previews.
 
-The current implementation supports SQLite `scalar` and `table` output plus a
-Rhai adapter that transforms declared SQLite table inputs into a table.
+The current implementation supports SQLite `scalar` and `table` output, a Rhai
+adapter that transforms declared SQLite table inputs into a table, and a
+Formula adapter that derives table cells from one ordered SQLite input.
 Structured attachment adapters remain proposed.
 
 ## Layered model
@@ -36,7 +40,7 @@ Dynamic views have three independent layers:
 Markdown reference
         |
         v
-named data source (sqlite or rhai; structured attachments proposed)
+named data source (sqlite, rhai, or formula; structured attachments proposed)
         |
         v
 common typed value
@@ -46,8 +50,8 @@ renderer (scalar, table, list, or code)
 ```
 
 Named data sources own acquisition and selection. Markdown owns presentation.
-Changing a source from SQLite to Rhai therefore does not require changing every
-Markdown reference to that source.
+Changing a source between compatible table-producing adapters therefore does
+not require changing every Markdown reference to that source.
 
 ## Markdown syntax
 
@@ -132,7 +136,7 @@ or executable code. Definitions are stored under a versioned, namespaced
 {
   "extras": {
     "tmd_data_sources": {
-      "schema_version": 2,
+      "schema_version": 3,
       "sources": {
         "sales": {
           "type": "sqlite",
@@ -147,6 +151,15 @@ or executable code. Definitions are stored under a versioned, namespaced
           "output": {
             "type": "table",
             "columns": ["category", "total_cents"]
+          }
+        },
+        "sales-formula": {
+          "type": "formula",
+          "input": "sales",
+          "program": "C1 = SUM(B1:B3)\nC2 = C1\nC3 = [@amount_cents] * 2",
+          "output": {
+            "type": "table",
+            "columns": ["category", "amount_cents", "total_cents"]
           }
         }
       }
@@ -258,6 +271,70 @@ matters. See
 [`tmd-sample/views/category-summary.rhai`](../tmd-sample/views/category-summary.rhai)
 for a complete grouping example.
 
+### Formula table transformation
+
+Registry schema version 3 adds a small spreadsheet-inspired expression
+language. A Formula source names one SQLite source, stores its program inline,
+and declares its complete ordered output columns:
+
+```json
+{
+  "type": "formula",
+  "input": "sales",
+  "program": "C1 = SUM(B1:B3)\nC2 = C1\nC3 = [@amount_cents] * 2",
+  "output": {
+    "type": "table",
+    "columns": ["category", "amount_cents", "total_cents"]
+  }
+}
+```
+
+The input must resolve directly to a SQLite source in the same registry.
+Formula-to-Formula and Rhai-to-Formula pipelines are not supported. The SQLite
+query defines the sheet's absolute order, so authors MUST use `ORDER BY` when
+cell coordinates need to remain stable. RevoGrid sorting and filtering are
+presentation-only and do not change formula coordinates.
+
+The program contains one assignment per non-empty line. `//` introduces a
+comment. The target is an A1-style cell and the right-hand side is parsed into
+an AST and evaluated by the Rust core; Formula text is never interpolated into
+Rhai or SQL. A leading second `=` on the expression is accepted, so both
+`C1 = SUM(B1:B3)` and `C1 = =SUM(B1:B3)` are valid.
+
+Coordinates are one-based over data cells: `A1` is the first SQLite result
+cell, not a header. `$A$1` is accepted as the same absolute coordinate in the
+current language; relative-copy semantics are not implemented. A rectangular
+range such as `A1:C3` evaluates in row-major order. Header-oriented references
+are:
+
+- `[amount_cents]`: that exact output column across the original input row
+  extent;
+- `[@amount_cents]`: that output column's value on the target row; and
+- `HEADER(B)`: the output header at column B.
+
+Input cells are authoritative and cannot be formula targets. The output column
+list MUST begin with the exact SQLite input columns in the same order, then may
+append derived columns. Assignments may extend the row count; unassigned
+derived cells are `NULL`. References to other formula targets are resolved by
+dependency, independent of line order. Circular dependencies are rejected.
+
+The supported literals are null, booleans, signed integers, finite real
+numbers, and strings. Arithmetic (`+`, `-`, `*`, `/`), comparisons (`=`, `==`,
+`!=`, `<>`, `<`, `<=`, `>`, `>=`), unary signs, and parentheses use strict
+types. No implicit string-to-number or boolean coercion occurs. The implemented
+functions are:
+
+- aggregation: `SUM`, `AVERAGE`, `MIN`, `MAX`, `COUNT`;
+- logic: `IF`, `AND`, `OR`, `NOT`, `ISNULL`;
+- numbers: `ROUND`, `ABS`; and
+- text: `CONCAT`, `LEN`.
+
+`IF` evaluates only the selected branch. Numeric aggregates ignore `NULL` but
+reject boolean or string values; `COUNT` counts numeric values. Runtime diagnostics carry
+the target cell when available, a typed code such as `#REF!`, `#VALUE!`,
+`#DIV/0!`, `#NAME?`, `#CYCLE!`, or `#LIMIT!`, and the Formula source line and
+column. Syntax failures use the same location-aware diagnostic path.
+
 ## Common typed value
 
 The complete design allows every source to return one of these logical values:
@@ -272,11 +349,10 @@ The complete design allows every source to return one of these logical values:
 - table with ordered column names and rows of scalar cells.
 
 The SQLite adapter returns a table containing scalar `null`, signed integer,
-finite floating-point, and UTF-8 string cells. The Rhai adapter accepts those
-values as inputs, adds native booleans, and converts its declared array of maps
-back to a table. General array and object values remain part of the common model
-design for future structured-data adapters. Binary values are not part of the
-render contract. SQLite BLOB values produce a diagnostic.
+finite floating-point, and UTF-8 string cells. Rhai and Formula add native
+booleans to the table value. General array and object values remain part of the
+common model design for future structured-data adapters. Binary values are not
+part of the render contract. SQLite BLOB values produce a diagnostic.
 
 Typed values are passed directly to renderers. They are not interpolated as raw
 Markdown or HTML.
@@ -296,8 +372,9 @@ the value while preserving surrounding author-written Markdown formatting.
 ### `table`
 
 `table` accepts a table value. SQLite column labels and result order become the
-ordered headers and rows. Rhai headers use the source's explicit
-`output.columns`; returned array order becomes table row order. A future
+ordered headers and rows. Rhai and Formula headers use the source's explicit
+`output.columns`; Rhai returned array order and Formula sheet order become
+table row order. A future
 structured-data adapter may convert an array of objects to a table when its
 column-order rules are explicitly defined.
 
@@ -347,6 +424,9 @@ preserve equivalent boundaries:
 - bounded Rhai script bytes, inputs, operations, elapsed time, arrays, maps,
   variables, functions, call depth, expression depth, strings, and table
   output;
+- no Formula host I/O or dynamic code execution, and bounded program bytes,
+  assignments, syntax nodes, expression depth, evaluation steps, output text,
+  rows, columns, and cells;
 - safe YAML parsing without custom constructors or external resolution;
 - escaped scalar, table-cell, list-item, and code output; and
 - visible diagnostics for missing sources, selector failures, shape mismatch,
@@ -361,15 +441,21 @@ operations, 250 ms elapsed time, 2,000 elements per array, 256 entries per map,
 and the same 1,000-row/128-column/10,000-cell table boundary. These are safety
 defaults for the experimental schema and may be tuned before stabilization.
 
+The current Formula limits include 256 KiB per program, 2,000 assignments,
+1,024 syntax nodes per expression, depth 64, 100,000 evaluation steps, 1 MiB
+generated text, and the same 1,000-row/128-column/10,000-cell table boundary.
+
 ## Compatibility and rollout
 
-The current slice implements parsing and validation together with SQLite and
-Rhai table evaluation in HTML export, the CLI preview bridge, and VS Code
-preview. The VS Code source-management form edits SQLite definitions together
-with Rhai script attachment paths, SQLite input mappings, and ordered table
-output columns. Script bodies remain TMD attachments and use the persisted
-document contract and CLI/core path. JSON, YAML, TOML, and additional renderers
-can use the same source and typed-value boundaries in later slices.
+The current slice implements parsing and validation together with SQLite, Rhai,
+and Formula table evaluation in HTML export, the CLI preview bridge, and VS
+Code preview. The VS Code source-management form edits all three definitions.
+Rhai script bodies remain TMD attachments. Formula programs are inline source
+data and the Table tab exposes them in a syntax-highlighted CodeMirror editor
+with debounced, line-and-column diagnostics. Draft Formula edits participate in
+document dirty state, undo/redo, backup, save, preview, and table evaluation
+through the same CLI/core path. JSON, YAML, TOML, and additional renderers can
+use the same source and typed-value boundaries in later slices.
 
 Before the experimental feature becomes stable, the implementation must define:
 

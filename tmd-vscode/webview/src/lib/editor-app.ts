@@ -1,5 +1,7 @@
 import { defineCustomElements } from "@revolist/revogrid/loader";
 import type { ColumnRegular, DataType } from "@revolist/revogrid";
+import { formulaDiagnosticFromIssue } from "../../../src/formula-diagnostics.js";
+import { spreadsheetColumnName } from "../../../src/formula-program.js";
 import { EditorClientState, PREVIEW_DEBOUNCE_MS } from "../../../src/input.js";
 import { setupEditorTabs } from "../../../src/tabs.js";
 import { rhaiDiagnosticFromIssue } from "../../../src/rhai-diagnostics.js";
@@ -8,6 +10,7 @@ import type {
   DataSourceRegistryView,
   DataSourceTable,
   DataTableCell,
+  FormulaDataSource,
   RhaiDataSource,
   ValidationReport,
 } from "../../../src/types.js";
@@ -17,10 +20,13 @@ import type {
   EditorRequest,
 } from "../../../src/webview-protocol.js";
 import { createMarkdownEditor } from "./markdown-editor.js";
+import { createFormulaEditor } from "./formula-editor.js";
 import { createRhaiEditor } from "./rhai-editor.js";
 
 const RHAI_EVALUATION_DEBOUNCE_MS = 350;
+const FORMULA_EVALUATION_DEBOUNCE_MS = 350;
 const MAX_RHAI_SCRIPT_BYTES = 256 * 1024;
+const MAX_FORMULA_PROGRAM_BYTES = 256 * 1024;
 
 interface EditorUiState extends Record<string, unknown> {
   activeEditorTab?: string;
@@ -53,6 +59,15 @@ const databaseObjects = requireElement<HTMLUListElement>("database-objects");
 const tableSource = requireElement<HTMLSelectElement>("table-source");
 const tableSourceStatus = requireElement<HTMLElement>("table-source-status");
 const tableGridHost = requireElement<HTMLElement>("table-grid-host");
+const formulaProgramPanel = requireElement<HTMLElement>("formula-program-panel");
+const formulaProgramInput = requireElement<HTMLElement>("formula-program-input");
+const formulaProgramStatus = requireElement<HTMLElement>("formula-program-status");
+const formulaProgramError = requireElement<HTMLElement>("formula-program-error");
+const formulaColumnLegend = requireElement<HTMLElement>("formula-column-legend");
+const formulaEditor = createFormulaEditor(
+  requireElement("formula-program-editor"),
+  cspNonce,
+);
 const rhaiScriptPanel = requireElement<HTMLElement>("rhai-script-panel");
 const rhaiScriptPath = requireElement<HTMLElement>("rhai-script-path");
 const rhaiScriptStatus = requireElement<HTMLElement>("rhai-script-status");
@@ -73,6 +88,9 @@ const addSqliteDataSource = requireElement<HTMLButtonElement>(
   "add-sqlite-data-source",
 );
 const addRhaiDataSource = requireElement<HTMLButtonElement>("add-rhai-data-source");
+const addFormulaDataSource = requireElement<HTMLButtonElement>(
+  "add-formula-data-source",
+);
 const applyDataSources = requireElement<HTMLButtonElement>("apply-data-sources");
 const dataSourceStatus = requireElement<HTMLElement>("data-source-status");
 const validation = requireElement<HTMLElement>("validation");
@@ -80,12 +98,14 @@ const preview = requireElement<HTMLElement>("preview");
 
 let previewTimer: ReturnType<typeof setTimeout> | undefined;
 let rhaiEvaluationTimer: ReturnType<typeof setTimeout> | undefined;
+let formulaEvaluationTimer: ReturnType<typeof setTimeout> | undefined;
 let dataSourceDrafts: DataSource[] = [];
 let tableSourceDefinitions: DataSource[] = [];
 let dataSourcesEditable = false;
 let dataSourceEditingLocked = true;
 let pendingDataSourceRevision: number | undefined;
 let pendingRhaiScriptRevision: number | undefined;
+let pendingFormulaRevision: number | undefined;
 let selectedTableSource = host.getState()?.selectedTableSource;
 let tableRequestId = 0;
 let rhaiScriptRequestId = 0;
@@ -94,6 +114,8 @@ let tableGrid: HTMLRevoGridElement | undefined;
 let currentRhaiScriptPath: string | undefined;
 let rhaiEvaluationComplete = false;
 let rhaiEvaluationIssue: string | undefined;
+let formulaEvaluationComplete = false;
+let formulaEvaluationIssue: string | undefined;
 
 void Promise.resolve(defineCustomElements()).then(() => {
   const grid = document.createElement("revo-grid");
@@ -128,6 +150,8 @@ markdown.addEventListener("input", () => {
 });
 rhaiEditor.disabled = true;
 rhaiEditor.addEventListener("input", sendRhaiScriptEdit);
+formulaEditor.disabled = true;
+formulaEditor.addEventListener("input", queueFormulaProgramEdit);
 
 requireElement("validate").addEventListener("click", () =>
   host.postMessage({ type: "validate" }),
@@ -145,6 +169,7 @@ preview.addEventListener("click", (event) => {
 });
 
 tableSource.addEventListener("change", () => {
+  clearTimeout(formulaEvaluationTimer);
   selectedTableSource = tableSource.value || undefined;
   host.setState({
     ...(host.getState() ?? {}),
@@ -152,6 +177,7 @@ tableSource.addEventListener("change", () => {
   });
   requestTableSource();
   requestRhaiScript();
+  renderFormulaProgram();
 });
 
 addSqliteDataSource.addEventListener("click", () => {
@@ -173,6 +199,20 @@ addRhaiDataSource.addEventListener("click", () => {
     script: `views/${name}.rhai`,
     inputs: [{ alias: "rows", source: sqliteSource?.name ?? "" }],
     outputColumns: ["value"],
+  });
+  renderDataSourceDrafts();
+  markDataSourceDraftChanged();
+});
+
+addFormulaDataSource.addEventListener("click", () => {
+  const name = nextDataSourceName("formula");
+  const sqliteSource = dataSourceDrafts.find((source) => source.type === "sqlite");
+  dataSourceDrafts.push({
+    name,
+    type: "formula",
+    input: sqliteSource?.name ?? "",
+    program: "B1 = SUM(A1:A1)",
+    outputColumns: ["value", "total"],
   });
   renderDataSourceDrafts();
   markDataSourceDraftChanged();
@@ -211,6 +251,16 @@ window.addEventListener("message", (event: MessageEvent<unknown>) => {
     if (message.clientRevision === pendingRhaiScriptRevision) {
       pendingRhaiScriptRevision = undefined;
       queueRhaiEvaluation();
+    }
+    if (message.clientRevision === pendingFormulaRevision) {
+      pendingFormulaRevision = undefined;
+      setStatus(
+        dataSourceStatus,
+        "Formula changes applied. Save the document to persist them.",
+        "valid",
+      );
+      renderDataSourceDrafts();
+      queueFormulaEvaluation();
     }
     return;
   }
@@ -281,6 +331,44 @@ function sendRhaiScriptEdit(): void {
   queuePreview();
 }
 
+function queueFormulaProgramEdit(): void {
+  const source = selectedFormulaSource();
+  if (!source) return;
+  clearTimeout(formulaEvaluationTimer);
+  tableRequestId += 1;
+  const program = formulaEditor.value;
+  if (new TextEncoder().encode(program).length > MAX_FORMULA_PROGRAM_BYTES) {
+    const issue = `Formula programs must be at most ${MAX_FORMULA_PROGRAM_BYTES} UTF-8 bytes.`;
+    formulaEvaluationComplete = true;
+    formulaEvaluationIssue = issue;
+    formulaEditor.setDiagnostic({ message: issue });
+    updateFormulaProgramStatus();
+    return;
+  }
+  formulaEvaluationComplete = false;
+  formulaEvaluationIssue = undefined;
+  formulaEditor.setDiagnostic(undefined);
+  updateFormulaProgramStatus();
+  applyFormulaProgramEdit();
+}
+
+function applyFormulaProgramEdit(): void {
+  const source = selectedFormulaSource();
+  if (!source) return;
+  const program = formulaEditor.value;
+  source.program = program;
+  const draft = dataSourceDrafts.find(
+    (candidate) => candidate.name === source.name && candidate.type === "formula",
+  );
+  if (!draft || draft.type !== "formula") return;
+  draft.program = program;
+  pendingFormulaRevision = sendDataSourceEdit(
+    dataSourceDrafts.map(cloneDataSource),
+  );
+  if (pendingFormulaRevision === undefined) return;
+  setStatus(formulaProgramStatus, "Checking…", "stale");
+}
+
 function queuePreview(): void {
   if (!revision.initialized) return;
   clearTimeout(previewTimer);
@@ -298,6 +386,14 @@ function queueRhaiEvaluation(): void {
   rhaiEvaluationTimer = setTimeout(() => requestTableSource(), RHAI_EVALUATION_DEBOUNCE_MS);
 }
 
+function queueFormulaEvaluation(): void {
+  clearTimeout(formulaEvaluationTimer);
+  formulaEvaluationTimer = setTimeout(
+    () => requestTableSource(),
+    FORMULA_EVALUATION_DEBOUNCE_MS,
+  );
+}
+
 function applyModel(model: EditorModelMessage): void {
   if (
     !revision.acceptAuthoritativeState({
@@ -309,7 +405,9 @@ function applyModel(model: EditorModelMessage): void {
   }
   clearTimeout(previewTimer);
   clearTimeout(rhaiEvaluationTimer);
+  clearTimeout(formulaEvaluationTimer);
   pendingRhaiScriptRevision = undefined;
+  pendingFormulaRevision = undefined;
   title.value = model.title;
   markdown.value = model.markdown;
   title.disabled = model.editingLocked;
@@ -351,10 +449,15 @@ function renderTableSourceOptions(sources: readonly DataSource[]): void {
   });
   requestTableSource();
   requestRhaiScript();
+  renderFormulaProgram();
 }
 
 function isTabularSource(source: DataSource): boolean {
-  return source.type === "sqlite" || source.type === "rhai";
+  return (
+    source.type === "sqlite" ||
+    source.type === "rhai" ||
+    source.type === "formula"
+  );
 }
 
 function requestTableSource(): void {
@@ -375,6 +478,12 @@ function requestTableSource(): void {
     rhaiEvaluationIssue = undefined;
     rhaiEditor.setDiagnostic(undefined);
     updateRhaiScriptStatus();
+  }
+  if (selectedFormulaSource()) {
+    formulaEvaluationComplete = false;
+    formulaEvaluationIssue = undefined;
+    formulaEditor.setDiagnostic(undefined);
+    updateFormulaProgramStatus();
   }
   setStatus(tableSourceStatus, `Loading ${selectedTableSource}…`, "stale");
   host.postMessage({
@@ -403,6 +512,7 @@ function renderTableSourceResult(
       "invalid",
     );
     applyRhaiEvaluationIssue(message.issue);
+    applyFormulaEvaluationIssue(message.issue);
     return;
   }
   currentTable = message.table;
@@ -414,6 +524,31 @@ function renderTableSourceResult(
     "valid",
   );
   applyRhaiEvaluationIssue(undefined);
+  applyFormulaEvaluationIssue(undefined);
+}
+
+function renderFormulaProgram(): void {
+  clearTimeout(formulaEvaluationTimer);
+  const source = selectedFormulaSource();
+  if (!source) {
+    formulaProgramPanel.hidden = true;
+    formulaEditor.disabled = true;
+    formulaEditor.value = "";
+    formulaEditor.setDiagnostic(undefined);
+    return;
+  }
+  formulaProgramPanel.hidden = false;
+  formulaProgramInput.textContent = `Input: ${source.input} · source order`;
+  formulaColumnLegend.replaceChildren(
+    ...source.outputColumns.map((column, index) => {
+      const label = document.createElement("code");
+      label.textContent = `${spreadsheetColumnName(index)} · ${column}`;
+      return label;
+    }),
+  );
+  formulaEditor.value = source.program;
+  formulaEditor.disabled = !dataSourcesEditable || dataSourceEditingLocked;
+  updateFormulaProgramStatus();
 }
 
 function requestRhaiScript(): void {
@@ -480,6 +615,13 @@ function selectedRhaiSource(): RhaiDataSource | undefined {
   return source?.type === "rhai" ? source : undefined;
 }
 
+function selectedFormulaSource(): FormulaDataSource | undefined {
+  const source = tableSourceDefinitions.find(
+    (candidate) => candidate.name === selectedTableSource,
+  );
+  return source?.type === "formula" ? source : undefined;
+}
+
 function applyRhaiEvaluationIssue(issue: string | undefined): void {
   if (!selectedRhaiSource()) return;
   rhaiEvaluationComplete = true;
@@ -502,6 +644,33 @@ function updateRhaiScriptStatus(): void {
     setStatus(rhaiScriptStatus, "No errors", "valid");
     rhaiScriptError.hidden = true;
     rhaiScriptError.textContent = "";
+  }
+}
+
+function applyFormulaEvaluationIssue(issue: string | undefined): void {
+  if (!selectedFormulaSource()) return;
+  formulaEvaluationComplete = true;
+  formulaEvaluationIssue = issue;
+  formulaEditor.setDiagnostic(
+    issue ? formulaDiagnosticFromIssue(issue) : undefined,
+  );
+  updateFormulaProgramStatus();
+}
+
+function updateFormulaProgramStatus(): void {
+  if (!selectedFormulaSource()) return;
+  if (formulaEvaluationIssue) {
+    setStatus(formulaProgramStatus, "Error", "invalid");
+    formulaProgramError.hidden = false;
+    formulaProgramError.textContent = formulaEvaluationIssue;
+  } else if (!formulaEvaluationComplete) {
+    setStatus(formulaProgramStatus, "Checking…", "stale");
+    formulaProgramError.hidden = true;
+    formulaProgramError.textContent = "";
+  } else {
+    setStatus(formulaProgramStatus, "No errors", "valid");
+    formulaProgramError.hidden = true;
+    formulaProgramError.textContent = "";
   }
 }
 
@@ -632,6 +801,7 @@ function renderDataSourceRegistry(
   dataSourceRegistryRaw.textContent = registry.rawRegistry ?? "";
   addSqliteDataSource.disabled = !dataSourcesEditable || dataSourceEditingLocked;
   addRhaiDataSource.disabled = !dataSourcesEditable || dataSourceEditingLocked;
+  addFormulaDataSource.disabled = !dataSourcesEditable || dataSourceEditingLocked;
   applyDataSources.disabled = !dataSourcesEditable || dataSourceEditingLocked;
   setStatus(
     dataSourceStatus,
@@ -677,7 +847,7 @@ function renderDataSourceDrafts(): void {
           markDataSourceDraftChanged();
         }),
       );
-    } else {
+    } else if (source.type === "rhai") {
       card.append(
         labelledInput("Rhai script attachment path", source.script, (value) => {
           source.script = value;
@@ -694,6 +864,31 @@ function renderDataSourceDrafts(): void {
         ),
         labelledTextarea(
           "Table output columns (one per line, in display order)",
+          source.outputColumns.join("\n"),
+          "source-definition",
+          (value) => {
+            source.outputColumns = parseOutputColumns(value);
+            markDataSourceDraftChanged();
+          },
+        ),
+      );
+    } else {
+      card.append(
+        labelledInput("SQLite input source", source.input, (value) => {
+          source.input = value;
+          markDataSourceDraftChanged();
+        }),
+        labelledTextarea(
+          "Formula program (one cell assignment per line)",
+          source.program,
+          "source-query",
+          (value) => {
+            source.program = value;
+            markDataSourceDraftChanged();
+          },
+        ),
+        labelledTextarea(
+          "Table output columns (input columns first, then derived columns)",
           source.outputColumns.join("\n"),
           "source-definition",
           (value) => {
@@ -751,12 +946,15 @@ function labelledTextarea(
 }
 
 function cloneDataSource(source: DataSource): DataSource {
-  return source.type === "rhai"
-    ? {
-        ...source,
-        inputs: source.inputs.map((input) => ({ ...input })),
-        outputColumns: [...source.outputColumns],
-      }
+  if (source.type === "rhai") {
+    return {
+      ...source,
+      inputs: source.inputs.map((input) => ({ ...input })),
+      outputColumns: [...source.outputColumns],
+    };
+  }
+  return source.type === "formula"
+    ? { ...source, outputColumns: [...source.outputColumns] }
     : { ...source };
 }
 
@@ -808,35 +1006,49 @@ function validateDataSourceDrafts(): string | undefined {
       }
       continue;
     }
-    const pathIssue = validateScriptPath(source.script);
-    if (pathIssue) return pathIssue;
-    if (source.inputs.length === 0 || source.inputs.length > 16) {
-      return "Rhai sources require 1-16 SQLite input mappings.";
-    }
-    const aliases = new Set<string>();
-    for (const input of source.inputs) {
-      if (!/^[A-Za-z0-9._-]{1,128}$/.test(input.alias)) {
-        return "Rhai input aliases use the same characters as source names.";
+    if (source.type === "rhai") {
+      const pathIssue = validateScriptPath(source.script);
+      if (pathIssue) return pathIssue;
+      if (source.inputs.length === 0 || source.inputs.length > 16) {
+        return "Rhai sources require 1-16 SQLite input mappings.";
       }
-      if (aliases.has(input.alias)) return "Rhai input aliases must be unique.";
-      aliases.add(input.alias);
-      if (!/^[A-Za-z0-9._-]{1,128}$/.test(input.source)) {
-        return "Each Rhai input must name a SQLite source.";
+      const aliases = new Set<string>();
+      for (const input of source.inputs) {
+        if (!/^[A-Za-z0-9._-]{1,128}$/.test(input.alias)) {
+          return "Rhai input aliases use the same characters as source names.";
+        }
+        if (aliases.has(input.alias)) return "Rhai input aliases must be unique.";
+        aliases.add(input.alias);
+        if (!/^[A-Za-z0-9._-]{1,128}$/.test(input.source)) {
+          return "Each Rhai input must name a SQLite source.";
+        }
+        const target = definitions.get(input.source);
+        if (!target) return "Each Rhai input must reference an existing source.";
+        if (target.type !== "sqlite") return "Rhai inputs can reference SQLite sources only.";
       }
-      const target = definitions.get(input.source);
-      if (!target) return "Each Rhai input must reference an existing source.";
-      if (target.type !== "sqlite") return "Rhai inputs can reference SQLite sources only.";
+    } else {
+      if (new TextEncoder().encode(source.program).length > MAX_FORMULA_PROGRAM_BYTES) {
+        return `Formula programs must be at most ${MAX_FORMULA_PROGRAM_BYTES} UTF-8 bytes.`;
+      }
+      if (!/^[A-Za-z0-9._-]{1,128}$/.test(source.input)) {
+        return "Formula inputs must name a SQLite source.";
+      }
+      const target = definitions.get(source.input);
+      if (!target) return "Each Formula input must reference an existing source.";
+      if (target.type !== "sqlite") return "Formula inputs can reference SQLite sources only.";
     }
     if (source.outputColumns.length === 0 || source.outputColumns.length > 128) {
-      return "Rhai table outputs require 1-128 columns.";
+      return `${source.type === "rhai" ? "Rhai" : "Formula"} table outputs require 1-128 columns.`;
     }
     const columns = new Set<string>();
     for (const column of source.outputColumns) {
       const length = new TextEncoder().encode(column).length;
       if (length === 0 || length > 256) {
-        return "Rhai output columns must use 1-256 UTF-8 bytes.";
+        return `${source.type === "rhai" ? "Rhai" : "Formula"} output columns must use 1-256 UTF-8 bytes.`;
       }
-      if (columns.has(column)) return "Rhai output columns must be unique.";
+      if (columns.has(column)) {
+        return `${source.type === "rhai" ? "Rhai" : "Formula"} output columns must be unique.`;
+      }
       columns.add(column);
     }
   }

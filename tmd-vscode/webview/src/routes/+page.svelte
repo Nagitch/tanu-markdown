@@ -55,16 +55,29 @@
             <p id="table-source-status" class="stale" role="status">Loading sources…</p>
           </div>
           <div id="table-grid-host" class="table-grid-host" hidden></div>
-          <section id="rhai-script-panel" class="rhai-script-panel" aria-labelledby="rhai-script-heading" hidden>
-            <div class="rhai-script-heading">
+          <section id="formula-program-panel" class="source-script-panel" aria-labelledby="formula-program-heading" hidden>
+            <div class="source-script-heading">
+              <div>
+                <h3 id="formula-program-heading">Formula program</h3>
+                <p id="formula-program-input" class="source-script-context"></p>
+              </div>
+              <p id="formula-program-status" class="stale" role="status"></p>
+            </div>
+            <p class="formula-help"><code>A1</code> is the first data cell; headers are not rows. Use <code>SUM(B1:B3)</code>, <code>[amount]</code>, <code>[@amount]</code>, or <code>HEADER(B)</code>.</p>
+            <div id="formula-column-legend" class="formula-column-legend" aria-label="Formula column references"></div>
+            <div id="formula-program-editor" class="source-script-editor"></div>
+            <p id="formula-program-error" class="invalid source-script-error" role="alert" hidden></p>
+          </section>
+          <section id="rhai-script-panel" class="source-script-panel" aria-labelledby="rhai-script-heading" hidden>
+            <div class="source-script-heading">
               <div>
                 <h3 id="rhai-script-heading">Rhai script</h3>
                 <code id="rhai-script-path"></code>
               </div>
               <p id="rhai-script-status" class="stale" role="status"></p>
             </div>
-            <div id="rhai-script-editor" class="rhai-script-editor"></div>
-            <p id="rhai-script-error" class="invalid rhai-script-error" role="alert" hidden></p>
+            <div id="rhai-script-editor" class="source-script-editor"></div>
+            <p id="rhai-script-error" class="invalid source-script-error" role="alert" hidden></p>
           </section>
         </section>
         <section id="panel-sources" class="editor-panel" role="tabpanel" data-editor-panel="sources" hidden>
@@ -79,6 +92,7 @@
           <div class="data-source-actions">
             <button id="add-sqlite-data-source" type="button">Add SQLite source</button>
             <button id="add-rhai-data-source" type="button">Add Rhai source</button>
+            <button id="add-formula-data-source" type="button">Add Formula source</button>
             <button id="apply-data-sources" type="button">Apply source changes</button>
           </div>
           <p id="data-source-status" class="stale"></p>

@@ -114,7 +114,7 @@ fn query_table_output_preserves_cell_boundaries() {
 }
 
 #[test]
-fn renders_dynamic_sqlite_and_rhai_views() {
+fn renders_dynamic_sqlite_rhai_and_formula_views() {
     let directory = tempdir().expect("temporary directory");
     let doc_path = directory.path().join("dynamic-views.tmd");
     let html_path = directory.path().join("dynamic-views.html");
@@ -129,12 +129,15 @@ fn renders_dynamic_sqlite_and_rhai_views() {
         "```\n\n",
         "```tmd-view:table\n",
         "source = \"category-summary\"\n",
+        "```\n\n",
+        "```tmd-view:table\n",
+        "source = \"sales-formula\"\n",
         "```\n",
     );
     let mut doc = TmdDoc::new(markdown.to_owned()).expect("document");
     doc.manifest.extras = json!({
         "tmd_data_sources": {
-            "schema_version": 2,
+            "schema_version": 3,
             "sources": {
                 "first-note": {
                     "type": "sqlite",
@@ -155,6 +158,30 @@ fn renders_dynamic_sqlite_and_rhai_views() {
                     "output": {
                         "type": "table",
                         "columns": ["category", "total_cents"]
+                    }
+                },
+                "sales-formula": {
+                    "type": "formula",
+                    "input": "sales",
+                    "program": concat!(
+                        "C1 = SUM(B1:B3)\n",
+                        "C2 = C1\n",
+                        "C3 = B3 * 2\n",
+                        "D1 = HEADER(B)\n",
+                        "D2 = A1\n",
+                        "E1 = C3\n",
+                        "E2 = SUM([amount_cents])\n",
+                        "E3 = [@amount_cents]"
+                    ),
+                    "output": {
+                        "type": "table",
+                        "columns": [
+                            "category",
+                            "amount_cents",
+                            "total_cents",
+                            "lookup",
+                            "header_total"
+                        ]
                     }
                 }
             }
@@ -276,6 +303,96 @@ fn renders_dynamic_sqlite_and_rhai_views() {
         ])
     );
 
+    let formula_table = parse_json(&run(
+        vec![
+            text("data-source"),
+            argument(&doc_path),
+            text("--json-stdin"),
+        ],
+        Some(
+            &json!({
+                "schema_version": 1,
+                "source": "sales-formula",
+            })
+            .to_string(),
+        ),
+    ));
+    assert_eq!(
+        formula_table["columns"],
+        json!([
+            "category",
+            "amount_cents",
+            "total_cents",
+            "lookup",
+            "header_total"
+        ])
+    );
+    assert_eq!(
+        formula_table["rows"],
+        json!([
+            [
+                { "type": "string", "value": "books" },
+                { "type": "integer", "value": "1200" },
+                { "type": "integer", "value": "5500" },
+                { "type": "string", "value": "amount_cents" },
+                { "type": "integer", "value": "1600" }
+            ],
+            [
+                { "type": "string", "value": "games" },
+                { "type": "integer", "value": "3500" },
+                { "type": "integer", "value": "5500" },
+                { "type": "string", "value": "books" },
+                { "type": "integer", "value": "5500" }
+            ],
+            [
+                { "type": "string", "value": "books" },
+                { "type": "integer", "value": "800" },
+                { "type": "integer", "value": "1600" },
+                { "type": "null" },
+                { "type": "integer", "value": "800" }
+            ]
+        ])
+    );
+
+    let edited_formula_table = parse_json(&run(
+        vec![
+            text("data-source"),
+            argument(&doc_path),
+            text("--json-stdin"),
+        ],
+        Some(
+            &json!({
+                "schema_version": 1,
+                "source": "sales-formula",
+                "extras": {
+                    "tmd_data_sources": {
+                        "schema_version": 3,
+                        "sources": {
+                            "sales": {
+                                "type": "sqlite",
+                                "query": "SELECT category, amount_cents FROM sample_sales ORDER BY id"
+                            },
+                            "sales-formula": {
+                                "type": "formula",
+                                "input": "sales",
+                                "program": "C1 = 42",
+                                "output": {
+                                    "type": "table",
+                                    "columns": ["category", "amount_cents", "total_cents"]
+                                }
+                            }
+                        }
+                    }
+                }
+            })
+            .to_string(),
+        ),
+    ));
+    assert_eq!(
+        edited_formula_table["rows"][0][2],
+        json!({ "type": "integer", "value": "42" })
+    );
+
     let replacement_script = "[#{ category: \"edited\", total_cents: 42 }]";
     let edited_script_table = parse_json(&run(
         vec![
@@ -321,6 +438,8 @@ fn renders_dynamic_sqlite_and_rhai_views() {
     assert!(preview_html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
     assert!(preview_html.contains("<td>books</td>"));
     assert!(preview_html.contains("<td>2000</td>"));
+    assert!(preview_html.contains("<th>header_total</th>"));
+    assert!(preview_html.contains("<td>5500</td>"));
     assert!(!preview_html.contains("{{tmd-view:"));
     assert!(!preview_html.contains("<script>"));
 
@@ -367,6 +486,8 @@ fn renders_dynamic_sqlite_and_rhai_views() {
     assert!(exported.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
     assert!(exported.contains("<td>books</td>"));
     assert!(exported.contains("<td>2000</td>"));
+    assert!(exported.contains("<th>header_total</th>"));
+    assert!(exported.contains("<td>5500</td>"));
 
     let validation = parse_json(&run(
         vec![text("validate"), argument(&doc_path), text("--json")],
@@ -375,7 +496,7 @@ fn renders_dynamic_sqlite_and_rhai_views() {
     assert_eq!(validation["valid"], true);
     assert_eq!(
         validation["data_view_references"].as_array().map(Vec::len),
-        Some(4)
+        Some(5)
     );
 
     run(

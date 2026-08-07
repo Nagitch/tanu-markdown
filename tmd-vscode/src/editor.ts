@@ -576,6 +576,25 @@ function parseDataSources(value: unknown): DataSource[] | undefined {
       continue;
     }
     if (
+      source.type === "formula" &&
+      "input" in source &&
+      typeof source.input === "string" &&
+      "program" in source &&
+      typeof source.program === "string" &&
+      "outputColumns" in source &&
+      Array.isArray(source.outputColumns) &&
+      source.outputColumns.every((column: unknown) => typeof column === "string")
+    ) {
+      sources.push({
+        name: source.name,
+        type: "formula",
+        input: source.input,
+        program: source.program,
+        outputColumns: [...source.outputColumns],
+      });
+      continue;
+    }
+    if (
       source.type !== "rhai" ||
       !("script" in source) ||
       typeof source.script !== "string" ||

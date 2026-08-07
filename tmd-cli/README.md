@@ -63,7 +63,8 @@ printf '%s' '{"schema_version":1,"source":"sample-notes"}' \
 typed table cells. Integer cells are encoded as decimal strings so editor
 integrations do not lose 64-bit precision. Like `preview`, the request accepts
 optional `extras` and `text_attachments` overrides for unsaved source and Rhai
-script edits. The VS Code table viewer uses this read-only bridge instead of
+script edits; inline Formula program edits travel in `extras`. The VS Code
+table viewer uses this read-only bridge instead of
 opening the embedded database in JavaScript.
 
 ### Atomic publication
@@ -111,7 +112,7 @@ names, render Markdown attachment links as downloads, and permit only passive
 attachment types as inline image sources. Export refuses an output path that
 resolves to the source document.
 
-### Dynamic SQLite views
+### Dynamic table views
 
 Declare named sources under `manifest.extras.tmd_data_sources`, then reference
 one cell inline or select a block renderer:
@@ -124,10 +125,14 @@ source = "sample-notes"
 ```
 ````
 
-The implemented renderers are `scalar` and `table`. Sources execute exactly one
-bounded, read-only SQLite statement. Values are escaped and never reparsed as
-Markdown or HTML. Validation reports undefined sources, unsupported renderers,
-query failures, and shape mismatches.
+The implemented renderers are `scalar` and `table`. Sources may execute one
+bounded, read-only SQLite statement, transform declared SQLite inputs with
+sandboxed Rhai, or derive cells with a bounded Formula program. Values are
+escaped and never reparsed as Markdown or HTML. Validation reports undefined
+sources, unsupported renderers, query/formula failures, and shape mismatches.
+Formula uses A1 coordinates over data rows, rectangular ranges such as
+`B1:B3`, header references such as `[amount]`, and functions such as `SUM`.
+See [dynamic data views](../docs/dynamic-data-views.md) for schema version 3.
 
 ## Embedded database
 

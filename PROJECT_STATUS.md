@@ -13,10 +13,10 @@ a functional custom editor backed exclusively by that bridge.
 
 | Component | Current state |
 | --- | --- |
-| `tmd-core` | Implements the document model, structured validation, safe attachment handling, atomic writes, SQLite import/export/migration, dynamic SQLite source evaluation, sandboxed Rhai-to-table transformations, ZIP I/O, and optional C ABI functions |
+| `tmd-core` | Implements the document model, structured validation, safe attachment handling, atomic writes, SQLite import/export/migration, dynamic SQLite source evaluation, sandboxed Rhai-to-table transformations, bounded Formula AST evaluation, ZIP I/O, and optional C ABI functions |
 | `tmd-cli` | Installs `tmd`; implements document create/inspect/update/publish/validate, attachment lifecycle including bounded UTF-8 reads and draft overrides, shared safe preview/HTML rendering, typed table-source evaluation, dynamic `scalar`/`table` views, and embedded database lifecycle/query commands |
 | `tmd-core-ffi` | Builds a `cdylib` wrapper and retains the exported `tmd-core` FFI symbols |
-| `tmd-vscode` | Implements a CSP-restricted static SvelteKit Web UI with a read-only RevoGrid source viewer and syntax-highlighted Rhai script panel with sandbox diagnostics, a VS Code host bridge, and a shared local document session with edit/save/revert/backup, dynamic view/source inspection and source editing, CLI-rendered live preview including unsaved source and script changes, validation, and HTML export workflows through `tmd` |
+| `tmd-vscode` | Implements a CSP-restricted static SvelteKit Web UI with a read-only RevoGrid source viewer and syntax-highlighted Rhai and Formula panels with runtime diagnostics, a VS Code host bridge, and a shared local document session with edit/save/revert/backup, dynamic view/source inspection and source editing, CLI-rendered live preview including unsaved source and script changes, validation, and HTML export workflows through `tmd` |
 | `tmd-sample` | Contains a `.tmd` sample with text, image, and Rhai attachments plus inline `scalar`, direct SQLite `table`, and Rhai-transformed `table` views |
 
 ## Verified behavior
@@ -30,15 +30,17 @@ The `tmd-core` test suite covers:
 - failed atomic-write preservation;
 - `.tmd` round trips;
 - embedded SQLite export, import, reset, and migration;
-- named read-only SQLite source evaluation, bounded Rhai aggregation, strict
-  table-output validation, and dynamic-view validation;
+- named read-only SQLite source evaluation, bounded Rhai aggregation, Formula
+  parsing/typed evaluation/dependency cycles, strict table-output validation,
+  and dynamic-view validation;
 - path-based read/write helpers;
 - optional FFI null-pointer behavior.
 
 CLI integration tests exercise the full `.tmd` lifecycle, including draft Rhai
-attachment evaluation and persistence. Extension tests cover its process
-boundary, script diagnostics, document-state integration, and safe preview. Repository CI additionally
-checks formatting, Clippy, rustdoc, samples, extension tests, generic VSIX
+attachment and Formula program evaluation. Extension tests cover its process
+boundary, script diagnostics, document-state integration, and safe preview.
+Repository CI additionally checks formatting, Clippy, rustdoc, samples,
+extension tests, generic VSIX
 packaging, static Linux CLI verification, and native CLI staging for
 platform-specific VSIX artifacts.
 
@@ -51,10 +53,10 @@ platform-specific VSIX artifacts.
   the safe Rust renderer and falls back to its previous safe Markdown subset
   with a visible diagnostic when the CLI is missing, outdated, incompatible,
   or unavailable.
-- Dynamic data currently supports named SQLite sources, Rhai transformations
-  over SQLite table inputs, and the `scalar` and `table` renderers. Structured
-  JSON/YAML/TOML attachments, Rhai-to-Rhai pipelines, `list`, and `code` remain
-  planned in
+- Dynamic data currently supports named SQLite sources, Rhai transformations,
+  Formula table transformations over one ordered SQLite input, and the
+  `scalar` and `table` renderers. Structured JSON/YAML/TOML attachments,
+  computed-source pipelines, `list`, and `code` remain planned in
   [issue #35](https://github.com/Nagitch/tanu-markdown/issues/35).
 - RevoGrid currently displays selected table sources read-only. Persisted
   spreadsheet-style editing and its broader interaction model remain planned

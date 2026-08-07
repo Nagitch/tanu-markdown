@@ -1,6 +1,7 @@
 import type {
   DataSource,
   DataSourceRegistryView,
+  FormulaDataSource,
   JsonValue,
   RhaiDataSource,
   RhaiDataSourceInput,
@@ -8,9 +9,11 @@ import type {
 
 const REGISTRY_KEY = "tmd_data_sources";
 const LEGACY_REGISTRY_SCHEMA_VERSION = 1;
-const CURRENT_REGISTRY_SCHEMA_VERSION = 2;
+const RHAI_REGISTRY_SCHEMA_VERSION = 2;
+const CURRENT_REGISTRY_SCHEMA_VERSION = 3;
 const MAX_SOURCE_NAME_BYTES = 128;
 const MAX_QUERY_BYTES = 64 * 1024;
+const MAX_FORMULA_PROGRAM_BYTES = 256 * 1024;
 const MAX_RHAI_INPUTS = 16;
 const MAX_TABLE_COLUMNS = 128;
 const MAX_COLUMN_NAME_BYTES = 256;
@@ -58,10 +61,11 @@ export function inspectDataSourceRegistry(extras: JsonValue): DataSourceRegistry
   const schemaVersion = registry.schema_version;
   if (
     schemaVersion !== LEGACY_REGISTRY_SCHEMA_VERSION &&
+    schemaVersion !== RHAI_REGISTRY_SCHEMA_VERSION &&
     schemaVersion !== CURRENT_REGISTRY_SCHEMA_VERSION
   ) {
     return invalidRegistry(
-      `Data-source schema_version ${String(schemaVersion)} is not editable; expected 1 or 2.`,
+      `Data-source schema_version ${String(schemaVersion)} is not editable; expected 1, 2 or 3.`,
       rawRegistry,
     );
   }
@@ -88,9 +92,12 @@ export function inspectDataSourceRegistry(extras: JsonValue): DataSourceRegistry
       continue;
     }
     if (definition.type === "rhai") {
-      if (schemaVersion !== CURRENT_REGISTRY_SCHEMA_VERSION) {
+      if (
+        schemaVersion !== RHAI_REGISTRY_SCHEMA_VERSION &&
+        schemaVersion !== CURRENT_REGISTRY_SCHEMA_VERSION
+      ) {
         return invalidRegistry(
-          `Rhai data source \`${name}\` requires schema_version 2.`,
+          `Rhai data source \`${name}\` requires schema_version 2 or 3.`,
           rawRegistry,
         );
       }
@@ -98,6 +105,23 @@ export function inspectDataSourceRegistry(extras: JsonValue): DataSourceRegistry
       if (!source) {
         return invalidRegistry(
           `Data source \`${name}\` is not an editable Rhai table source.`,
+          rawRegistry,
+        );
+      }
+      sources.push(source);
+      continue;
+    }
+    if (definition.type === "formula") {
+      if (schemaVersion !== CURRENT_REGISTRY_SCHEMA_VERSION) {
+        return invalidRegistry(
+          `Formula data source \`${name}\` requires schema_version 3.`,
+          rawRegistry,
+        );
+      }
+      const source = parseFormulaDataSource(name, definition);
+      if (!source) {
+        return invalidRegistry(
+          `Data source \`${name}\` is not an editable Formula table source.`,
           rawRegistry,
         );
       }
@@ -133,9 +157,12 @@ export function extrasWithDataSources(
   const root = isObject(extras) ? { ...extras } : {};
   const schemaVersion =
     current.schemaVersion === CURRENT_REGISTRY_SCHEMA_VERSION ||
-    sources.some((source) => source.type === "rhai")
+    sources.some((source) => source.type === "formula")
       ? CURRENT_REGISTRY_SCHEMA_VERSION
-      : LEGACY_REGISTRY_SCHEMA_VERSION;
+      : current.schemaVersion === RHAI_REGISTRY_SCHEMA_VERSION ||
+          sources.some((source) => source.type === "rhai")
+        ? RHAI_REGISTRY_SCHEMA_VERSION
+        : LEGACY_REGISTRY_SCHEMA_VERSION;
   const definitions = Object.fromEntries(
     [...sources]
       .sort((left, right) => left.name.localeCompare(right.name))
@@ -171,7 +198,11 @@ export function validateDataSources(sources: readonly DataSource[]): void {
       continue;
     }
 
-    validateRhaiDataSource(source, definitions);
+    if (source.type === "rhai") {
+      validateRhaiDataSource(source, definitions);
+    } else {
+      validateFormulaDataSource(source, definitions);
+    }
   }
 }
 
@@ -188,11 +219,19 @@ export function sameDataSources(
     if (source.type === "sqlite") {
       return other.type === "sqlite" && source.query === other.query;
     }
+    if (source.type === "rhai") {
+      return (
+        other.type === "rhai" &&
+        source.script === other.script &&
+        sameStrings(source.outputColumns, other.outputColumns) &&
+        sameRhaiInputs(source.inputs, other.inputs)
+      );
+    }
     return (
-      other.type === "rhai" &&
-      source.script === other.script &&
-      sameStrings(source.outputColumns, other.outputColumns) &&
-      sameRhaiInputs(source.inputs, other.inputs)
+      other.type === "formula" &&
+      source.input === other.input &&
+      source.program === other.program &&
+      sameStrings(source.outputColumns, other.outputColumns)
     );
   });
 }
@@ -229,9 +268,45 @@ function parseRhaiDataSource(
   };
 }
 
+function parseFormulaDataSource(
+  name: string,
+  definition: { [key: string]: JsonValue },
+): FormulaDataSource | undefined {
+  if (
+    hasUnknownKeys(definition, new Set(["type", "input", "program", "output"])) ||
+    typeof definition.input !== "string" ||
+    typeof definition.program !== "string" ||
+    !isObject(definition.output) ||
+    hasUnknownKeys(definition.output, new Set(["type", "columns"])) ||
+    definition.output.type !== "table" ||
+    !Array.isArray(definition.output.columns) ||
+    !definition.output.columns.every((column) => typeof column === "string")
+  ) {
+    return undefined;
+  }
+  return {
+    name,
+    type: "formula",
+    input: definition.input,
+    program: definition.program,
+    outputColumns: definition.output.columns as string[],
+  };
+}
+
 function serializeDataSource(source: DataSource): JsonValue {
   if (source.type === "sqlite") {
     return { type: "sqlite", query: source.query };
+  }
+  if (source.type === "formula") {
+    return {
+      type: "formula",
+      input: source.input,
+      program: source.program,
+      output: {
+        type: "table",
+        columns: [...source.outputColumns],
+      },
+    };
   }
   return {
     type: "rhai",
@@ -288,27 +363,59 @@ function validateRhaiDataSource(
       );
     }
   }
-  if (source.outputColumns.length === 0) {
+  validateTableOutputColumns("Rhai", source.name, source.outputColumns);
+}
+
+function validateFormulaDataSource(
+  source: FormulaDataSource,
+  definitions: ReadonlyMap<string, DataSource>,
+): void {
+  if (Buffer.byteLength(source.program, "utf8") > MAX_FORMULA_PROGRAM_BYTES) {
     throw new Error(
-      `Rhai source \`${source.name}\` table output requires at least one column.`,
+      `Formula source \`${source.name}\` program exceeds ${MAX_FORMULA_PROGRAM_BYTES} bytes.`,
     );
   }
-  if (source.outputColumns.length > MAX_TABLE_COLUMNS) {
+  validateSourceName(source.input, `Formula source \`${source.name}\` input source`);
+  const target = definitions.get(source.input);
+  if (!target) {
     throw new Error(
-      `Rhai source \`${source.name}\` table output exceeds ${MAX_TABLE_COLUMNS} columns.`,
+      `Formula source \`${source.name}\` input references undefined source \`${source.input}\`.`,
+    );
+  }
+  if (target.type !== "sqlite") {
+    throw new Error(
+      `Formula source \`${source.name}\` input must reference a SQLite source; \`${source.input}\` is ${target.type}.`,
+    );
+  }
+  validateTableOutputColumns("Formula", source.name, source.outputColumns);
+}
+
+function validateTableOutputColumns(
+  sourceType: "Rhai" | "Formula",
+  sourceName: string,
+  outputColumns: readonly string[],
+): void {
+  if (outputColumns.length === 0) {
+    throw new Error(
+      `${sourceType} source \`${sourceName}\` table output requires at least one column.`,
+    );
+  }
+  if (outputColumns.length > MAX_TABLE_COLUMNS) {
+    throw new Error(
+      `${sourceType} source \`${sourceName}\` table output exceeds ${MAX_TABLE_COLUMNS} columns.`,
     );
   }
   const columns = new Set<string>();
-  for (const column of source.outputColumns) {
+  for (const column of outputColumns) {
     const length = Buffer.byteLength(column, "utf8");
     if (length === 0 || length > MAX_COLUMN_NAME_BYTES) {
       throw new Error(
-        `Rhai source \`${source.name}\` has an empty or overlong output column.`,
+        `${sourceType} source \`${sourceName}\` has an empty or overlong output column.`,
       );
     }
     if (columns.has(column)) {
       throw new Error(
-        `Rhai source \`${source.name}\` repeats output column \`${column}\`.`,
+        `${sourceType} source \`${sourceName}\` repeats output column \`${column}\`.`,
       );
     }
     columns.add(column);
