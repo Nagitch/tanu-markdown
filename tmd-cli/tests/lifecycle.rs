@@ -114,7 +114,7 @@ fn query_table_output_preserves_cell_boundaries() {
 }
 
 #[test]
-fn renders_dynamic_sqlite_rhai_and_formula_views() {
+fn renders_dynamic_query_formula_rhai_and_computed_formula_views() {
     let directory = tempdir().expect("temporary directory");
     let doc_path = directory.path().join("dynamic-views.tmd");
     let html_path = directory.path().join("dynamic-views.html");
@@ -137,18 +137,18 @@ fn renders_dynamic_sqlite_rhai_and_formula_views() {
     let mut doc = TmdDoc::new(markdown.to_owned()).expect("document");
     doc.manifest.extras = json!({
         "tmd_data_sources": {
-            "schema_version": 3,
+            "schema_version": 5,
             "sources": {
                 "first-note": {
-                    "type": "sqlite",
+                    "type": "formula",
                     "query": "SELECT body FROM sample_notes WHERE id = 1"
                 },
                 "sample-notes": {
-                    "type": "sqlite",
+                    "type": "formula",
                     "query": "SELECT id, body FROM sample_notes ORDER BY id"
                 },
                 "sales": {
-                    "type": "sqlite",
+                    "type": "formula",
                     "query": "SELECT category, amount_cents FROM sample_sales ORDER BY id"
                 },
                 "category-summary": {
@@ -433,13 +433,15 @@ fn renders_dynamic_sqlite_rhai_and_formula_views() {
     let preview_html = preview["preview_html"].as_str().expect("preview HTML");
     assert!(preview_html.contains("<strong>Hello from SQLite</strong>"));
     assert!(preview_html.contains("<p class=\"tmd-view-scalar\">Hello from SQLite</p>"));
-    assert!(preview_html.contains("<table class=\"tmd-view-table\">"));
-    assert!(preview_html.contains("<td>2</td>"));
+    assert!(
+        preview_html.contains("<table class=\"tmd-view-table\" data-tmd-source=\"sample-notes\">")
+    );
+    assert!(preview_html.contains("<td data-tmd-row=\"1\" data-tmd-column=\"0\">2</td>"));
     assert!(preview_html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
-    assert!(preview_html.contains("<td>books</td>"));
-    assert!(preview_html.contains("<td>2000</td>"));
+    assert!(preview_html.contains(">books</td>"));
+    assert!(preview_html.contains(">2000</td>"));
     assert!(preview_html.contains("<th>header_total</th>"));
-    assert!(preview_html.contains("<td>5500</td>"));
+    assert!(preview_html.contains(">5500</td>"));
     assert!(!preview_html.contains("{{tmd-view:"));
     assert!(!preview_html.contains("<script>"));
 
@@ -482,12 +484,12 @@ fn renders_dynamic_sqlite_rhai_and_formula_views() {
     let exported = fs::read_to_string(&html_path).expect("exported HTML");
     assert!(exported.contains("<strong>Hello from SQLite</strong>"));
     assert!(exported.contains("<p class=\"tmd-view-scalar\">Hello from SQLite</p>"));
-    assert!(exported.contains("<table class=\"tmd-view-table\">"));
+    assert!(exported.contains("<table class=\"tmd-view-table\" data-tmd-source=\"sample-notes\">"));
     assert!(exported.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
-    assert!(exported.contains("<td>books</td>"));
-    assert!(exported.contains("<td>2000</td>"));
+    assert!(exported.contains(">books</td>"));
+    assert!(exported.contains(">2000</td>"));
     assert!(exported.contains("<th>header_total</th>"));
-    assert!(exported.contains("<td>5500</td>"));
+    assert!(exported.contains(">5500</td>"));
 
     let validation = parse_json(&run(
         vec![text("validate"), argument(&doc_path), text("--json")],

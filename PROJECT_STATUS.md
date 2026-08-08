@@ -15,11 +15,11 @@ a functional custom editor backed exclusively by that bridge.
 | --- | --- |
 | `tmd-data` | Defines transport-neutral, serde-compatible scalar and ordered-table values shared by data-source adapters and computation engines |
 | `tmd-formula` | Implements the bounded Formula parser, opaque program representation, dependency-aware evaluator, built-in functions, caller-supplied table limits, and structured diagnostics without depending on TMD or SQLite |
-| `tmd-core` | Implements the document model, structured validation, safe attachment handling, atomic writes, SQLite import/export/migration, dynamic SQLite source evaluation, explicit transactional keyed table edits, sandboxed Rhai-to-table transformations, Formula source integration, ZIP I/O, and optional C ABI functions |
+| `tmd-core` | Implements the document model, structured validation, safe attachment handling, atomic writes, SQLite import/export/migration, query and computed Formula evaluation, explicit transactional keyed table edits, sandboxed Rhai-to-table transformations, legacy SQLite-source compatibility, ZIP I/O, and optional C ABI functions |
 | `tmd-cli` | Installs `tmd`; implements document create/inspect/update/publish/validate, attachment lifecycle including bounded UTF-8 reads and draft overrides, staged SQLite cell edits, shared safe preview/HTML rendering, typed table-source evaluation with edit metadata, dynamic `scalar`/`table` views, and embedded database lifecycle/query commands |
 | `tmd-core-ffi` | Builds a `cdylib` wrapper and retains the exported `tmd-core` FFI symbols |
-| `tmd-vscode` | Implements a CSP-restricted static SvelteKit Web UI with a RevoGrid Formula table editor, formula bar, selected-cell/range reference insertion, relative fill, primary-keyed SQLite write-back, syntax-highlighted Rhai and Formula panels with runtime diagnostics, and a shared local document session whose edits participate in undo, preview, save, revert, and backup |
-| `tmd-sample` | Contains a `.tmd` sample with text, image, and Rhai attachments plus inline `scalar`, direct SQLite `table`, Rhai-transformed `table`, and an editable Formula-transformed `table` view |
+| `tmd-vscode` | Implements a CSP-restricted static SvelteKit Web UI with a RevoGrid Formula table editor, formula bar, row/column add-duplicate and safe insertion tools, double-click column auto-sizing, editable Formula tables in safe preview, a sticky operation status bar, selected-cell/range reference insertion, relative fill, primary-keyed SQLite write-back, syntax-highlighted Rhai and Formula panels with runtime diagnostics, and a shared local document session whose edits participate in undo, preview, save, revert, and backup |
+| `tmd-sample` | Contains a `.tmd` sample with text, image, and Rhai attachments plus inline `scalar`, query Formula `table`, Rhai-transformed `table`, and an editable computed Formula `table` view |
 
 ## Verified behavior
 
@@ -36,8 +36,8 @@ The `tmd-core` test suite covers:
 - failed atomic-write preservation;
 - `.tmd` round trips;
 - embedded SQLite export, import, reset, and migration;
-- named read-only SQLite source evaluation, transactional keyed SQLite cell
-  edits, bounded Rhai aggregation, Formula source integration including input
+- named read-only query Formula evaluation, transactional keyed SQLite cell
+  edits, bounded Rhai aggregation, computed Formula integration including input
   overlays, strict table-output validation, and dynamic-view validation;
 - path-based read/write helpers;
 - optional FFI null-pointer behavior.
@@ -60,15 +60,18 @@ platform-specific VSIX artifacts.
   the safe Rust renderer and falls back to its previous safe Markdown subset
   with a visible diagnostic when the CLI is missing, outdated, incompatible,
   or unavailable.
-- Dynamic data currently supports named SQLite sources, Rhai transformations,
-  Formula table transformations over one ordered SQLite input, and the
+- Dynamic data currently supports named query Formula sources, Rhai
+  transformations, computed Formula tables over one ordered query input, and the
   `scalar` and `table` renderers. Structured JSON/YAML/TOML attachments,
   computed-source pipelines, `list`, and `code` remain planned in
   [issue #35](https://github.com/Nagitch/tanu-markdown/issues/35).
-- Spreadsheet editing currently targets Formula views backed directly by one
-  explicitly editable SQLite source. Multi-sheet references, row/column
-  insertion, clipboard formula translation, richer cell typing/formatting, and
-  collaborative conflict handling remain outside this slice.
+- Spreadsheet editing supports editable query Formula tables and computed
+  Formula views. Rows and columns can be appended or duplicated; insertion is
+  intentionally limited to Formula-only rows and derived columns because
+  shifting query-backed database rows or columns would violate write-back key
+  mappings. Multi-sheet references, database row insertion, richer cell
+  typing/formatting, and collaborative conflict handling remain outside this
+  slice.
 - The C ABI does not ship generated headers or a stable ABI compatibility
   policy.
 - Malformed containers are generated in tests rather than retained as binary

@@ -25,7 +25,7 @@ export type EditorRequest =
       type: "editSpreadsheet";
       clientRevision: number;
       source: string;
-      formulaProgram: string;
+      formulaProgram?: string;
       databaseEdits: DatabaseCellEdit[];
     }
   | {
@@ -68,12 +68,14 @@ export interface EditorModelMessage {
   dataSourceRegistry: DataSourceRegistryView;
   previewHtml: string;
   editingLocked: boolean;
+  persisted: boolean;
 }
 
 export interface EditorAcknowledgementMessage {
   type: "editAck";
   clientRevision: number;
   contentRevision: number;
+  notice?: string;
 }
 
 export interface EditorPreviewMessage {

@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   formulaExpressionForCell,
+  insertFormulaColumns,
+  insertFormulaRows,
   setFormulaCellExpression,
   spreadsheetCellName,
   spreadsheetColumnName,
@@ -42,4 +44,19 @@ test("Formula fill shifts relative references and preserves absolute references"
 test("Formula columns reject invalid indexes", () => {
   assert.throws(() => spreadsheetColumnName(-1));
   assert.throws(() => spreadsheetColumnName(1.5));
+});
+
+test("Formula row insertion shifts targets and structural references", () => {
+  assert.equal(
+    insertFormulaRows('A1 = B2\nB2 = SUM($A$1:B2) + "A1" + [A1]\n', 1),
+    'A1 = B3\nB3 = SUM($A$1:B3) + "A1" + [A1]\n',
+  );
+});
+
+test("Formula column insertion shifts targets and structural references", () => {
+  assert.equal(
+    insertFormulaColumns("A1 = B1\nB2 = SUM(A1:$B$2) // C3\n", 1),
+    "A1 = C1\nC2 = SUM(A1:$C$2) // C3\n",
+  );
+  assert.throws(() => insertFormulaColumns("A1 = 1", -1));
 });

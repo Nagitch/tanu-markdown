@@ -1,11 +1,11 @@
 import type {
+  ComputedFormulaDataSource,
   DataSource,
   DataSourceRegistryView,
-  FormulaDataSource,
   JsonValue,
+  QueryFormulaDataSource,
   RhaiDataSource,
   RhaiDataSourceInput,
-  SqliteDataSource,
   SqliteEditDefinition,
 } from "./types.js";
 
@@ -13,7 +13,8 @@ const REGISTRY_KEY = "tmd_data_sources";
 const LEGACY_REGISTRY_SCHEMA_VERSION = 1;
 const RHAI_REGISTRY_SCHEMA_VERSION = 2;
 const FORMULA_REGISTRY_SCHEMA_VERSION = 3;
-const CURRENT_REGISTRY_SCHEMA_VERSION = 4;
+const EDITABLE_REGISTRY_SCHEMA_VERSION = 4;
+const CURRENT_REGISTRY_SCHEMA_VERSION = 5;
 const MAX_SOURCE_NAME_BYTES = 128;
 const MAX_QUERY_BYTES = 64 * 1024;
 const MAX_FORMULA_PROGRAM_BYTES = 256 * 1024;
@@ -34,7 +35,7 @@ export function inspectDataSourceRegistry(extras: JsonValue): DataSourceRegistry
   if (extras === null) {
     return {
       editable: true,
-      schemaVersion: LEGACY_REGISTRY_SCHEMA_VERSION,
+      schemaVersion: CURRENT_REGISTRY_SCHEMA_VERSION,
       sources: [],
     };
   }
@@ -49,7 +50,7 @@ export function inspectDataSourceRegistry(extras: JsonValue): DataSourceRegistry
   if (registry === undefined) {
     return {
       editable: true,
-      schemaVersion: LEGACY_REGISTRY_SCHEMA_VERSION,
+      schemaVersion: CURRENT_REGISTRY_SCHEMA_VERSION,
       sources: [],
     };
   }
@@ -68,10 +69,11 @@ export function inspectDataSourceRegistry(extras: JsonValue): DataSourceRegistry
     schemaVersion !== LEGACY_REGISTRY_SCHEMA_VERSION &&
     schemaVersion !== RHAI_REGISTRY_SCHEMA_VERSION &&
     schemaVersion !== FORMULA_REGISTRY_SCHEMA_VERSION &&
+    schemaVersion !== EDITABLE_REGISTRY_SCHEMA_VERSION &&
     schemaVersion !== CURRENT_REGISTRY_SCHEMA_VERSION
   ) {
     return invalidRegistry(
-      `Data-source schema_version ${String(schemaVersion)} is not editable; expected 1, 2, 3 or 4.`,
+      `Data-source schema_version ${String(schemaVersion)} is not editable; expected 1, 2, 3, 4 or 5.`,
       rawRegistry,
     );
   }
@@ -85,14 +87,20 @@ export function inspectDataSourceRegistry(extras: JsonValue): DataSourceRegistry
       return invalidRegistry(`Data source \`${name}\` is not an object.`, rawRegistry);
     }
     if (definition.type === "sqlite") {
-      const source = parseSqliteDataSource(name, definition);
-      if (!source) {
+      if (schemaVersion === CURRENT_REGISTRY_SCHEMA_VERSION) {
         return invalidRegistry(
-          `Data source \`${name}\` is not an editable SQLite source.`,
+          `Data source \`${name}\` uses the removed SQLite type; use a Formula query source.`,
           rawRegistry,
         );
       }
-      if (source.edit && schemaVersion !== CURRENT_REGISTRY_SCHEMA_VERSION) {
+      const source = parseQueryFormulaDataSource(name, definition, "sqlite");
+      if (!source) {
+        return invalidRegistry(
+          `Data source \`${name}\` is not an editable legacy SQLite source.`,
+          rawRegistry,
+        );
+      }
+      if (source.edit && schemaVersion !== EDITABLE_REGISTRY_SCHEMA_VERSION) {
         return invalidRegistry(
           `Editable SQLite data source \`${name}\` requires schema_version 4.`,
           rawRegistry,
@@ -105,10 +113,11 @@ export function inspectDataSourceRegistry(extras: JsonValue): DataSourceRegistry
       if (
         schemaVersion !== RHAI_REGISTRY_SCHEMA_VERSION &&
         schemaVersion !== FORMULA_REGISTRY_SCHEMA_VERSION &&
+        schemaVersion !== EDITABLE_REGISTRY_SCHEMA_VERSION &&
         schemaVersion !== CURRENT_REGISTRY_SCHEMA_VERSION
       ) {
         return invalidRegistry(
-          `Rhai data source \`${name}\` requires schema_version 2, 3 or 4.`,
+          `Rhai data source \`${name}\` requires schema_version 2, 3, 4 or 5.`,
           rawRegistry,
         );
       }
@@ -123,12 +132,30 @@ export function inspectDataSourceRegistry(extras: JsonValue): DataSourceRegistry
       continue;
     }
     if (definition.type === "formula") {
+      if ("query" in definition) {
+        if (schemaVersion !== CURRENT_REGISTRY_SCHEMA_VERSION) {
+          return invalidRegistry(
+            `Formula query source \`${name}\` requires schema_version 5.`,
+            rawRegistry,
+          );
+        }
+        const source = parseQueryFormulaDataSource(name, definition, "formula");
+        if (!source) {
+          return invalidRegistry(
+            `Data source \`${name}\` is not an editable Formula query source.`,
+            rawRegistry,
+          );
+        }
+        sources.push(source);
+        continue;
+      }
       if (
         schemaVersion !== FORMULA_REGISTRY_SCHEMA_VERSION &&
+        schemaVersion !== EDITABLE_REGISTRY_SCHEMA_VERSION &&
         schemaVersion !== CURRENT_REGISTRY_SCHEMA_VERSION
       ) {
         return invalidRegistry(
-          `Formula data source \`${name}\` requires schema_version 3.`,
+          `Computed Formula data source \`${name}\` requires schema_version 3, 4 or 5.`,
           rawRegistry,
         );
       }
@@ -169,24 +196,13 @@ export function extrasWithDataSources(
   }
   validateDataSources(sources);
   const root = isObject(extras) ? { ...extras } : {};
-  const schemaVersion =
-    current.schemaVersion === CURRENT_REGISTRY_SCHEMA_VERSION ||
-    sources.some((source) => source.type === "sqlite" && source.edit)
-      ? CURRENT_REGISTRY_SCHEMA_VERSION
-      : current.schemaVersion === FORMULA_REGISTRY_SCHEMA_VERSION ||
-          sources.some((source) => source.type === "formula")
-        ? FORMULA_REGISTRY_SCHEMA_VERSION
-      : current.schemaVersion === RHAI_REGISTRY_SCHEMA_VERSION ||
-          sources.some((source) => source.type === "rhai")
-        ? RHAI_REGISTRY_SCHEMA_VERSION
-        : LEGACY_REGISTRY_SCHEMA_VERSION;
   const definitions = Object.fromEntries(
     [...sources]
       .sort((left, right) => left.name.localeCompare(right.name))
       .map((source) => [source.name, serializeDataSource(source)]),
   );
   root[REGISTRY_KEY] = {
-    schema_version: schemaVersion,
+    schema_version: CURRENT_REGISTRY_SCHEMA_VERSION,
     sources: definitions,
   };
   return root;
@@ -203,13 +219,13 @@ export function validateDataSources(sources: readonly DataSource[]): void {
   }
 
   for (const source of sources) {
-    if (source.type === "sqlite") {
+    if (isQueryFormulaDataSource(source)) {
       if (source.query.trim() === "") {
-        throw new Error(`SQLite source \`${source.name}\` has an empty query.`);
+        throw new Error(`Formula query source \`${source.name}\` has an empty query.`);
       }
       if (Buffer.byteLength(source.query, "utf8") > MAX_QUERY_BYTES) {
         throw new Error(
-          `SQLite source \`${source.name}\` query exceeds ${MAX_QUERY_BYTES} bytes.`,
+          `Formula query source \`${source.name}\` query exceeds ${MAX_QUERY_BYTES} bytes.`,
         );
       }
       if (source.edit) validateSqliteEditDefinition(source.name, source.edit);
@@ -234,9 +250,9 @@ export function sameDataSources(
     if (!other || source.name !== other.name || source.type !== other.type) {
       return false;
     }
-    if (source.type === "sqlite") {
+    if (isQueryFormulaDataSource(source)) {
       return (
-        other.type === "sqlite" &&
+        isQueryFormulaDataSource(other) &&
         source.query === other.query &&
         sameSqliteEditDefinitions(source.edit, other.edit)
       );
@@ -250,7 +266,7 @@ export function sameDataSources(
       );
     }
     return (
-      other.type === "formula" &&
+      isComputedFormulaDataSource(other) &&
       source.input === other.input &&
       source.program === other.program &&
       sameStrings(source.outputColumns, other.outputColumns)
@@ -258,18 +274,20 @@ export function sameDataSources(
   });
 }
 
-function parseSqliteDataSource(
+function parseQueryFormulaDataSource(
   name: string,
   definition: { [key: string]: JsonValue },
-): SqliteDataSource | undefined {
+  serializedType: "sqlite" | "formula",
+): QueryFormulaDataSource | undefined {
   if (
+    definition.type !== serializedType ||
     hasUnknownKeys(definition, new Set(["type", "query", "edit"])) ||
     typeof definition.query !== "string"
   ) {
     return undefined;
   }
   if (definition.edit === undefined) {
-    return { name, type: "sqlite", query: definition.query };
+    return { name, type: "formula", query: definition.query };
   }
   if (
     !isObject(definition.edit) ||
@@ -293,7 +311,7 @@ function parseSqliteDataSource(
   columns.sort((left, right) => left.sourceColumn.localeCompare(right.sourceColumn));
   return {
     name,
-    type: "sqlite",
+    type: "formula",
     query: definition.query,
     edit: {
       table: definition.edit.table,
@@ -339,7 +357,7 @@ function parseRhaiDataSource(
 function parseFormulaDataSource(
   name: string,
   definition: { [key: string]: JsonValue },
-): FormulaDataSource | undefined {
+): ComputedFormulaDataSource | undefined {
   if (
     hasUnknownKeys(definition, new Set(["type", "input", "program", "output"])) ||
     typeof definition.input !== "string" ||
@@ -362,9 +380,9 @@ function parseFormulaDataSource(
 }
 
 function serializeDataSource(source: DataSource): JsonValue {
-  if (source.type === "sqlite") {
+  if (isQueryFormulaDataSource(source)) {
     return {
-      type: "sqlite",
+      type: "formula",
       query: source.query,
       ...(source.edit
         ? {
@@ -386,7 +404,7 @@ function serializeDataSource(source: DataSource): JsonValue {
         : {}),
     };
   }
-  if (source.type === "formula") {
+  if (isComputedFormulaDataSource(source)) {
     return {
       type: "formula",
       input: source.input,
@@ -416,15 +434,18 @@ function validateSqliteEditDefinition(
   sourceName: string,
   edit: SqliteEditDefinition,
 ): void {
-  validateSqliteIdentifier(edit.table, `SQLite source \`${sourceName}\` edit table`);
+  validateSqliteIdentifier(
+    edit.table,
+    `Formula query source \`${sourceName}\` edit table`,
+  );
   validateColumnName(edit.keySourceColumn, sourceName);
   validateSqliteIdentifier(
     edit.keyTableColumn,
-    `SQLite source \`${sourceName}\` edit key table column`,
+    `Formula query source \`${sourceName}\` edit key table column`,
   );
   if (edit.columns.length === 0) {
     throw new Error(
-      `Editable SQLite source \`${sourceName}\` requires at least one writable column.`,
+      `Editable Formula query source \`${sourceName}\` requires at least one writable column.`,
     );
   }
   const sourceColumns = new Set<string>();
@@ -432,18 +453,18 @@ function validateSqliteEditDefinition(
     validateColumnName(column.sourceColumn, sourceName);
     if (column.sourceColumn === edit.keySourceColumn) {
       throw new Error(
-        `Editable SQLite source \`${sourceName}\` cannot make its stable key column \`${column.sourceColumn}\` writable.`,
+        `Editable Formula query source \`${sourceName}\` cannot make its stable key column \`${column.sourceColumn}\` writable.`,
       );
     }
     if (sourceColumns.has(column.sourceColumn)) {
       throw new Error(
-        `Editable SQLite source \`${sourceName}\` repeats writable column \`${column.sourceColumn}\`.`,
+        `Editable Formula query source \`${sourceName}\` repeats writable column \`${column.sourceColumn}\`.`,
       );
     }
     sourceColumns.add(column.sourceColumn);
     validateSqliteIdentifier(
       column.tableColumn,
-      `SQLite source \`${sourceName}\` edit table column`,
+      `Formula query source \`${sourceName}\` edit table column`,
     );
   }
 }
@@ -452,7 +473,7 @@ function validateColumnName(column: string, sourceName: string): void {
   const length = Buffer.byteLength(column, "utf8");
   if (length === 0 || length > MAX_COLUMN_NAME_BYTES) {
     throw new Error(
-      `Editable SQLite source \`${sourceName}\` has an empty or overlong query-result column.`,
+      `Editable Formula query source \`${sourceName}\` has an empty or overlong query-result column.`,
     );
   }
 }
@@ -479,7 +500,9 @@ function validateRhaiDataSource(
     );
   }
   if (source.inputs.length === 0) {
-    throw new Error(`Rhai source \`${source.name}\` requires at least one SQLite input.`);
+    throw new Error(
+      `Rhai source \`${source.name}\` requires at least one Formula query input.`,
+    );
   }
   if (source.inputs.length > MAX_RHAI_INPUTS) {
     throw new Error(
@@ -502,9 +525,9 @@ function validateRhaiDataSource(
         `Rhai source \`${source.name}\` input \`${input.alias}\` references undefined source \`${input.source}\`.`,
       );
     }
-    if (target.type !== "sqlite") {
+    if (!isQueryFormulaDataSource(target)) {
       throw new Error(
-        `Rhai source \`${source.name}\` input \`${input.alias}\` must reference a SQLite source; \`${input.source}\` is Rhai.`,
+        `Rhai source \`${source.name}\` input \`${input.alias}\` must reference a Formula query source.`,
       );
     }
   }
@@ -512,7 +535,7 @@ function validateRhaiDataSource(
 }
 
 function validateFormulaDataSource(
-  source: FormulaDataSource,
+  source: ComputedFormulaDataSource,
   definitions: ReadonlyMap<string, DataSource>,
 ): void {
   if (Buffer.byteLength(source.program, "utf8") > MAX_FORMULA_PROGRAM_BYTES) {
@@ -527,9 +550,9 @@ function validateFormulaDataSource(
       `Formula source \`${source.name}\` input references undefined source \`${source.input}\`.`,
     );
   }
-  if (target.type !== "sqlite") {
+  if (!isQueryFormulaDataSource(target)) {
     throw new Error(
-      `Formula source \`${source.name}\` input must reference a SQLite source; \`${source.input}\` is ${target.type}.`,
+      `Computed Formula source \`${source.name}\` input must reference a Formula query source.`,
     );
   }
   validateTableOutputColumns("Formula", source.name, source.outputColumns);
@@ -657,6 +680,18 @@ function sameStrings(left: readonly string[], right: readonly string[]): boolean
     left.length === right.length &&
     left.every((value, index) => value === right[index])
   );
+}
+
+export function isQueryFormulaDataSource(
+  source: DataSource | undefined,
+): source is QueryFormulaDataSource {
+  return source?.type === "formula" && "query" in source;
+}
+
+export function isComputedFormulaDataSource(
+  source: DataSource | undefined,
+): source is ComputedFormulaDataSource {
+  return source?.type === "formula" && "input" in source;
 }
 
 function invalidRegistry(issue: string, rawRegistry: string): DataSourceRegistryView {

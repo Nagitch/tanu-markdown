@@ -5,6 +5,7 @@
 }
 
 * { box-sizing: border-box; }
+#tmd-editor-root { min-height: 100vh; padding-bottom: 2rem; }
 body {
   margin: 0;
   color: var(--vscode-foreground);
@@ -39,7 +40,7 @@ button:disabled { cursor: default; opacity: .55; }
   background: color-mix(in srgb, var(--vscode-editor-background) 94%, transparent);
   backdrop-filter: blur(8px);
 }
-.app-bar h1, .card-heading h2 { margin: .1rem 0 0; font-size: 1rem; }
+.app-bar h1 { margin: .1rem 0 0; font-size: 1rem; }
 .eyebrow {
   color: var(--vscode-descriptionForeground);
   font-size: .72rem;
@@ -54,6 +55,9 @@ button:disabled { cursor: default; opacity: .55; }
   gap: .8rem;
   padding: .8rem;
   min-height: calc(100vh - 4rem);
+}
+#tmd-editor-root[data-preview-visible="false"] .layout {
+  grid-template-columns: minmax(0, 1fr);
 }
 .workspace-card {
   min-width: 0;
@@ -83,7 +87,6 @@ button:disabled { cursor: default; opacity: .55; }
 .editor-tab[aria-selected="true"] { border-bottom-color: var(--vscode-focusBorder); }
 .editor-content, .preview-card { padding: 1rem; overflow: auto; }
 .editor-panel > h2:first-child { margin-top: 0; }
-.card-heading { display: flex; justify-content: space-between; margin-bottom: .75rem; }
 .section-description { color: var(--vscode-descriptionForeground); }
 [hidden] { display: none !important; }
 .field, .source-field { display: grid; gap: .35rem; margin-bottom: 1rem; font-weight: 600; }
@@ -120,6 +123,19 @@ li { margin: .35rem 0; }
 .source-definition { min-height: 5rem; }
 .registry-raw { overflow: auto; padding: .5rem; background: var(--vscode-textCodeBlock-background); white-space: pre-wrap; }
 .table-source-field { max-width: 28rem; }
+.table-structure-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .35rem;
+  margin: -.35rem 0 .65rem;
+}
+.table-structure-actions button {
+  color: var(--vscode-foreground);
+  background: var(--vscode-button-secondaryBackground, var(--muted-surface));
+}
+.table-structure-actions button:hover {
+  background: var(--vscode-button-secondaryHoverBackground, var(--vscode-toolbar-hoverBackground));
+}
 .table-result-heading { min-height: 2rem; }
 .table-result-heading p { margin: .25rem 0 .65rem; }
 .cell-formula-bar {
@@ -147,7 +163,19 @@ li { margin: .35rem 0; }
   transform: translateY(-50%);
   pointer-events: none;
 }
-.cell-edit-status { margin: 0 0 .5rem; }
+.status-bar {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 4;
+  min-height: 2rem;
+  margin: 0;
+  padding: .4rem 1rem;
+  border-top: 1px solid var(--card-border);
+  background: color-mix(in srgb, var(--vscode-editor-background) 94%, transparent);
+  backdrop-filter: blur(8px);
+}
 .visually-hidden {
   position: absolute;
   width: 1px;
@@ -236,6 +264,17 @@ li { margin: .35rem 0; }
 .preview pre { overflow: auto; padding: .75rem; background: var(--vscode-textCodeBlock-background); }
 .preview table { border-collapse: collapse; margin: .75rem 0; max-width: 100%; }
 .preview th, .preview td { border: 1px solid var(--vscode-panel-border); padding: .25rem .5rem; text-align: left; }
+.preview .tmd-view-table-editable td { cursor: text; }
+.preview .tmd-view-table-editable td:hover,
+.preview .tmd-view-table-editable td:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+.preview .tmd-view-table-editable td.is-editing {
+  min-width: 5rem;
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+}
 .preview .tmd-view-error { color: var(--vscode-testing-iconFailed); border: 1px solid currentColor; padding: .25rem .5rem; }
 .preview .preview-diagnostic { border: 1px solid var(--vscode-inputValidation-warningBorder, #cca700); background: var(--vscode-inputValidation-warningBackground, transparent); padding: .5rem .75rem; margin: 0 0 1rem; }
 .preview .preview-diagnostic p { margin: .25rem 0; }

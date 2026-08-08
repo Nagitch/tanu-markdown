@@ -9,7 +9,13 @@ import type {
 } from "@revolist/revogrid";
 import { formulaDiagnosticFromIssue } from "../../../src/formula-diagnostics.js";
 import {
+  isComputedFormulaDataSource,
+  isQueryFormulaDataSource,
+} from "../../../src/data-sources.js";
+import {
   formulaExpressionForCell,
+  insertFormulaColumns,
+  insertFormulaRows,
   setFormulaCellExpression,
   spreadsheetCellName,
   spreadsheetColumnName,
@@ -28,6 +34,7 @@ import type {
   DataSourceTable,
   DataTableCell,
   DatabaseCellEdit,
+  ComputedFormulaDataSource,
   FormulaDataSource,
   RhaiDataSource,
   ValidationReport,
@@ -45,10 +52,14 @@ const RHAI_EVALUATION_DEBOUNCE_MS = 350;
 const FORMULA_EVALUATION_DEBOUNCE_MS = 350;
 const MAX_RHAI_SCRIPT_BYTES = 256 * 1024;
 const MAX_FORMULA_PROGRAM_BYTES = 256 * 1024;
+const MAX_TABLE_ROWS = 1_000;
+const MAX_TABLE_COLUMNS = 128;
+const MAX_TABLE_CELLS = 10_000;
 
 interface EditorUiState extends Record<string, unknown> {
   activeEditorTab?: string;
   selectedTableSource?: string;
+  previewVisible?: boolean;
 }
 
 interface HostApi {
@@ -82,6 +93,21 @@ const cellName = requireElement<HTMLInputElement>("cell-name");
 const cellInput = requireElement<HTMLInputElement>("cell-input");
 const cancelCellEdit = requireElement<HTMLButtonElement>("cancel-cell-edit");
 const cellEditStatus = requireElement<HTMLElement>("cell-edit-status");
+const tableStructureActions = requireElement<HTMLElement>(
+  "table-structure-actions",
+);
+const addTableRow = requireElement<HTMLButtonElement>("add-table-row");
+const duplicateTableRow = requireElement<HTMLButtonElement>(
+  "duplicate-table-row",
+);
+const insertTableRow = requireElement<HTMLButtonElement>("insert-table-row");
+const addTableColumn = requireElement<HTMLButtonElement>("add-table-column");
+const duplicateTableColumn = requireElement<HTMLButtonElement>(
+  "duplicate-table-column",
+);
+const insertTableColumn = requireElement<HTMLButtonElement>(
+  "insert-table-column",
+);
 const formulaProgramPanel = requireElement<HTMLElement>("formula-program-panel");
 const formulaProgramInput = requireElement<HTMLElement>("formula-program-input");
 const formulaProgramStatus = requireElement<HTMLElement>("formula-program-status");
@@ -107,8 +133,8 @@ const dataSourceRegistryIssue = requireElement<HTMLElement>(
 const dataSourceRegistryRaw = requireElement<HTMLPreElement>(
   "data-source-registry-raw",
 );
-const addSqliteDataSource = requireElement<HTMLButtonElement>(
-  "add-sqlite-data-source",
+const addQueryFormulaDataSource = requireElement<HTMLButtonElement>(
+  "add-query-formula-data-source",
 );
 const addRhaiDataSource = requireElement<HTMLButtonElement>("add-rhai-data-source");
 const addFormulaDataSource = requireElement<HTMLButtonElement>(
@@ -118,6 +144,8 @@ const applyDataSources = requireElement<HTMLButtonElement>("apply-data-sources")
 const dataSourceStatus = requireElement<HTMLElement>("data-source-status");
 const validation = requireElement<HTMLElement>("validation");
 const preview = requireElement<HTMLElement>("preview");
+const previewCard = requireElement<HTMLElement>("preview-card");
+const togglePreview = requireElement<HTMLButtonElement>("toggle-preview");
 
 let previewTimer: ReturnType<typeof setTimeout> | undefined;
 let rhaiEvaluationTimer: ReturnType<typeof setTimeout> | undefined;
@@ -132,6 +160,7 @@ let pendingFormulaRevision: number | undefined;
 let pendingSpreadsheetEdit: SpreadsheetEditMeasurement | undefined;
 let tableRenderMeasurement: TableRenderMeasurement | undefined;
 let selectedTableSource = host.getState()?.selectedTableSource;
+let previewVisible = host.getState()?.previewVisible ?? true;
 let tableRequestId = 0;
 let rhaiScriptRequestId = 0;
 let currentTable: DataSourceTable | undefined;
@@ -146,16 +175,28 @@ let selectedCell: TableCellPosition | undefined;
 let editingCell: TableCellPosition | undefined;
 let formulaBarEditing = false;
 let insertedReference: { start: number; end: number } | undefined;
+let pendingPreviewCell: HTMLTableCellElement | undefined;
+let previewCellEdit: PreviewCellEdit | undefined;
+let deferredPreviewHtml: string | undefined;
+let tableStructurePending = false;
 
 interface TableCellPosition {
   row: number;
   column: number;
 }
 
+interface PreviewCellEdit {
+  cell: HTMLTableCellElement;
+  source: string;
+  row: number;
+  column: number;
+  originalText: string;
+}
+
 interface SpreadsheetEditMeasurement {
   clientRevision: number;
   startedAt: number;
-  operation: "Cell edit" | "Fill";
+  operation: "Cell edit" | "Fill" | "Structure edit";
   optimisticRenderMs?: number;
 }
 
@@ -170,6 +211,7 @@ void Promise.resolve(defineCustomElements()).then(() => {
   grid.theme = "compact";
   grid.readonly = false;
   grid.resize = true;
+  grid.autoSizeColumn = { allColumns: true };
   grid.rowHeaders = true;
   grid.range = true;
   grid.stretch = true;
@@ -225,6 +267,14 @@ cancelCellEdit.addEventListener("click", () => {
   insertedReference = undefined;
   renderSelectedCell();
 });
+addTableRow.addEventListener("click", () => addFormulaTableRow());
+duplicateTableRow.addEventListener("click", () => duplicateFormulaTableRow());
+insertTableRow.addEventListener("click", () => insertFormulaTableRow());
+addTableColumn.addEventListener("click", () => addFormulaTableColumn());
+duplicateTableColumn.addEventListener("click", () =>
+  duplicateFormulaTableColumn(),
+);
+insertTableColumn.addEventListener("click", () => insertFormulaTableColumn());
 
 requireElement("validate").addEventListener("click", () =>
   host.postMessage({ type: "validate" }),
@@ -235,11 +285,23 @@ requireElement("add-attachment").addEventListener("click", () =>
 requireElement("export-html").addEventListener("click", () =>
   host.postMessage({ type: "exportHtml" }),
 );
+togglePreview.addEventListener("click", () => {
+  previewVisible = !previewVisible;
+  renderPreviewVisibility();
+  host.setState({
+    ...(host.getState() ?? {}),
+    previewVisible,
+  });
+});
+renderPreviewVisibility();
 preview.addEventListener("click", (event) => {
   if (event.target instanceof Element && event.target.closest("a")) {
     event.preventDefault();
   }
 });
+preview.addEventListener("dblclick", handlePreviewDoubleClick);
+preview.addEventListener("keydown", handlePreviewKeydown);
+preview.addEventListener("focusout", handlePreviewFocusOut);
 
 tableSource.addEventListener("change", () => {
   clearTimeout(formulaEvaluationTimer);
@@ -254,10 +316,10 @@ tableSource.addEventListener("change", () => {
   renderFormulaProgram();
 });
 
-addSqliteDataSource.addEventListener("click", () => {
+addQueryFormulaDataSource.addEventListener("click", () => {
   dataSourceDrafts.push({
-    name: nextDataSourceName("source"),
-    type: "sqlite",
+    name: nextDataSourceName("table"),
+    type: "formula",
     query: "SELECT 1 AS value",
   });
   renderDataSourceDrafts();
@@ -266,12 +328,12 @@ addSqliteDataSource.addEventListener("click", () => {
 
 addRhaiDataSource.addEventListener("click", () => {
   const name = nextDataSourceName("view");
-  const sqliteSource = dataSourceDrafts.find((source) => source.type === "sqlite");
+  const querySource = dataSourceDrafts.find(isQueryFormulaDataSource);
   dataSourceDrafts.push({
     name,
     type: "rhai",
     script: `views/${name}.rhai`,
-    inputs: [{ alias: "rows", source: sqliteSource?.name ?? "" }],
+    inputs: [{ alias: "rows", source: querySource?.name ?? "" }],
     outputColumns: ["value"],
   });
   renderDataSourceDrafts();
@@ -280,11 +342,11 @@ addRhaiDataSource.addEventListener("click", () => {
 
 addFormulaDataSource.addEventListener("click", () => {
   const name = nextDataSourceName("formula");
-  const sqliteSource = dataSourceDrafts.find((source) => source.type === "sqlite");
+  const querySource = dataSourceDrafts.find(isQueryFormulaDataSource);
   dataSourceDrafts.push({
     name,
     type: "formula",
-    input: sqliteSource?.name ?? "",
+    input: querySource?.name ?? "",
     program: "B1 = SUM(A1:A1)",
     outputColumns: ["value", "total"],
   });
@@ -308,11 +370,14 @@ window.addEventListener("message", (event: MessageEvent<unknown>) => {
   if (!isEditorHostMessage(event.data)) return;
   const message = event.data;
   if (message.type === "preview") {
-    if (revision.acceptPreview(message)) preview.innerHTML = message.previewHtml;
+    if (revision.acceptPreview(message)) {
+      replacePreviewHtml(message.previewHtml);
+    }
     return;
   }
   if (message.type === "editAck") {
     if (!revision.acceptEditAcknowledgement(message)) return;
+    if (message.notice) setCellEditStatus(message.notice, "stale");
     if (message.clientRevision === pendingDataSourceRevision) {
       pendingDataSourceRevision = undefined;
       setStatus(
@@ -411,7 +476,7 @@ function sendRhaiScriptEdit(): void {
 }
 
 function queueFormulaProgramEdit(): void {
-  const source = selectedFormulaSource();
+  const source = selectedComputedFormulaSource();
   if (!source) return;
   clearTimeout(formulaEvaluationTimer);
   tableRequestId += 1;
@@ -432,14 +497,14 @@ function queueFormulaProgramEdit(): void {
 }
 
 function applyFormulaProgramEdit(): void {
-  const source = selectedFormulaSource();
+  const source = selectedComputedFormulaSource();
   if (!source) return;
   const program = formulaEditor.value;
   source.program = program;
   const draft = dataSourceDrafts.find(
     (candidate) => candidate.name === source.name && candidate.type === "formula",
   );
-  if (!draft || draft.type !== "formula") return;
+  if (!isComputedFormulaDataSource(draft)) return;
   draft.program = program;
   pendingSpreadsheetEdit = undefined;
   tableRenderMeasurement = undefined;
@@ -460,6 +525,222 @@ function queuePreview(): void {
       markdown: markdown.value,
     });
   }, PREVIEW_DEBOUNCE_MS);
+}
+
+function renderPreviewVisibility(): void {
+  previewCard.hidden = !previewVisible;
+  root.dataset.previewVisible = String(previewVisible);
+  togglePreview.textContent = previewVisible ? "Hide preview" : "Show preview";
+  togglePreview.setAttribute("aria-expanded", String(previewVisible));
+}
+
+function configurePreviewTables(): void {
+  pendingPreviewCell = undefined;
+  for (const table of preview.querySelectorAll<HTMLTableElement>(
+    "table.tmd-view-table[data-tmd-source]",
+  )) {
+    const source = tableSourceDefinitions.find(
+      (candidate) => candidate.name === table.dataset.tmdSource,
+    );
+    const editable =
+      dataSourcesEditable &&
+      !dataSourceEditingLocked &&
+      (isComputedFormulaDataSource(source) ||
+        (isQueryFormulaDataSource(source) && source.edit !== undefined));
+    table.classList.toggle("tmd-view-table-editable", editable);
+    if (!editable) continue;
+    for (const cell of table.querySelectorAll<HTMLTableCellElement>(
+      "td[data-tmd-row][data-tmd-column]",
+    )) {
+      if (isPreviewCellEditable(source, table, cell)) {
+        cell.tabIndex = 0;
+        cell.title = "Double-click to edit this Formula table cell";
+      }
+    }
+  }
+}
+
+function replacePreviewHtml(html: string): void {
+  if (previewCellEdit) {
+    deferredPreviewHtml = html;
+    return;
+  }
+  deferredPreviewHtml = undefined;
+  preview.innerHTML = html;
+  configurePreviewTables();
+}
+
+function isPreviewCellEditable(
+  source: DataSource | undefined,
+  table: HTMLTableElement,
+  cell: HTMLTableCellElement,
+): boolean {
+  if (isComputedFormulaDataSource(source)) return true;
+  if (!isQueryFormulaDataSource(source) || !source.edit) return false;
+  const column = Number(cell.dataset.tmdColumn);
+  if (!Number.isSafeInteger(column)) return false;
+  const heading = table.querySelectorAll<HTMLTableCellElement>("thead th")[column];
+  const columnName = heading?.textContent ?? "";
+  return source.edit.columns.some(
+    (mapping) => mapping.sourceColumn === columnName,
+  );
+}
+
+function handlePreviewDoubleClick(event: MouseEvent): void {
+  const cell = previewCellFromEvent(event);
+  if (!cell) return;
+  const table = cell.closest<HTMLTableElement>("table[data-tmd-source]");
+  const sourceName = table?.dataset.tmdSource;
+  const source = tableSourceDefinitions.find(
+    (candidate) => candidate.name === sourceName,
+  );
+  if (
+    !table ||
+    !sourceName ||
+    !dataSourcesEditable ||
+    dataSourceEditingLocked ||
+    !isPreviewCellEditable(source, table, cell) ||
+    (!isComputedFormulaDataSource(source) &&
+      !(isQueryFormulaDataSource(source) && source.edit))
+  ) {
+    return;
+  }
+  if (
+    selectedTableSource !== sourceName ||
+    currentTableSource !== sourceName ||
+    !currentTable
+  ) {
+    pendingPreviewCell = cell;
+    selectedTableSource = sourceName;
+    tableSource.value = sourceName;
+    resetCellEditor();
+    host.setState({
+      ...(host.getState() ?? {}),
+      selectedTableSource,
+    });
+    requestTableSource();
+    requestRhaiScript();
+    renderFormulaProgram();
+    setCellEditStatus(`Loading ${sourceName} for preview editing…`, "stale");
+    return;
+  }
+  beginPreviewCellEdit(cell);
+}
+
+function handlePreviewKeydown(event: KeyboardEvent): void {
+  const cell = previewCellFromEvent(event);
+  if (!cell || cell !== previewCellEdit?.cell) return;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    cancelPreviewCellEdit();
+  } else if (event.key === "Enter" && !event.shiftKey) {
+    event.preventDefault();
+    commitPreviewCellEdit(cell);
+  }
+}
+
+function handlePreviewFocusOut(event: FocusEvent): void {
+  const cell = previewCellFromEvent(event);
+  if (cell && cell === previewCellEdit?.cell) commitPreviewCellEdit(cell);
+}
+
+function previewCellFromEvent(
+  event: Event,
+): HTMLTableCellElement | undefined {
+  return event.target instanceof Element
+    ? (event.target.closest(
+        "td[data-tmd-row][data-tmd-column]",
+      ) as HTMLTableCellElement | null) ?? undefined
+    : undefined;
+}
+
+function beginPreviewCellEdit(cell: HTMLTableCellElement): void {
+  const row = Number(cell.dataset.tmdRow);
+  const column = Number(cell.dataset.tmdColumn);
+  if (
+    !currentTable ||
+    !Number.isSafeInteger(row) ||
+    !Number.isSafeInteger(column)
+  ) {
+    return;
+  }
+  const source = selectedFormulaSource();
+  const sourceName = cell.closest<HTMLTableElement>("table[data-tmd-source]")
+    ?.dataset.tmdSource;
+  if (
+    !source ||
+    !sourceName ||
+    source.name !== sourceName ||
+    !dataSourcesEditable ||
+    dataSourceEditingLocked
+  ) {
+    return;
+  }
+  if (isQueryFormulaDataSource(source) && !isDirectCellEditable({ row, column })) {
+    setCellEditStatus("This preview cell has no write-back mapping.", "invalid");
+    return;
+  }
+  previewCellEdit = {
+    cell,
+    source: sourceName,
+    row,
+    column,
+    originalText: cell.textContent ?? "",
+  };
+  selectedCell = { row, column };
+  const expression = formulaExpressionForCell(
+    selectedComputedFormulaSource()?.program ?? "",
+    row,
+    column,
+  );
+  cell.textContent = expression
+    ? `=${expression.replace(/^=/u, "")}`
+    : cellTextForEditing(currentTable.rows[row]?.[column]);
+  cell.contentEditable = "plaintext-only";
+  cell.classList.add("is-editing");
+  cell.focus();
+  window.getSelection()?.selectAllChildren(cell);
+  renderSelectedCell();
+}
+
+function commitPreviewCellEdit(cell: HTMLTableCellElement): void {
+  const edit = previewCellEdit;
+  if (!edit || cell !== edit.cell) return;
+  const text = cell.textContent ?? "";
+  if (
+    selectedTableSource !== edit.source ||
+    currentTableSource !== edit.source ||
+    selectedFormulaSource()?.name !== edit.source
+  ) {
+    cancelPreviewCellEdit();
+    setCellEditStatus(
+      "Preview edit was canceled because the selected source changed.",
+      "invalid",
+    );
+    return;
+  }
+  finishPreviewCellEdit(false);
+  void applyCellText({ row: edit.row, column: edit.column }, text);
+}
+
+function cancelPreviewCellEdit(): void {
+  const edit = previewCellEdit;
+  if (!edit) return;
+  edit.cell.textContent = edit.originalText;
+  finishPreviewCellEdit(true);
+}
+
+function finishPreviewCellEdit(applyDeferredPreview: boolean): void {
+  const edit = previewCellEdit;
+  if (!edit) return;
+  previewCellEdit = undefined;
+  edit.cell.contentEditable = "false";
+  edit.cell.classList.remove("is-editing");
+  const deferred = deferredPreviewHtml;
+  deferredPreviewHtml = undefined;
+  if (applyDeferredPreview && deferred !== undefined) {
+    replacePreviewHtml(deferred);
+  }
 }
 
 function queueRhaiEvaluation(): void {
@@ -490,6 +771,7 @@ function applyModel(model: EditorModelMessage): void {
   pendingRhaiScriptRevision = undefined;
   pendingFormulaRevision = undefined;
   pendingSpreadsheetEdit = undefined;
+  tableStructurePending = false;
   tableRenderMeasurement = undefined;
   title.value = model.title;
   markdown.value = model.markdown;
@@ -505,7 +787,14 @@ function applyModel(model: EditorModelMessage): void {
   renderAttachments(model);
   renderDatabaseObjects(model);
   renderValidation(model.inspection.validation, model.validationCurrent);
-  preview.innerHTML = model.previewHtml;
+  replacePreviewHtml(model.previewHtml);
+  if (
+    model.persisted &&
+    !cellEditStatus.hidden &&
+    cellEditStatus.textContent?.includes("Save the document to persist it")
+  ) {
+    setCellEditStatus("All table edits are saved.", "valid");
+  }
   root.dataset.state = "ready";
 }
 
@@ -536,11 +825,7 @@ function renderTableSourceOptions(sources: readonly DataSource[]): void {
 }
 
 function isTabularSource(source: DataSource): boolean {
-  return (
-    source.type === "sqlite" ||
-    source.type === "rhai" ||
-    source.type === "formula"
-  );
+  return source.type === "rhai" || source.type === "formula";
 }
 
 function requestTableSource(
@@ -562,6 +847,7 @@ function requestTableSource(
     currentTableSource = undefined;
     cellFormulaBar.hidden = true;
     tableGridHost.hidden = true;
+    renderTableStructureActions();
     setStatus(
       tableSourceStatus,
       "No table-compatible sources are defined. Add one in the Sources tab.",
@@ -576,6 +862,7 @@ function requestTableSource(
     currentTableSource = undefined;
     cellFormulaBar.hidden = true;
     tableGridHost.hidden = true;
+    renderTableStructureActions();
   }
   if (!revision.initialized) return;
   if (selectedRhaiSource()) {
@@ -584,7 +871,7 @@ function requestTableSource(
     rhaiEditor.setDiagnostic(undefined);
     updateRhaiScriptStatus();
   }
-  if (selectedFormulaSource()) {
+  if (selectedComputedFormulaSource()) {
     formulaEvaluationComplete = false;
     formulaEvaluationIssue = undefined;
     formulaEditor.setDiagnostic(undefined);
@@ -609,7 +896,18 @@ async function renderTableSourceResult(
     return;
   }
   if (!message.table) {
+    if (pendingPreviewCell?.closest("table")?.dataset.tmdSource === message.source) {
+      pendingPreviewCell = undefined;
+    }
     const measurement = takeTableRenderMeasurement(message.requestId);
+    if (measurement?.operation === "Structure edit") {
+      tableStructurePending = false;
+      renderTableStructureActions();
+    }
+    if (tableStructurePending && pendingSpreadsheetEdit === undefined) {
+      tableStructurePending = false;
+      renderTableStructureActions();
+    }
     if (!currentTable || currentTableSource !== message.source) {
       currentTable = undefined;
       currentTableSource = undefined;
@@ -633,8 +931,6 @@ async function renderTableSourceResult(
   }
   const previousTable =
     currentTableSource === message.source ? currentTable : undefined;
-  currentTable = message.table;
-  currentTableSource = message.source;
   tableGridHost.hidden = false;
   const preservedGrid = await renderTableGrid(message.table, previousTable);
   if (
@@ -643,6 +939,8 @@ async function renderTableSourceResult(
   ) {
     return;
   }
+  currentTable = message.table;
+  currentTableSource = message.source;
   if (
     selectedFormulaSource() &&
     message.table.rows.length > 0 &&
@@ -663,6 +961,11 @@ async function renderTableSourceResult(
       );
     }
   }
+  if (pendingPreviewCell?.closest("table")?.dataset.tmdSource === message.source) {
+    const cell = pendingPreviewCell;
+    pendingPreviewCell = undefined;
+    beginPreviewCellEdit(cell);
+  }
   setStatus(
     tableSourceStatus,
     `${message.table.rows.length.toLocaleString()} row${message.table.rows.length === 1 ? "" : "s"} · ${message.table.columns.length.toLocaleString()} column${message.table.columns.length === 1 ? "" : "s"}`,
@@ -672,6 +975,9 @@ async function renderTableSourceResult(
   applyFormulaEvaluationIssue(undefined);
   const measurement = takeTableRenderMeasurement(message.requestId);
   if (measurement) {
+    if (measurement.operation === "Structure edit") {
+      tableStructurePending = false;
+    }
     const optimistic =
       measurement.optimisticRenderMs === undefined
         ? ""
@@ -681,11 +987,15 @@ async function renderTableSourceResult(
       "valid",
     );
   }
+  if (tableStructurePending && pendingSpreadsheetEdit === undefined) {
+    tableStructurePending = false;
+  }
+  renderTableStructureActions();
 }
 
 function renderFormulaProgram(): void {
   clearTimeout(formulaEvaluationTimer);
-  const source = selectedFormulaSource();
+  const source = selectedComputedFormulaSource();
   if (!source) {
     formulaProgramPanel.hidden = true;
     formulaEditor.disabled = true;
@@ -778,6 +1088,11 @@ function selectedFormulaSource(): FormulaDataSource | undefined {
   return source?.type === "formula" ? source : undefined;
 }
 
+function selectedComputedFormulaSource(): ComputedFormulaDataSource | undefined {
+  const source = selectedFormulaSource();
+  return isComputedFormulaDataSource(source) ? source : undefined;
+}
+
 function applyRhaiEvaluationIssue(issue: string | undefined): void {
   if (!selectedRhaiSource()) return;
   rhaiEvaluationComplete = true;
@@ -804,7 +1119,7 @@ function updateRhaiScriptStatus(): void {
 }
 
 function applyFormulaEvaluationIssue(issue: string | undefined): void {
-  if (!selectedFormulaSource()) return;
+  if (!selectedComputedFormulaSource()) return;
   formulaEvaluationComplete = true;
   formulaEvaluationIssue = issue;
   formulaEditor.setDiagnostic(
@@ -814,7 +1129,7 @@ function applyFormulaEvaluationIssue(issue: string | undefined): void {
 }
 
 function updateFormulaProgramStatus(): void {
-  if (!selectedFormulaSource()) return;
+  if (!selectedComputedFormulaSource()) return;
   if (formulaEvaluationIssue) {
     setStatus(formulaProgramStatus, "Error", "invalid");
     formulaProgramError.hidden = false;
@@ -833,7 +1148,12 @@ function updateFormulaProgramStatus(): void {
 function handleTableFocus(event: CustomEvent<FocusAfterRenderEvent>): void {
   const position = tablePositionFromFocus(event.detail);
   if (!position || !selectedFormulaSource()) return;
-  if (formulaBarEditing && editingCell && cellInput.value.startsWith("=")) {
+  if (
+    selectedComputedFormulaSource() &&
+    formulaBarEditing &&
+    editingCell &&
+    cellInput.value.startsWith("=")
+  ) {
     insertFormulaReference({
       x: position.column,
       x1: position.column,
@@ -846,6 +1166,7 @@ function handleTableFocus(event: CustomEvent<FocusAfterRenderEvent>): void {
   editingCell = undefined;
   insertedReference = undefined;
   renderSelectedCell();
+  renderTableStructureActions();
 }
 
 function handleTableRangeSelection(event: CustomEvent<ChangedRange>): void {
@@ -862,7 +1183,7 @@ function handleTableEditStart(event: CustomEvent<BeforeSaveDataDetails>): void {
     return;
   }
   const expression = formulaExpressionForCell(
-    selectedFormulaSource()?.program ?? "",
+    selectedComputedFormulaSource()?.program ?? "",
     position.row,
     position.column,
   );
@@ -883,10 +1204,11 @@ async function handleTableAutofill(
 ): Promise<void> {
   event.preventDefault();
   const source = selectedFormulaSource();
+  const computedSource = selectedComputedFormulaSource();
   if (!source || !currentTable) return;
   const startedAt = performance.now();
   try {
-    let program = source.program;
+    let program = computedSource?.program;
     const databaseEdits: DatabaseCellEdit[] = [];
     const optimisticCells: Array<{
       position: TableCellPosition;
@@ -907,12 +1229,14 @@ async function handleTableAutofill(
         ) {
           continue;
         }
-        const expression = formulaExpressionForCell(
-          source.program,
-          originPosition.row,
-          originPosition.column,
-        );
-        if (expression !== undefined) {
+        const expression = computedSource
+          ? formulaExpressionForCell(
+              computedSource.program,
+              originPosition.row,
+              originPosition.column,
+            )
+          : undefined;
+        if (expression !== undefined && program !== undefined) {
           program = setFormulaCellExpression(
             program,
             destination.row,
@@ -928,20 +1252,22 @@ async function handleTableAutofill(
         const copiedValue = directInputCell(originPosition);
         if (!copiedValue) {
           throw new Error(
-            `Cell ${spreadsheetCellName(originPosition.row, originPosition.column)} has no Formula or editable SQLite value to copy.`,
+            `Cell ${spreadsheetCellName(originPosition.row, originPosition.column)} has no Formula or editable query value to copy.`,
           );
         }
         databaseEdits.push(databaseEditForCell(destination, copiedValue));
         optimisticCells.push({ position: destination, value: copiedValue });
-        program = setFormulaCellExpression(
-          program,
-          destination.row,
-          destination.column,
-          undefined,
-        );
+        if (program !== undefined) {
+          program = setFormulaCellExpression(
+            program,
+            destination.row,
+            destination.column,
+            undefined,
+          );
+        }
       }
     }
-    if (program === source.program && databaseEdits.length === 0) return;
+    if (program === computedSource?.program && databaseEdits.length === 0) return;
     setCellEditStatus("Applying fill…", "stale");
     const optimisticRenderMs = await renderOptimisticCells(
       optimisticCells,
@@ -969,21 +1295,312 @@ function applyFormulaBarEdit(): void {
   void applyCellText(position, cellInput.value);
 }
 
+function addFormulaTableRow(): void {
+  const context = formulaStructureContext();
+  if (!context) return;
+  const row = context.table.rows.length;
+  const program = setFormulaCellExpression(context.source.program, row, 0, "NULL");
+  applyFormulaRowStructure(context.source, program, row, "Adding row…");
+}
+
+function duplicateFormulaTableRow(): void {
+  const context = formulaStructureContext(true);
+  if (!context || !selectedCell) return;
+  const destinationRow = context.table.rows.length;
+  let program = context.source.program;
+  for (let column = 0; column < context.table.columns.length; column += 1) {
+    const expression = formulaExpressionForCell(
+      context.source.program,
+      selectedCell.row,
+      column,
+    );
+    program = setFormulaCellExpression(
+      program,
+      destinationRow,
+      column,
+      expression === undefined
+        ? formulaLiteral(context.table.rows[selectedCell.row]?.[column])
+        : translateFormulaExpression(
+            expression,
+            destinationRow - selectedCell.row,
+            0,
+          ),
+    );
+  }
+  applyFormulaRowStructure(
+    context.source,
+    program,
+    destinationRow,
+    "Duplicating row…",
+  );
+}
+
+function insertFormulaTableRow(): void {
+  const context = formulaStructureContext(true);
+  if (!context || !selectedCell) return;
+  const inputRows = context.table.inputRowCount;
+  if (inputRows === undefined || selectedCell.row < inputRows) {
+    setCellEditStatus(
+      "Rows backed by the query cannot be shifted safely. Select a Formula-only row, or use Add row.",
+      "invalid",
+    );
+    return;
+  }
+  let program = insertFormulaRows(context.source.program, selectedCell.row);
+  program = setFormulaCellExpression(program, selectedCell.row, 0, "NULL");
+  applyFormulaRowStructure(
+    context.source,
+    program,
+    selectedCell.row,
+    "Inserting row…",
+  );
+}
+
+function applyFormulaRowStructure(
+  source: ComputedFormulaDataSource,
+  program: string,
+  selectedRow: number,
+  message: string,
+): void {
+  if (
+    !validateFormulaStructure(
+      currentTable?.rows.length === undefined
+        ? 0
+        : currentTable.rows.length + 1,
+      source.outputColumns.length,
+      program,
+    )
+  ) {
+    return;
+  }
+  const startedAt = performance.now();
+  setCellEditStatus(message, "stale");
+  sendSpreadsheetEdit(program, [], {
+    startedAt,
+    operation: "Structure edit",
+  });
+  selectedCell = { row: selectedRow, column: selectedCell?.column ?? 0 };
+  updateLocalFormulaProgram(source.name, program);
+}
+
+function addFormulaTableColumn(): void {
+  const context = formulaStructureContext();
+  if (!context) return;
+  const columns = [...context.source.outputColumns];
+  columns.push(uniqueColumnName(columns, "Column"));
+  applyFormulaColumnStructure(
+    context.source,
+    context.source.program,
+    columns,
+    columns.length - 1,
+    "Adding column…",
+  );
+}
+
+function duplicateFormulaTableColumn(): void {
+  const context = formulaStructureContext(true);
+  if (!context || !selectedCell) return;
+  const destinationColumn = context.source.outputColumns.length;
+  const columns = [...context.source.outputColumns];
+  columns.push(
+    uniqueColumnName(
+      columns,
+      `${context.source.outputColumns[selectedCell.column] ?? "Column"} copy`,
+    ),
+  );
+  let program = context.source.program;
+  for (let row = 0; row < context.table.rows.length; row += 1) {
+    const expression = formulaExpressionForCell(
+      context.source.program,
+      row,
+      selectedCell.column,
+    );
+    program = setFormulaCellExpression(
+      program,
+      row,
+      destinationColumn,
+      expression === undefined
+        ? formulaLiteral(context.table.rows[row]?.[selectedCell.column])
+        : translateFormulaExpression(
+            expression,
+            0,
+            destinationColumn - selectedCell.column,
+          ),
+    );
+  }
+  applyFormulaColumnStructure(
+    context.source,
+    program,
+    columns,
+    destinationColumn,
+    "Duplicating column…",
+  );
+}
+
+function insertFormulaTableColumn(): void {
+  const context = formulaStructureContext(true);
+  if (!context || !selectedCell) return;
+  const inputColumns = context.table.inputColumnCount;
+  if (inputColumns === undefined || selectedCell.column < inputColumns) {
+    setCellEditStatus(
+      "Query-backed columns cannot be shifted safely. Select a derived Formula column, or use Add column.",
+      "invalid",
+    );
+    return;
+  }
+  const columns = [...context.source.outputColumns];
+  columns.splice(
+    selectedCell.column,
+    0,
+    uniqueColumnName(columns, "Column"),
+  );
+  const program = insertFormulaColumns(
+    context.source.program,
+    selectedCell.column,
+  );
+  applyFormulaColumnStructure(
+    context.source,
+    program,
+    columns,
+    selectedCell.column,
+    "Inserting column…",
+  );
+}
+
+function applyFormulaColumnStructure(
+  source: ComputedFormulaDataSource,
+  program: string,
+  outputColumns: string[],
+  selectedColumn: number,
+  message: string,
+): void {
+  if (
+    !validateFormulaStructure(
+      currentTable?.rows.length ?? 0,
+      outputColumns.length,
+      program,
+    )
+  ) {
+    return;
+  }
+  const startedAt = performance.now();
+  for (const sources of [tableSourceDefinitions, dataSourceDrafts]) {
+    const candidate = sources.find((item) => item.name === source.name);
+    if (isComputedFormulaDataSource(candidate)) {
+      candidate.program = program;
+      candidate.outputColumns = [...outputColumns];
+    }
+  }
+  formulaEditor.value = program;
+  setCellEditStatus(message, "stale");
+  const clientRevision = sendDataSourceEdit(dataSourceDrafts.map(cloneDataSource));
+  if (clientRevision === undefined) return;
+  clearTimeout(formulaEvaluationTimer);
+  tableRequestId += 1;
+  pendingFormulaRevision = undefined;
+  pendingSpreadsheetEdit = {
+    clientRevision,
+    startedAt,
+    operation: "Structure edit",
+  };
+  tableStructurePending = true;
+  selectedCell = { row: selectedCell?.row ?? 0, column: selectedColumn };
+  renderFormulaProgram();
+  renderTableStructureActions();
+}
+
+function formulaStructureContext(requireSelection = false):
+  | { source: ComputedFormulaDataSource; table: DataSourceTable }
+  | undefined {
+  const source = selectedComputedFormulaSource();
+  if (!source || !currentTable) return undefined;
+  if (tableStructurePending || pendingSpreadsheetEdit !== undefined) {
+    setCellEditStatus(
+      "Wait for the current table edit to finish before changing its structure.",
+      "stale",
+    );
+    return undefined;
+  }
+  if (!dataSourcesEditable || dataSourceEditingLocked) {
+    setCellEditStatus("The Formula table is currently read-only.", "invalid");
+    return undefined;
+  }
+  if (requireSelection && !selectedCell) {
+    setCellEditStatus("Select a table cell first.", "invalid");
+    return undefined;
+  }
+  return { source, table: currentTable };
+}
+
+function validateFormulaStructure(
+  rowCount: number,
+  columnCount: number,
+  program: string,
+): boolean {
+  let issue: string | undefined;
+  if (rowCount > MAX_TABLE_ROWS) {
+    issue = `Formula tables support at most ${MAX_TABLE_ROWS.toLocaleString()} rows.`;
+  } else if (columnCount > MAX_TABLE_COLUMNS) {
+    issue = `Formula tables support at most ${MAX_TABLE_COLUMNS.toLocaleString()} columns.`;
+  } else if (rowCount * columnCount > MAX_TABLE_CELLS) {
+    issue = `Formula tables support at most ${MAX_TABLE_CELLS.toLocaleString()} cells.`;
+  } else if (
+    new TextEncoder().encode(program).length > MAX_FORMULA_PROGRAM_BYTES
+  ) {
+    issue = `Formula programs must be at most ${MAX_FORMULA_PROGRAM_BYTES.toLocaleString()} UTF-8 bytes.`;
+  }
+  if (!issue) return true;
+  setCellEditStatus(issue, "invalid");
+  return false;
+}
+
+function formulaLiteral(cell: DataTableCell | undefined): string {
+  if (!cell || cell.type === "null") return "NULL";
+  if (cell.type === "boolean") return cell.value ? "TRUE" : "FALSE";
+  if (cell.type === "string") return JSON.stringify(cell.value);
+  return String(cell.value);
+}
+
+function formulaLiteralFromText(text: string): string {
+  const value = text.trim();
+  if (value === "" || /^null$/iu.test(value)) return "NULL";
+  if (/^(true|false)$/iu.test(value)) return value.toUpperCase();
+  if (/^-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/iu.test(value)) {
+    const number = Number(value);
+    if (Number.isFinite(number)) return value;
+  }
+  return JSON.stringify(text);
+}
+
+function uniqueColumnName(columns: readonly string[], base: string): string {
+  const names = new Set(columns);
+  if (!names.has(base)) return base;
+  let suffix = 2;
+  while (names.has(`${base} ${suffix}`)) suffix += 1;
+  return `${base} ${suffix}`;
+}
+
 async function applyCellText(
   position: TableCellPosition,
   text: string,
 ): Promise<void> {
   const source = selectedFormulaSource();
+  const computedSource = selectedComputedFormulaSource();
   if (!source || !currentTable) return;
   const startedAt = performance.now();
   try {
-    let program = source.program;
+    let program = computedSource?.program;
     const databaseEdits: DatabaseCellEdit[] = [];
     const optimisticCells: Array<{
       position: TableCellPosition;
       value: DataTableCell;
     }> = [];
     if (text.startsWith("=")) {
+      if (!computedSource || program === undefined) {
+        throw new Error(
+          "This Formula query table accepts direct values only. Add a computed Formula source to use expressions.",
+        );
+      }
       const expression = text.slice(1).trim();
       if (expression === "") throw new Error("Formula expressions cannot be empty.");
       program = setFormulaCellExpression(
@@ -992,16 +1609,25 @@ async function applyCellText(
         position.column,
         expression,
       );
-    } else {
-      const value = parseDirectCellValue(position, text);
-      databaseEdits.push(databaseEditForCell(position, value));
-      optimisticCells.push({ position, value });
+    } else if (!isDirectCellEditable(position) && program !== undefined) {
       program = setFormulaCellExpression(
         program,
         position.row,
         position.column,
-        undefined,
+        formulaLiteralFromText(text),
       );
+    } else {
+      const value = parseDirectCellValue(position, text);
+      databaseEdits.push(databaseEditForCell(position, value));
+      optimisticCells.push({ position, value });
+      if (program !== undefined) {
+        program = setFormulaCellExpression(
+          program,
+          position.row,
+          position.column,
+          undefined,
+        );
+      }
     }
     setCellEditStatus("Applying cell edit…", "stale");
     const optimisticRenderMs = await renderOptimisticCells(
@@ -1032,7 +1658,7 @@ async function applyCellText(
 }
 
 function sendSpreadsheetEdit(
-  program: string,
+  program: string | undefined,
   databaseEdits: DatabaseCellEdit[],
   measurement: Omit<SpreadsheetEditMeasurement, "clientRevision">,
 ): void {
@@ -1040,12 +1666,15 @@ function sendSpreadsheetEdit(
   if (!source) return;
   const clientRevision = revision.nextEditRevision();
   if (clientRevision === undefined) return;
-  updateLocalFormulaProgram(source.name, program);
+  if (program !== undefined) updateLocalFormulaProgram(source.name, program);
   clearTimeout(formulaEvaluationTimer);
   tableRequestId += 1;
   tableRenderMeasurement = undefined;
   pendingFormulaRevision = undefined;
   pendingSpreadsheetEdit = { clientRevision, ...measurement };
+  if (measurement.operation === "Structure edit") {
+    tableStructurePending = true;
+  }
   formulaEvaluationComplete = false;
   formulaEvaluationIssue = undefined;
   formulaEditor.setDiagnostic(undefined);
@@ -1054,11 +1683,12 @@ function sendSpreadsheetEdit(
     type: "editSpreadsheet",
     clientRevision,
     source: source.name,
-    formulaProgram: program,
+    ...(program === undefined ? {} : { formulaProgram: program }),
     databaseEdits,
   });
   renderValidation(undefined, false);
   queuePreview();
+  renderTableStructureActions();
 }
 
 function updateLocalFormulaProgram(sourceName: string, program: string): void {
@@ -1066,37 +1696,44 @@ function updateLocalFormulaProgram(sourceName: string, program: string): void {
     const source = sources.find(
       (candidate) => candidate.name === sourceName && candidate.type === "formula",
     );
-    if (source?.type === "formula") source.program = program;
+    if (isComputedFormulaDataSource(source)) source.program = program;
   }
   formulaEditor.value = program;
 }
 
 function renderSelectedCell(): void {
   const source = selectedFormulaSource();
+  const computedSource = selectedComputedFormulaSource();
   const position = selectedCell;
   if (!source || !currentTable || !position) {
     cellFormulaBar.hidden = true;
-    cellEditStatus.hidden = true;
     return;
   }
   cellFormulaBar.hidden = false;
   cellName.value = spreadsheetCellName(position.row, position.column);
   const expression = formulaExpressionForCell(
-    source.program,
+    computedSource?.program ?? "",
     position.row,
     position.column,
   );
   cellInput.value = expression
     ? `=${expression.replace(/^=/u, "")}`
     : cellTextForEditing(currentTable.rows[position.row]?.[position.column]);
-  const disabled = !dataSourcesEditable || dataSourceEditingLocked;
+  const disabled =
+    !dataSourcesEditable ||
+    dataSourceEditingLocked ||
+    (isQueryFormulaDataSource(source) && !isDirectCellEditable(position));
   cellInput.disabled = disabled;
   cancelCellEdit.disabled = disabled;
   requireElement<HTMLButtonElement>("apply-cell-edit").disabled = disabled;
   const direct = isDirectCellEditable(position);
-  cellInput.title = direct
-    ? "Enter a value to update SQLite, or start with = to apply a Formula."
-    : "This cell accepts Formula input starting with =. It is not mapped to a writable SQLite column.";
+  cellInput.title = computedSource
+    ? direct
+      ? "Enter a value to update the query table, or start with = to apply a Formula."
+      : "Enter a value or start with = to apply a Formula. This cell is not mapped to a writable query column."
+    : direct
+      ? "Enter a value to update the Formula query table."
+      : "This Formula query cell is read-only because it has no write-back mapping.";
 }
 
 function resetCellEditor(): void {
@@ -1105,7 +1742,33 @@ function resetCellEditor(): void {
   formulaBarEditing = false;
   insertedReference = undefined;
   cellFormulaBar.hidden = true;
-  cellEditStatus.hidden = true;
+  renderTableStructureActions();
+}
+
+function renderTableStructureActions(): void {
+  const visible =
+    selectedComputedFormulaSource() !== undefined && currentTable !== undefined;
+  tableStructureActions.hidden = !visible;
+  const disabled =
+    !visible ||
+    !dataSourcesEditable ||
+    dataSourceEditingLocked ||
+    tableStructurePending ||
+    pendingSpreadsheetEdit !== undefined;
+  for (const button of [
+    addTableRow,
+    duplicateTableRow,
+    insertTableRow,
+    addTableColumn,
+    duplicateTableColumn,
+    insertTableColumn,
+  ]) {
+    button.disabled = disabled;
+  }
+  duplicateTableRow.disabled ||= selectedCell === undefined;
+  insertTableRow.disabled ||= selectedCell === undefined;
+  duplicateTableColumn.disabled ||= selectedCell === undefined;
+  insertTableColumn.disabled ||= selectedCell === undefined;
 }
 
 function insertFormulaReference(range: RangeArea): void {
@@ -1187,7 +1850,7 @@ function databaseEditForCell(
     !editable.editableColumns.includes(column)
   ) {
     throw new Error(
-      `Cell ${spreadsheetCellName(position.row, position.column)} is not writable in SQLite.`,
+      `Cell ${spreadsheetCellName(position.row, position.column)} is not writable through the Formula query mapping.`,
     );
   }
   return {
@@ -1315,7 +1978,17 @@ async function renderTableGrid(
   previousTable?: DataSourceTable,
 ): Promise<boolean> {
   if (!tableGrid) return false;
-  const spreadsheetEditable = selectedFormulaSource() !== undefined;
+  const formulaSource = selectedFormulaSource();
+  const spreadsheetEditable =
+    dataSourcesEditable &&
+    !dataSourceEditingLocked &&
+    (isComputedFormulaDataSource(formulaSource) ||
+      (isQueryFormulaDataSource(formulaSource) && table.editable !== undefined));
+  const queryEditableColumns = new Set(
+    isQueryFormulaDataSource(formulaSource)
+      ? (table.editable?.editableColumns ?? [])
+      : [],
+  );
   if (
     spreadsheetEditable &&
     previousTable &&
@@ -1338,7 +2011,10 @@ async function renderTableGrid(
     (name, index): ColumnRegular => ({
       name,
       prop: tableColumnProp(index),
-      readonly: !spreadsheetEditable,
+      readonly:
+        !spreadsheetEditable ||
+        (isQueryFormulaDataSource(formulaSource) &&
+          !queryEditableColumns.has(name)),
       sortable: !spreadsheetEditable,
       size: Math.min(360, Math.max(120, name.length * 8 + 36)),
     }),
@@ -1462,7 +2138,8 @@ function renderDataSourceRegistry(
   dataSourceRegistryIssue.textContent = registry.issue ?? "";
   dataSourceRegistryRaw.hidden = typeof registry.rawRegistry !== "string";
   dataSourceRegistryRaw.textContent = registry.rawRegistry ?? "";
-  addSqliteDataSource.disabled = !dataSourcesEditable || dataSourceEditingLocked;
+  addQueryFormulaDataSource.disabled =
+    !dataSourcesEditable || dataSourceEditingLocked;
   addRhaiDataSource.disabled = !dataSourcesEditable || dataSourceEditingLocked;
   addFormulaDataSource.disabled = !dataSourcesEditable || dataSourceEditingLocked;
   applyDataSources.disabled = !dataSourcesEditable || dataSourceEditingLocked;
@@ -1473,6 +2150,7 @@ function renderDataSourceRegistry(
       : "This registry is read-only in the current editor.",
     dataSourcesEditable ? "stale" : "invalid",
   );
+  renderTableStructureActions();
   renderDataSourceDrafts();
 }
 
@@ -1485,7 +2163,12 @@ function renderDataSourceDrafts(): void {
     heading.className = "data-source-heading";
     const type = document.createElement("span");
     type.className = "data-source-type";
-    type.textContent = `type: ${source.type}`;
+    type.textContent =
+      source.type === "rhai"
+        ? "type: rhai"
+        : isQueryFormulaDataSource(source)
+          ? "type: formula · query table"
+          : "type: formula · computed";
     const remove = document.createElement("button");
     remove.type = "button";
     remove.textContent = "Remove";
@@ -1503,7 +2186,7 @@ function renderDataSourceDrafts(): void {
         markDataSourceDraftChanged();
       }),
     );
-    if (source.type === "sqlite") {
+    if (isQueryFormulaDataSource(source)) {
       card.append(
         labelledTextarea("SQL query", source.query, "source-query", (value) => {
           source.query = value;
@@ -1563,7 +2246,7 @@ function renderDataSourceDrafts(): void {
           markDataSourceDraftChanged();
         }),
         labelledTextarea(
-          "SQLite inputs (one alias = source mapping per line)",
+          "Formula query inputs (one alias = source mapping per line)",
           rhaiInputMappingsText(source.inputs),
           "source-definition",
           (value) => {
@@ -1583,7 +2266,7 @@ function renderDataSourceDrafts(): void {
       );
     } else {
       card.append(
-        labelledInput("SQLite input source", source.input, (value) => {
+        labelledInput("Formula query input source", source.input, (value) => {
           source.input = value;
           markDataSourceDraftChanged();
         }),
@@ -1662,19 +2345,19 @@ function cloneDataSource(source: DataSource): DataSource {
       outputColumns: [...source.outputColumns],
     };
   }
-  if (source.type === "formula") {
+  if (isComputedFormulaDataSource(source)) {
     return { ...source, outputColumns: [...source.outputColumns] };
   }
-  const { edit, ...sqliteSource } = source;
+  const { edit, ...querySource } = source;
   return edit
     ? {
-        ...sqliteSource,
+        ...querySource,
         edit: {
           ...edit,
           columns: edit.columns.map((column) => ({ ...column })),
         },
       }
-    : sqliteSource;
+    : querySource;
 }
 
 function parseRhaiInputMappings(value: string): RhaiDataSource["inputs"] {
@@ -1694,7 +2377,7 @@ function parseRhaiInputMappings(value: string): RhaiDataSource["inputs"] {
 
 function parseSqliteEditMappings(
   value: string,
-): NonNullable<Extract<DataSource, { type: "sqlite" }>["edit"]>["columns"] {
+): NonNullable<Extract<FormulaDataSource, { query: string }>["edit"]>["columns"] {
   return value
     .split(/\r?\n/u)
     .filter((line) => line.trim() !== "")
@@ -1710,7 +2393,9 @@ function parseSqliteEditMappings(
 }
 
 function sqliteEditMappingsText(
-  columns: NonNullable<Extract<DataSource, { type: "sqlite" }>["edit"]>["columns"],
+  columns: NonNullable<
+    Extract<FormulaDataSource, { query: string }>["edit"]
+  >["columns"],
 ): string {
   return columns
     .map((column) => `${column.sourceColumn} = ${column.tableColumn}`)
@@ -1743,10 +2428,10 @@ function validateDataSourceDrafts(): string | undefined {
   }
   const definitions = new Map(dataSourceDrafts.map((source) => [source.name, source]));
   for (const source of dataSourceDrafts) {
-    if (source.type === "sqlite") {
-      if (source.query.trim() === "") return "SQLite queries cannot be empty.";
+    if (isQueryFormulaDataSource(source)) {
+      if (source.query.trim() === "") return "Formula table queries cannot be empty.";
       if (new TextEncoder().encode(source.query).length > 65_536) {
-        return "SQLite queries must be at most 65536 UTF-8 bytes.";
+        return "Formula table queries must be at most 65536 UTF-8 bytes.";
       }
       if (source.edit) {
         const identifier = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/u;
@@ -1781,7 +2466,7 @@ function validateDataSourceDrafts(): string | undefined {
       const pathIssue = validateScriptPath(source.script);
       if (pathIssue) return pathIssue;
       if (source.inputs.length === 0 || source.inputs.length > 16) {
-        return "Rhai sources require 1-16 SQLite input mappings.";
+        return "Rhai sources require 1-16 Formula query input mappings.";
       }
       const aliases = new Set<string>();
       for (const input of source.inputs) {
@@ -1791,22 +2476,26 @@ function validateDataSourceDrafts(): string | undefined {
         if (aliases.has(input.alias)) return "Rhai input aliases must be unique.";
         aliases.add(input.alias);
         if (!/^[A-Za-z0-9._-]{1,128}$/.test(input.source)) {
-          return "Each Rhai input must name a SQLite source.";
+          return "Each Rhai input must name a Formula query source.";
         }
         const target = definitions.get(input.source);
         if (!target) return "Each Rhai input must reference an existing source.";
-        if (target.type !== "sqlite") return "Rhai inputs can reference SQLite sources only.";
+        if (!isQueryFormulaDataSource(target)) {
+          return "Rhai inputs can reference Formula query sources only.";
+        }
       }
     } else {
       if (new TextEncoder().encode(source.program).length > MAX_FORMULA_PROGRAM_BYTES) {
         return `Formula programs must be at most ${MAX_FORMULA_PROGRAM_BYTES} UTF-8 bytes.`;
       }
       if (!/^[A-Za-z0-9._-]{1,128}$/.test(source.input)) {
-        return "Formula inputs must name a SQLite source.";
+        return "Computed Formula inputs must name a Formula query source.";
       }
       const target = definitions.get(source.input);
       if (!target) return "Each Formula input must reference an existing source.";
-      if (target.type !== "sqlite") return "Formula inputs can reference SQLite sources only.";
+      if (!isQueryFormulaDataSource(target)) {
+        return "Computed Formula inputs can reference Formula query sources only.";
+      }
     }
     if (source.outputColumns.length === 0 || source.outputColumns.length > 128) {
       return `${source.type === "rhai" ? "Rhai" : "Formula"} table outputs require 1-128 columns.`;
@@ -1859,7 +2548,8 @@ function setStatus(
   text: string,
   state: "valid" | "invalid" | "stale",
 ): void {
-  element.className = state;
+  element.classList.remove("valid", "invalid", "stale");
+  element.classList.add(state);
   element.textContent = text;
 }
 

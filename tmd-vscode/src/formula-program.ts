@@ -135,6 +135,139 @@ export function translateFormulaExpression(
   return result;
 }
 
+/** Insert rows into a Formula program, shifting targets and references below them. */
+export function insertFormulaRows(
+  program: string,
+  row: number,
+  count = 1,
+): string {
+  requireInsertion(row, count, "row");
+  return rewriteFormulaProgram(program, (cellRow, cellColumn) => ({
+    row: cellRow >= row ? cellRow + count : cellRow,
+    column: cellColumn,
+  }));
+}
+
+/** Insert columns into a Formula program, shifting targets and references to their right. */
+export function insertFormulaColumns(
+  program: string,
+  column: number,
+  count = 1,
+): string {
+  requireInsertion(column, count, "column");
+  return rewriteFormulaProgram(program, (cellRow, cellColumn) => ({
+    row: cellRow,
+    column: cellColumn >= column ? cellColumn + count : cellColumn,
+  }));
+}
+
+function rewriteFormulaProgram(
+  program: string,
+  mapCell: (row: number, column: number) => { row: number; column: number },
+): string {
+  const lineEnding = program.includes("\r\n") ? "\r\n" : "\n";
+  const trailingLineEnding = program.endsWith("\n");
+  const lines = program === "" ? [] : program.split(/\r?\n/u);
+  if (trailingLineEnding) lines.pop();
+  const rewritten = lines.map((line) => {
+    const assignment = parseAssignmentLine(line);
+    if (!assignment) return line;
+    const target = parseCellName(assignment.target);
+    if (!target) return line;
+    const mapped = mapCell(target.row, target.column);
+    return `${spreadsheetCellName(mapped.row, mapped.column)} = ${rewriteFormulaReferences(
+      assignment.expression,
+      mapCell,
+    )}`;
+  });
+  const result = rewritten.join(lineEnding);
+  return trailingLineEnding && result !== "" ? `${result}${lineEnding}` : result;
+}
+
+function rewriteFormulaReferences(
+  expression: string,
+  mapCell: (row: number, column: number) => { row: number; column: number },
+): string {
+  let result = "";
+  let index = 0;
+  let inString = false;
+  let escaped = false;
+  let bracketDepth = 0;
+  while (index < expression.length) {
+    const character = expression[index] ?? "";
+    if (inString) {
+      result += character;
+      if (character === '"' && !escaped) inString = false;
+      if (character === "\\" && !escaped) escaped = true;
+      else escaped = false;
+      index += 1;
+      continue;
+    }
+    if (character === '"') {
+      inString = true;
+      result += character;
+      index += 1;
+      continue;
+    }
+    if (
+      character === "/" &&
+      expression[index + 1] === "/" &&
+      bracketDepth === 0
+    ) {
+      result += expression.slice(index);
+      break;
+    }
+    if (character === "[") bracketDepth += 1;
+    if (character === "]") bracketDepth = Math.max(0, bracketDepth - 1);
+    if (bracketDepth === 0) {
+      const match = /^(\$?)([A-Za-z]+)(\$?)([1-9][0-9]*)/u.exec(
+        expression.slice(index),
+      );
+      const previous = expression[index - 1];
+      const next = match ? expression[index + match[0].length] : undefined;
+      if (
+        match &&
+        !isReferenceIdentifierCharacter(previous) &&
+        !isReferenceIdentifierCharacter(next)
+      ) {
+        const mapped = mapCell(
+          Number(match[4]) - 1,
+          spreadsheetColumnIndex(match[2] ?? ""),
+        );
+        result += `${match[1] ?? ""}${spreadsheetColumnName(mapped.column)}${match[3] ?? ""}${mapped.row + 1}`;
+        index += match[0].length;
+        continue;
+      }
+    }
+    result += character;
+    index += 1;
+  }
+  return result;
+}
+
+function parseCellName(
+  name: string,
+): { row: number; column: number } | undefined {
+  const match = /^([A-Z]+)([1-9][0-9]*)$/u.exec(name);
+  return match
+    ? {
+        row: Number(match[2]) - 1,
+        column: spreadsheetColumnIndex(match[1] ?? ""),
+      }
+    : undefined;
+}
+
+function requireInsertion(index: number, count: number, kind: string): void {
+  if (
+    !Number.isSafeInteger(index) ||
+    index < 0 ||
+    !Number.isSafeInteger(count) ||
+    count <= 0
+  ) {
+    throw new Error(`Formula ${kind} insertions require nonnegative safe indexes and positive counts.`);
+  }
+}
+
 function parseAssignmentLine(
   line: string,
 ): { target: string; expression: string } | undefined {

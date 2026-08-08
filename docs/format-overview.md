@@ -64,13 +64,14 @@ but not a stable compatibility promise. Changes require:
 The current draft intentionally defines only the `.tmd` ZIP representation;
 alternate-format APIs and tooling are outside the implemented contract.
 
-Dynamic views implement named, read-only SQLite sources with inline and block
-`scalar` output plus block `table` output. Registry schema version 2 adds
-sandboxed Rhai scripts that transform declared SQLite inputs into a strictly
-declared table. Schema version 3 adds inline, bounded Formula programs with
-A1/range/header references, typed functions, dependency and cycle handling,
-and declared table outputs; schema versions 1 and 2 remain readable. Source
-definitions live in the versioned `manifest.extras.tmd_data_sources` registry.
+Dynamic views implement named, read-only database queries as identity Formula
+sources with inline and block `scalar` output plus block `table` output.
+Sandboxed Rhai scripts transform declared query Formula inputs into strictly
+declared tables, while computed Formula sources add A1/range/header references,
+typed functions, dependency and cycle handling, and declared table outputs.
+Registry schema version 5 exposes only `formula` and `rhai` source tags;
+versions 1 through 4 remain readable by normalizing legacy `sqlite` sources.
+Definitions live in the versioned `manifest.extras.tmd_data_sources` registry.
 JSON, YAML, TOML, `list`, and `code` are planned extensions documented in
 [dynamic data views](dynamic-data-views.md) and tracked by
 [issue #35](https://github.com/Nagitch/tanu-markdown/issues/35). Formula is

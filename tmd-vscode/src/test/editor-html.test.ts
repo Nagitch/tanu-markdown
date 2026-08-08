@@ -44,12 +44,23 @@ test("custom editor loads the bundled SvelteKit app with webview resource URIs",
 
   assert.match(html, /id="tmd-editor-root"/);
   assert.match(html, /id="tmd-csp-nonce"/);
+  assert.match(html, /id="toggle-preview"/);
+  assert.match(html, /aria-controls="preview-card"/);
+  assert.match(html, /id="preview-card"/);
+  assert.match(html, /id="cell-edit-status" class="status-bar cell-edit-status stale"/);
+  assert.doesNotMatch(html, /Rendered output/);
+  assert.doesNotMatch(html, />Safe preview<\/h2>/);
   assert.match(html, /id="formula-program-editor"/);
   assert.match(html, /id="formula-program-status"/);
   assert.match(html, /id="formula-program-error"/);
   assert.match(html, /id="formula-column-legend"/);
   assert.match(html, /SUM\(B1:B3\)/);
+  assert.match(html, /id="table-structure-actions"/);
+  assert.match(html, /id="add-table-row"/);
+  assert.match(html, /id="insert-table-column"/);
+  assert.match(html, /id="add-query-formula-data-source"/);
   assert.match(html, /id="add-formula-data-source"/);
+  assert.doesNotMatch(html, /id="add-sqlite-data-source"/);
   assert.match(html, /name="csp-nonce"/);
   assert.match(
     html,

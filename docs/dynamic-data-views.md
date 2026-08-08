@@ -1,6 +1,6 @@
 # Dynamic Data Views
 
-Status: SQLite, Rhai-to-table, and Formula table sources implemented;
+Status: query Formula, computed Formula, and Rhai-to-table sources implemented;
 additional adapters and renderers proposed.
 
 Tracking issues: [#35](https://github.com/Nagitch/tanu-markdown/issues/35),
@@ -27,9 +27,11 @@ summarized in the
 - Keep evaluation read-only, bounded, deterministic where practical, and safe
   for HTML and editor previews.
 
-The current implementation supports SQLite `scalar` and `table` output, a Rhai
-adapter that transforms declared SQLite table inputs into a table, and a
-Formula adapter that derives table cells from one ordered SQLite input.
+The current implementation supports query Formula `scalar` and `table` output,
+a Rhai adapter that transforms declared query Formula inputs into a table, and
+a computed Formula adapter that derives table cells from one ordered query
+Formula input. The query itself still runs against the embedded SQLite
+database.
 Structured attachment adapters remain proposed.
 
 ## Layered model
@@ -40,7 +42,7 @@ Dynamic views have three independent layers:
 Markdown reference
         |
         v
-named data source (sqlite, rhai, or formula; structured attachments proposed)
+named data source (formula or rhai; structured attachments proposed)
         |
         v
 common typed value
@@ -136,10 +138,10 @@ or executable code. Definitions are stored under a versioned, namespaced
 {
   "extras": {
     "tmd_data_sources": {
-      "schema_version": 4,
+      "schema_version": 5,
       "sources": {
         "sales": {
-          "type": "sqlite",
+          "type": "formula",
           "query": "SELECT id, category, amount_cents FROM sample_sales ORDER BY id",
           "edit": {
             "table": "sample_sales",
@@ -189,13 +191,14 @@ Source names are case-sensitive identifiers of 1 to 128 ASCII letters, digits,
 `.`, `_`, and `-`. A name must resolve to exactly one definition in the current
 document.
 
-### SQLite
+### Query Formula
 
-SQLite sources execute one read-only statement against `db/main.sqlite3`:
+Query Formula sources execute one read-only statement against
+`db/main.sqlite3` and return it unchanged when no Formula program is involved:
 
 ```json
 {
-  "type": "sqlite",
+  "type": "formula",
   "query": "SELECT id, body FROM sample_notes ORDER BY id"
 }
 ```
@@ -204,14 +207,19 @@ A one-row, one-column result may be consumed by `scalar`. General query results
 produce the table value described below. Authors are responsible for an
 explicit `ORDER BY` when row order matters.
 
-Registry schema version 4 may add an explicit `edit` contract to a SQLite
-source. `table` and every mapped table column are restricted SQLite
+Registry schema version 5 may add an explicit `edit` contract to a query
+Formula source. `table` and every mapped table column are restricted SQLite
 identifiers. `key.source_column` must occur exactly once in the query result,
 must be non-null and unique there, and maps to `key.table_column` in the target
 table. Only query-result columns listed in `columns` are writable. Updates use
 the stable key and must match exactly one database row; the complete staged
 batch is transactional. An arbitrary SELECT result is never inferred to be
 writable from its displayed row number.
+
+Schema versions 1 through 4 used `type = "sqlite"` for this query shape.
+Readers keep those registries compatible by normalizing the legacy tag to a
+query Formula in memory. Current writers emit schema version 5 and only the
+`formula` and `rhai` source tags.
 
 ### JSON, YAML, and TOML (proposed)
 
@@ -235,7 +243,7 @@ require an explicit normalization decision before implementation.
 ### Rhai table transformation
 
 A Rhai source refers to a declared script attachment, maps script-visible
-aliases to named SQLite sources, and declares its ordered table columns:
+aliases to named query Formula sources, and declares its ordered table columns:
 
 ```json
 {
@@ -251,15 +259,16 @@ aliases to named SQLite sources, and declares its ordered table columns:
 }
 ```
 
-Registry schema version 2 adds this source type; schema version 1 SQLite
-registries remain readable. Each `inputs` value must name a SQLite source in the
-same registry. Rhai-to-Rhai dependencies are intentionally not supported in
-this slice, which keeps evaluation acyclic and makes every database query
-explicit.
+Registry schema version 2 added this source type over legacy SQLite inputs;
+those schema version 1 through 4 registries remain readable. In schema version
+5 each `inputs` value must name a query Formula source in the same registry.
+Rhai-to-Rhai and computed-Formula-to-Rhai dependencies are intentionally not
+supported in this slice, which keeps evaluation acyclic and makes every
+database query explicit.
 
 The host injects one constant map named `inputs`. Each alias contains an array
-of maps whose keys are the corresponding SQLite result-column names. SQLite
-columns must therefore be unique when used as Rhai input. A script returns an
+of maps whose keys are the corresponding query result-column names. Formula
+query columns must therefore be unique when used as Rhai input. A script returns an
 array of maps:
 
 ```rhai
@@ -294,8 +303,8 @@ for a complete grouping example.
 ### Formula table transformation
 
 Registry schema version 3 adds a small spreadsheet-inspired expression
-language. A Formula source names one SQLite source, stores its program inline,
-and declares its complete ordered output columns:
+language. A computed Formula source names one query source, stores its program
+inline, and declares its complete ordered output columns:
 
 ```json
 {
@@ -309,11 +318,12 @@ and declares its complete ordered output columns:
 }
 ```
 
-The input must resolve directly to a SQLite source in the same registry.
-Formula-to-Formula and Rhai-to-Formula pipelines are not supported. The SQLite
-query defines the sheet's absolute order, so authors MUST use `ORDER BY` when
-cell coordinates need to remain stable. RevoGrid sorting and filtering are
-presentation-only and do not change formula coordinates.
+In schema version 5 the input must resolve directly to a query Formula source
+in the same registry. Computed-Formula-to-Formula and Rhai-to-Formula pipelines
+are not supported. The input query defines the sheet's absolute order, so
+authors MUST use `ORDER BY` when cell coordinates need to remain stable.
+RevoGrid sorting and filtering are presentation-only and do not change formula
+coordinates.
 
 The program contains one assignment per non-empty line. `//` introduces a
 comment. The target is an A1-style cell and the right-hand side is parsed into
@@ -322,7 +332,7 @@ an AST and evaluated by the standalone `tmd-formula` Rust engine through the
 SQL. A leading second `=` on the expression is accepted, so both
 `C1 = SUM(B1:B3)` and `C1 = =SUM(B1:B3)` are valid.
 
-Coordinates are one-based over data cells: `A1` is the first SQLite result
+Coordinates are one-based over data cells: `A1` is the first input-query result
 cell, not a header. `$A$1` evaluates as the same coordinate. The VS Code table
 editor uses `$` markers when copying formulas with its fill handle: unmarked
 rows and columns move relative to the destination, while marked components
@@ -334,7 +344,7 @@ Header-oriented references are:
 - `[@amount_cents]`: that output column's value on the target row; and
 - `HEADER(B)`: the output header at column B.
 
-The output column list MUST begin with the exact SQLite input columns in the
+The output column list MUST begin with the exact input-query columns in the
 same order, then may append derived columns. Formula assignments may overlay
 input cells, which lets a table cell switch between its SQLite value and a
 Formula without changing the Formula source shape. Assignments may extend the
@@ -372,8 +382,8 @@ The complete design allows every source to return one of these logical values:
 - object with string keys and typed values; or
 - table with ordered column names and rows of scalar cells.
 
-The SQLite adapter returns a table containing scalar `null`, signed integer,
-finite floating-point, and UTF-8 string cells. Rhai and Formula add native
+The query Formula adapter returns a table containing scalar `null`, signed
+integer, finite floating-point, and UTF-8 string cells. Rhai and Formula add native
 booleans to the table value. General array and object values remain part of the
 common model design for future structured-data adapters. Binary values are not
 part of the render contract. SQLite BLOB values produce a diagnostic.
@@ -386,16 +396,16 @@ Markdown or HTML.
 ### `scalar`
 
 `scalar` accepts `null`, boolean, integer, floating-point, or string values. An
-inline source must produce exactly one scalar. For SQLite this means exactly one
-row and one column; zero or multiple rows are diagnostics unless a future
-fallback policy explicitly says otherwise.
+inline source must produce exactly one scalar. For a query Formula this means
+exactly one row and one column; zero or multiple rows are diagnostics unless a
+future fallback policy explicitly says otherwise.
 
 A block scalar renders the same value as a standalone block. Renderers escape
 the value while preserving surrounding author-written Markdown formatting.
 
 ### `table`
 
-`table` accepts a table value. SQLite column labels and result order become the
+`table` accepts a table value. Query column labels and result order become the
 ordered headers and rows. Rhai and Formula headers use the source's explicit
 `output.columns`; Rhai returned array order and Formula sheet order become
 table row order. A future
@@ -471,20 +481,25 @@ generated text, and the same 1,000-row/128-column/10,000-cell table boundary.
 
 ## Compatibility and rollout
 
-The current slice implements parsing and validation together with SQLite, Rhai,
-and Formula table evaluation in HTML export, the CLI preview bridge, and VS
-Code preview. The VS Code source-management form edits all three definitions.
+The current slice implements parsing and validation together with query
+Formula, computed Formula, and Rhai table evaluation in HTML export, the CLI
+preview bridge, and VS Code preview. The VS Code source-management form edits
+all three definition shapes under the Formula and Rhai source tags.
 Rhai script bodies remain TMD attachments. Formula programs are inline source
 data and the Table tab exposes them in a syntax-highlighted CodeMirror editor
 with debounced, line-and-column diagnostics. Draft Formula edits participate in
 document dirty state, undo/redo, backup, save, preview, and table evaluation
-through the same CLI/core path. JSON, YAML, TOML, and additional renderers can
+through the same CLI/core path. The editor supports row/column append and
+duplicate operations, Formula-only row and derived-column insertion,
+double-click column auto-sizing, and direct Formula-table cell editing from the
+safe preview. Query-backed structure is not shifted because its stable row keys
+and column mappings own database write-back. JSON, YAML, TOML, and additional renderers can
 use the same source and typed-value boundaries in later slices.
 
 Before the experimental feature becomes stable, the implementation must define:
 
 - the persisted location and schema-version rules for source definitions;
-- any additional behavior for missing values and empty SQLite results;
+- any additional behavior for missing values and empty query results;
 - structured-data normalization details;
 - whether current resource-limit defaults become stable;
 - cache and refresh behavior for editor previews; and

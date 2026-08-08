@@ -1,8 +1,8 @@
 # Tanu Markdown Container Specification 1.0 (Draft)
 
 Status: implemented draft<br>
-Version: 1.0.0-draft.3<br>
-Last reviewed: 2026-08-03
+Version: 1.0.0-draft.4<br>
+Last reviewed: 2026-08-08
 
 This document defines the container contract implemented by `tmd-core`
 `0.0.1`. It is versioned so implementation and interoperability tests can
@@ -114,14 +114,14 @@ Source definitions are stored in a versioned registry inside
 ```json
 {
   "tmd_data_sources": {
-    "schema_version": 1,
+    "schema_version": 5,
     "sources": {
       "first-note": {
-        "type": "sqlite",
+        "type": "formula",
         "query": "SELECT body FROM sample_notes WHERE id = 1"
       },
       "sample-notes": {
-        "type": "sqlite",
+        "type": "formula",
         "query": "SELECT id, body FROM sample_notes ORDER BY id"
       }
     }
@@ -129,11 +129,18 @@ Source definitions are stored in a versioned registry inside
 }
 ```
 
-Registry schema version 1 implements only `type = "sqlite"`. A SQLite source
-MUST contain one non-empty, read-only statement. Query output is normalized to
-an ordered table of column labels and scalar cells. A `scalar` view requires
-exactly one row and one column; a `table` view preserves query column and row
-order. Authors MUST use `ORDER BY` when stable row order is required.
+Registry schema version 5 exposes only `type = "formula"` and `type = "rhai"`.
+A Formula definition containing `query` and optional `edit` is a query Formula:
+an identity Formula table that applies no cell program. The query MUST contain
+one non-empty, read-only statement. Query output is normalized to an ordered
+table of column labels and scalar cells. A `scalar` view requires exactly one
+row and one column; a `table` view preserves query column and row order.
+Authors MUST use `ORDER BY` when stable row order is required.
+
+Legacy registry schema version 1 used `type = "sqlite"` for the same query
+shape. Versions 1 through 4 remain readable; readers normalize those legacy
+definitions to query Formula sources in memory. Writers serialize current
+registries as schema version 5 and MUST NOT emit `type = "sqlite"`.
 
 SQLite `NULL`, integer, finite real, and UTF-8 text values are supported.
 SQLite BLOB values, non-finite real values, invalid UTF-8 text, and incompatible
@@ -222,6 +229,14 @@ exactly one table row. Implementations MUST apply a staged edit batch in one
 transaction and MUST NOT infer write-back identity from a displayed row index
 or arbitrary SELECT shape.
 
+Registry schema version 5 replaces the source-level `sqlite` tag with the
+query Formula shape shown above. Computed Formula definitions retain their
+schema-version-3 `input`, `program`, and `output` fields. A computed Formula
+`input` and every Rhai `inputs` value MUST resolve directly to a query Formula,
+not to another computed Formula or a Rhai source. This preserves the existing
+acyclic evaluation graph while reducing the current public source tags to
+Formula and Rhai.
+
 These references use ordinary Markdown text and fenced blocks, so unaware
 readers retain passive placeholders rather than executing a query. The source
 registry is namespaced in `extras` so it does not add a ZIP entry.
@@ -309,3 +324,6 @@ This addition is tracked in
 Draft 6 adds registry schema version 4, explicit primary-keyed SQLite
 write-back contracts, and Formula assignments over input cells while retaining
 schema version 1 through 3 reads.
+Draft 7 adds registry schema version 5, represents read-only database queries
+as identity Formula sources, emits only Formula and Rhai source tags, and
+retains schema version 1 through 4 reads by normalizing legacy SQLite sources.

@@ -8,9 +8,9 @@ export type JsonValue =
 
 export type DataViewRenderKind = "scalar" | "table" | "list" | "code";
 
-export interface SqliteDataSource {
+export interface QueryFormulaDataSource {
   name: string;
-  type: "sqlite";
+  type: "formula";
   query: string;
   edit?: SqliteEditDefinition;
 }
@@ -38,7 +38,7 @@ export interface RhaiDataSource {
   outputColumns: string[];
 }
 
-export interface FormulaDataSource {
+export interface ComputedFormulaDataSource {
   name: string;
   type: "formula";
   input: string;
@@ -46,7 +46,11 @@ export interface FormulaDataSource {
   outputColumns: string[];
 }
 
-export type DataSource = SqliteDataSource | RhaiDataSource | FormulaDataSource;
+export type FormulaDataSource =
+  | QueryFormulaDataSource
+  | ComputedFormulaDataSource;
+
+export type DataSource = FormulaDataSource | RhaiDataSource;
 
 export type DataTableCell =
   | { type: "null" }
@@ -60,6 +64,9 @@ export interface DataSourceTable {
   kind: "table";
   columns: string[];
   rows: DataTableCell[][];
+  /** Shape of the query input before computed Formula rows/columns are added. */
+  inputRowCount?: number;
+  inputColumnCount?: number;
   editable?: DataSourceTableEditInfo;
 }
 
@@ -87,7 +94,7 @@ export interface TextAttachmentView extends TextAttachmentEdit {}
 
 export interface DataSourceRegistryView {
   editable: boolean;
-  schemaVersion?: 1 | 2 | 3 | 4;
+  schemaVersion?: 1 | 2 | 3 | 4 | 5;
   sources: DataSource[];
   issue?: string;
   rawRegistry?: string;

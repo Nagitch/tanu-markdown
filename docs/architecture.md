@@ -55,8 +55,8 @@ The core crate owns:
 - `TmdDoc`, `Manifest`, and attachment metadata;
 - logical attachment path normalization and SHA-256 validation;
 - embedded SQLite lifecycle and migration helpers;
-- named dynamic-data registry parsing, read-only SQLite evaluation, sandboxed
-  Rhai transformation, Formula source resolution, and adaptation between
+- named dynamic-data registry parsing, query Formula evaluation over SQLite,
+  sandboxed Rhai transformation, computed Formula resolution, and adaptation between
   document data sources and the standalone Formula engine;
 - `.tmd` ZIP serialization;
 - optional C ABI functions behind the `ffi` feature.
@@ -74,7 +74,7 @@ The CLI translates terminal inputs into `tmd-core` operations. It owns:
 - human-readable and schema-versioned JSON inspection/updates;
 - attachment and SQLite lifecycle UX;
 - Markdown-to-HTML and schema-versioned preview rendering with real `attach:`
-  URL rewriting and dynamic SQLite, Rhai, and Formula views.
+  URL rewriting and dynamic query Formula, Rhai, and computed Formula views.
 
 HTML rendering neutralizes raw markup and executable URL schemes. Self-contained
 exports retain passive raster-image and plain-text MIME types and downgrade
@@ -121,7 +121,7 @@ column legend, and syntax highlighting below the grid. Program edits flow
 immediately through the ordinary source-definition dirty/save/backup/undo
 lifecycle; table reevaluation is debounced, and the CLI/core returns typed
 line-and-column errors for editor diagnostics.
-For a Formula source whose SQLite input declares a schema-version-4 `edit`
+For a computed Formula source whose query Formula input declares an `edit`
 contract, the grid and formula bar stage either a primary-keyed database update
 or a Formula assignment. Cell/range selection inserts A1 references, and the
 fill handle translates relative references while preserving `$` components.

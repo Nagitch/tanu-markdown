@@ -127,7 +127,7 @@ test("undoing the first edit restores the initially persisted state", () => {
   assert.equal(model.isCurrentRevisionPersisted, true);
 });
 
-test("SQLite source edits participate in document dirty state and undo", () => {
+test("legacy SQLite source edits migrate to Formula schema 5 and support undo", () => {
   const document = inspection("initial", "Initial", 0);
   document.manifest.extras = {
     application: { retained: true },
@@ -141,7 +141,7 @@ test("SQLite source edits participate in document dirty state and undo", () => {
   const model = new TanuMarkdownModel(document);
   const initial = model.snapshot();
   const edited = state("initial", "Initial", [
-    { name: "renamed", type: "sqlite", query: "SELECT 2" },
+    { name: "renamed", type: "formula", query: "SELECT 2" },
   ]);
 
   model.applyState(edited);
@@ -150,9 +150,9 @@ test("SQLite source edits participate in document dirty state and undo", () => {
   assert.deepEqual(model.inspection.manifest.extras, {
     application: { retained: true },
     tmd_data_sources: {
-      schema_version: 1,
+      schema_version: 5,
       sources: {
-        renamed: { type: "sqlite", query: "SELECT 2" },
+        renamed: { type: "formula", query: "SELECT 2" },
       },
     },
   });
@@ -191,7 +191,7 @@ test("staged database cell edits participate in dirty state and clear on save", 
   assert.equal(model.isCurrentRevisionPersisted, true);
 });
 
-test("Rhai source edits preserve schema version 2 and ordered output columns", () => {
+test("Rhai source edits migrate to schema 5 and preserve ordered output columns", () => {
   const document = inspection("{{tmd-table:summary}}", "Summary", 0);
   document.manifest.extras = {
     tmd_data_sources: {
@@ -219,9 +219,9 @@ test("Rhai source edits preserve schema version 2 and ordered output columns", (
   assert.equal(model.isCurrentRevisionPersisted, false);
   assert.deepEqual(model.inspection.manifest.extras, {
     tmd_data_sources: {
-      schema_version: 2,
+      schema_version: 5,
       sources: {
-        sales: { type: "sqlite", query: "SELECT category, amount FROM sales" },
+        sales: { type: "formula", query: "SELECT category, amount FROM sales" },
         summary: {
           type: "rhai",
           script: "views/summary.rhai",
@@ -254,15 +254,18 @@ test("Formula program edits participate in document dirty state and undo", () =>
   const edited = model.snapshot();
   const summary = edited.dataSources.find((source) => source.name === "summary");
   assert.equal(summary?.type, "formula");
-  if (summary?.type !== "formula") throw new Error("missing Formula source");
+  if (summary?.type !== "formula" || !("program" in summary)) {
+    throw new Error("missing computed Formula source");
+  }
   summary.program = "B1 = A1 + A2";
 
   model.applyState(edited);
 
   assert.equal(model.isCurrentRevisionPersisted, false);
   assert.equal(
-    model.snapshot().dataSources.find((source) => source.type === "formula")
-      ?.program,
+    model.snapshot().dataSources.find(
+      (source) => source.type === "formula" && "program" in source,
+    )?.program,
     "B1 = A1 + A2",
   );
   model.applyState(initial);

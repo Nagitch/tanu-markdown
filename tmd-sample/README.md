@@ -5,7 +5,7 @@
 - a value from the populated `sample_notes` SQLite table presented inline in
   prose;
 - the stored rows presented as a dynamic table;
-- a `sample_sales` SQLite source transformed and grouped by a sandboxed Rhai
+- a `sample_sales` query Formula source transformed and grouped by a sandboxed Rhai
   attachment into a second dynamic table;
 - the same ordered sales rows extended by an inline Formula program with a
   calculated column and a `SUM` total, plus an explicit primary-keyed SQLite
@@ -15,7 +15,7 @@
 
 The Markdown selects named data sources declared in
 `manifest.extras.tmd_data_sources`. The Rhai source declares `sales` as its
-SQLite input and `category`, `order_count`, and `total_cents` as its ordered
+query Formula input and `category`, `order_count`, and `total_cents` as its ordered
 output columns. Its editable source copy is
 [`views/category-summary.rhai`](views/category-summary.rhai); identical bytes
 are stored in `sample.tmd` as the `views/category-summary.rhai` attachment.

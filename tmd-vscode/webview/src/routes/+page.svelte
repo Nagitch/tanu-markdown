@@ -11,13 +11,14 @@
   <title>Tanu Markdown Editor</title>
 </svelte:head>
 
-<div id="tmd-editor-root" data-state="loading">
+<div id="tmd-editor-root" data-state="loading" data-preview-visible="true">
   <header class="app-bar">
     <div>
       <div class="eyebrow">Tanu Markdown</div>
       <h1>Document workspace</h1>
     </div>
     <nav class="toolbar" aria-label="Document actions">
+      <button id="toggle-preview" type="button" aria-controls="preview-card" aria-expanded="true">Hide preview</button>
       <button id="validate" type="button">Validate</button>
       <button id="add-attachment" type="button">Add attachment</button>
       <button id="export-html" type="button">Export HTML</button>
@@ -51,6 +52,14 @@
           <h2>Table</h2>
           <p class="section-description">Select a tabular source to inspect its current rows.</p>
           <label class="field table-source-field"><span>Source</span><select id="table-source" disabled></select></label>
+          <div id="table-structure-actions" class="table-structure-actions" aria-label="Formula table structure" hidden>
+            <button id="add-table-row" type="button">Add row</button>
+            <button id="duplicate-table-row" type="button">Duplicate row</button>
+            <button id="insert-table-row" type="button">Insert row</button>
+            <button id="add-table-column" type="button">Add column</button>
+            <button id="duplicate-table-column" type="button">Duplicate column</button>
+            <button id="insert-table-column" type="button">Insert column</button>
+          </div>
           <div class="table-result-heading">
             <p id="table-source-status" class="stale" role="status">Loading sources…</p>
           </div>
@@ -66,7 +75,6 @@
             <button id="apply-cell-edit" type="submit">Apply</button>
             <button id="cancel-cell-edit" type="button">Cancel</button>
           </form>
-          <p id="cell-edit-status" class="cell-edit-status stale" role="status" hidden></p>
           <div id="table-grid-host" class="table-grid-host" hidden></div>
           <section id="formula-program-panel" class="source-script-panel" aria-labelledby="formula-program-heading" hidden>
             <div class="source-script-heading">
@@ -103,9 +111,9 @@
           <pre id="data-source-registry-raw" class="registry-raw" hidden></pre>
           <div id="data-sources"></div>
           <div class="data-source-actions">
-            <button id="add-sqlite-data-source" type="button">Add SQLite source</button>
+            <button id="add-query-formula-data-source" type="button">Add Formula table</button>
             <button id="add-rhai-data-source" type="button">Add Rhai source</button>
-            <button id="add-formula-data-source" type="button">Add Formula source</button>
+            <button id="add-formula-data-source" type="button">Add computed Formula</button>
             <button id="apply-data-sources" type="button">Apply source changes</button>
           </div>
           <p id="data-source-status" class="stale"></p>
@@ -122,9 +130,9 @@
         </section>
       </div>
     </section>
-    <section class="workspace-card preview-card">
-      <div class="card-heading"><div><div class="eyebrow">Rendered output</div><h2>Safe preview</h2></div></div>
+    <section id="preview-card" class="workspace-card preview-card" aria-label="Safe preview">
       <div id="preview" class="preview"></div>
     </section>
   </main>
+  <footer id="cell-edit-status" class="status-bar cell-edit-status stale" role="status" hidden></footer>
 </div>
