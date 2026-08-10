@@ -64,15 +64,17 @@ but not a stable compatibility promise. Changes require:
 The current draft intentionally defines only the `.tmd` ZIP representation;
 alternate-format APIs and tooling are outside the implemented contract.
 
-Dynamic views implement named, read-only database queries as identity Formula
-sources with inline and block `scalar` output plus block `table` output.
-Sandboxed Rhai scripts transform declared query Formula inputs into strictly
-declared tables, while computed Formula sources add A1/range/header references,
-typed functions, dependency and cycle handling, and declared table outputs.
-Registry schema version 5 exposes only `formula` and `rhai` source tags;
-versions 1 through 4 remain readable by normalizing legacy `sqlite` sources.
+Dynamic views primarily use document-native managed Formula sheets. Their
+ordered rows and columns have stable identities, cells contain typed literals
+or bounded A1-style formulas, and `any`, `text`, `number`, and `boolean`
+constraints can be applied progressively per column or cell. Sandboxed Rhai
+scripts transform declared managed or legacy query Formula inputs into strictly
+declared, read-only tables. Registry schema version 6 exposes only `formula`
+and `rhai` source tags; versions 1 through 5 remain readable, including legacy
+SQLite-backed query and computed Formula modes.
 Definitions live in the versioned `manifest.extras.tmd_data_sources` registry.
 JSON, YAML, TOML, `list`, and `code` are planned extensions documented in
 [dynamic data views](dynamic-data-views.md) and tracked by
-[issue #35](https://github.com/Nagitch/tanu-markdown/issues/35). Formula is
-tracked by [issue #45](https://github.com/Nagitch/tanu-markdown/issues/45).
+[issue #35](https://github.com/Nagitch/tanu-markdown/issues/35). Formula editor
+UX is tracked by
+[issue #46](https://github.com/Nagitch/tanu-markdown/issues/46).

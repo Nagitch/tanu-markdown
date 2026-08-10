@@ -2,7 +2,11 @@ import type {
   ComputedFormulaDataSource,
   DataSource,
   DataSourceRegistryView,
+  DataTableCell,
   JsonValue,
+  ManagedCellConstraint,
+  ManagedFormulaCell,
+  ManagedFormulaDataSource,
   QueryFormulaDataSource,
   RhaiDataSource,
   RhaiDataSourceInput,
@@ -14,12 +18,16 @@ const LEGACY_REGISTRY_SCHEMA_VERSION = 1;
 const RHAI_REGISTRY_SCHEMA_VERSION = 2;
 const FORMULA_REGISTRY_SCHEMA_VERSION = 3;
 const EDITABLE_REGISTRY_SCHEMA_VERSION = 4;
-const CURRENT_REGISTRY_SCHEMA_VERSION = 5;
+const QUERY_REGISTRY_SCHEMA_VERSION = 5;
+const CURRENT_REGISTRY_SCHEMA_VERSION = 6;
 const MAX_SOURCE_NAME_BYTES = 128;
 const MAX_QUERY_BYTES = 64 * 1024;
 const MAX_FORMULA_PROGRAM_BYTES = 256 * 1024;
+const MAX_MANAGED_TEXT_BYTES = 1024 * 1024;
 const MAX_RHAI_INPUTS = 16;
 const MAX_TABLE_COLUMNS = 128;
+const MAX_TABLE_ROWS = 1_000;
+const MAX_TABLE_CELLS = 10_000;
 const MAX_COLUMN_NAME_BYTES = 256;
 const MAX_SQLITE_IDENTIFIER_BYTES = 128;
 const SOURCE_NAME_PATTERN = /^[A-Za-z0-9._-]+$/;
@@ -70,10 +78,11 @@ export function inspectDataSourceRegistry(extras: JsonValue): DataSourceRegistry
     schemaVersion !== RHAI_REGISTRY_SCHEMA_VERSION &&
     schemaVersion !== FORMULA_REGISTRY_SCHEMA_VERSION &&
     schemaVersion !== EDITABLE_REGISTRY_SCHEMA_VERSION &&
+    schemaVersion !== QUERY_REGISTRY_SCHEMA_VERSION &&
     schemaVersion !== CURRENT_REGISTRY_SCHEMA_VERSION
   ) {
     return invalidRegistry(
-      `Data-source schema_version ${String(schemaVersion)} is not editable; expected 1, 2, 3, 4 or 5.`,
+      `Data-source schema_version ${String(schemaVersion)} is not editable; expected 1, 2, 3, 4, 5 or 6.`,
       rawRegistry,
     );
   }
@@ -87,7 +96,7 @@ export function inspectDataSourceRegistry(extras: JsonValue): DataSourceRegistry
       return invalidRegistry(`Data source \`${name}\` is not an object.`, rawRegistry);
     }
     if (definition.type === "sqlite") {
-      if (schemaVersion === CURRENT_REGISTRY_SCHEMA_VERSION) {
+      if (schemaVersion === QUERY_REGISTRY_SCHEMA_VERSION || schemaVersion === CURRENT_REGISTRY_SCHEMA_VERSION) {
         return invalidRegistry(
           `Data source \`${name}\` uses the removed SQLite type; use a Formula query source.`,
           rawRegistry,
@@ -114,10 +123,11 @@ export function inspectDataSourceRegistry(extras: JsonValue): DataSourceRegistry
         schemaVersion !== RHAI_REGISTRY_SCHEMA_VERSION &&
         schemaVersion !== FORMULA_REGISTRY_SCHEMA_VERSION &&
         schemaVersion !== EDITABLE_REGISTRY_SCHEMA_VERSION &&
+        schemaVersion !== QUERY_REGISTRY_SCHEMA_VERSION &&
         schemaVersion !== CURRENT_REGISTRY_SCHEMA_VERSION
       ) {
         return invalidRegistry(
-          `Rhai data source \`${name}\` requires schema_version 2, 3, 4 or 5.`,
+          `Rhai data source \`${name}\` requires schema_version 2, 3, 4, 5 or 6.`,
           rawRegistry,
         );
       }
@@ -132,10 +142,27 @@ export function inspectDataSourceRegistry(extras: JsonValue): DataSourceRegistry
       continue;
     }
     if (definition.type === "formula") {
-      if ("query" in definition) {
+      if ("columns" in definition || "rows" in definition) {
         if (schemaVersion !== CURRENT_REGISTRY_SCHEMA_VERSION) {
           return invalidRegistry(
-            `Formula query source \`${name}\` requires schema_version 5.`,
+            `Managed Formula source \`${name}\` requires schema_version 6.`,
+            rawRegistry,
+          );
+        }
+        const source = parseManagedFormulaDataSource(name, definition);
+        if (!source) {
+          return invalidRegistry(
+            `Data source \`${name}\` is not an editable managed Formula table.`,
+            rawRegistry,
+          );
+        }
+        sources.push(source);
+        continue;
+      }
+      if ("query" in definition) {
+        if (schemaVersion !== QUERY_REGISTRY_SCHEMA_VERSION && schemaVersion !== CURRENT_REGISTRY_SCHEMA_VERSION) {
+          return invalidRegistry(
+            `Formula query source \`${name}\` requires schema_version 5 or 6.`,
             rawRegistry,
           );
         }
@@ -152,10 +179,11 @@ export function inspectDataSourceRegistry(extras: JsonValue): DataSourceRegistry
       if (
         schemaVersion !== FORMULA_REGISTRY_SCHEMA_VERSION &&
         schemaVersion !== EDITABLE_REGISTRY_SCHEMA_VERSION &&
+        schemaVersion !== QUERY_REGISTRY_SCHEMA_VERSION &&
         schemaVersion !== CURRENT_REGISTRY_SCHEMA_VERSION
       ) {
         return invalidRegistry(
-          `Computed Formula data source \`${name}\` requires schema_version 3, 4 or 5.`,
+          `Computed Formula data source \`${name}\` requires schema_version 3, 4, 5 or 6.`,
           rawRegistry,
         );
       }
@@ -232,6 +260,11 @@ export function validateDataSources(sources: readonly DataSource[]): void {
       continue;
     }
 
+    if (isManagedFormulaDataSource(source)) {
+      validateManagedFormulaDataSource(source, definitions);
+      continue;
+    }
+
     if (source.type === "rhai") {
       validateRhaiDataSource(source, definitions);
     } else {
@@ -255,6 +288,13 @@ export function sameDataSources(
         isQueryFormulaDataSource(other) &&
         source.query === other.query &&
         sameSqliteEditDefinitions(source.edit, other.edit)
+      );
+    }
+    if (isManagedFormulaDataSource(source)) {
+      return (
+        isManagedFormulaDataSource(other) &&
+        JSON.stringify(serializeDataSource(source)) ===
+          JSON.stringify(serializeDataSource(other))
       );
     }
     if (source.type === "rhai") {
@@ -379,6 +419,141 @@ function parseFormulaDataSource(
   };
 }
 
+function parseManagedFormulaDataSource(
+  name: string,
+  definition: { [key: string]: JsonValue },
+): ManagedFormulaDataSource | undefined {
+  if (
+    hasUnknownKeys(definition, new Set(["type", "columns", "rows"])) ||
+    !Array.isArray(definition.columns) ||
+    !Array.isArray(definition.rows)
+  ) {
+    return undefined;
+  }
+  const columns: ManagedFormulaDataSource["columns"] = [];
+  for (const value of definition.columns) {
+    if (
+      !isObject(value) ||
+      hasUnknownKeys(value, new Set(["id", "name", "constraint", "reference"])) ||
+      typeof value.id !== "string" ||
+      typeof value.name !== "string" ||
+      !isManagedCellConstraint(value.constraint)
+    ) {
+      return undefined;
+    }
+    let reference: ManagedFormulaDataSource["columns"][number]["reference"];
+    if (value.reference !== undefined) {
+      if (
+        !isObject(value.reference) ||
+        hasUnknownKeys(value.reference, new Set(["source", "column_id"])) ||
+        typeof value.reference.source !== "string" ||
+        typeof value.reference.column_id !== "string"
+      ) {
+        return undefined;
+      }
+      reference = {
+        source: value.reference.source,
+        columnId: value.reference.column_id,
+      };
+    }
+    columns.push({
+      id: value.id,
+      name: value.name,
+      constraint: value.constraint,
+      ...(reference ? { reference } : {}),
+    });
+  }
+  const rows: ManagedFormulaDataSource["rows"] = [];
+  for (const value of definition.rows) {
+    if (
+      !isObject(value) ||
+      hasUnknownKeys(value, new Set(["id", "cells"])) ||
+      typeof value.id !== "string" ||
+      !Array.isArray(value.cells)
+    ) {
+      return undefined;
+    }
+    const cells: ManagedFormulaCell[] = [];
+    for (const cellValue of value.cells) {
+      const cell = parseManagedFormulaCell(cellValue);
+      if (!cell) return undefined;
+      cells.push(cell);
+    }
+    rows.push({ id: value.id, cells });
+  }
+  return { name, type: "formula", columns, rows };
+}
+
+function parseManagedFormulaCell(value: JsonValue): ManagedFormulaCell | undefined {
+  if (
+    !isObject(value) ||
+    hasUnknownKeys(value, new Set(["content", "constraint"])) ||
+    (value.constraint !== undefined && !isManagedCellConstraint(value.constraint)) ||
+    !isObject(value.content)
+  ) {
+    return undefined;
+  }
+  const constraint = value.constraint as ManagedCellConstraint | undefined;
+  if (
+    value.content.kind === "formula" &&
+    !hasUnknownKeys(value.content, new Set(["kind", "expression"])) &&
+    typeof value.content.expression === "string"
+  ) {
+    return {
+      content: { kind: "formula", expression: value.content.expression },
+      ...(constraint ? { constraint } : {}),
+    };
+  }
+  if (
+    value.content.kind === "literal" &&
+    !hasUnknownKeys(value.content, new Set(["kind", "value"]))
+  ) {
+    const literal = parseDataTableCell(value.content.value);
+    if (!literal) return undefined;
+    return {
+      content: { kind: "literal", value: literal },
+      ...(constraint ? { constraint } : {}),
+    };
+  }
+  return undefined;
+}
+
+function parseDataTableCell(value: JsonValue): DataTableCell | undefined {
+  if (!isObject(value) || typeof value.type !== "string") return undefined;
+  if (value.type === "null" && !hasUnknownKeys(value, new Set(["type"]))) {
+    return { type: "null" };
+  }
+  if (
+    value.type === "boolean" &&
+    !hasUnknownKeys(value, new Set(["type", "value"])) &&
+    typeof value.value === "boolean"
+  ) {
+    return { type: "boolean", value: value.value };
+  }
+  if (
+    value.type === "integer" &&
+    !hasUnknownKeys(value, new Set(["type", "value"])) &&
+    typeof value.value === "string"
+  ) {
+    return { type: "integer", value: value.value };
+  }
+  if (
+    value.type === "real" &&
+    !hasUnknownKeys(value, new Set(["type", "value"])) &&
+    typeof value.value === "number"
+  ) {
+    return { type: "real", value: value.value };
+  }
+  if (
+    value.type === "string" &&
+    !hasUnknownKeys(value, new Set(["type", "value"])) &&
+    typeof value.value === "string"
+  ) {
+    return { type: "string", value: value.value };
+  }
+  return undefined;
+}
+
 function serializeDataSource(source: DataSource): JsonValue {
   if (isQueryFormulaDataSource(source)) {
     return {
@@ -402,6 +577,28 @@ function serializeDataSource(source: DataSource): JsonValue {
             },
           }
         : {}),
+    };
+  }
+  if (isManagedFormulaDataSource(source)) {
+    return {
+      type: "formula",
+      columns: source.columns.map((column) => ({
+        id: column.id,
+        name: column.name,
+        constraint: column.constraint,
+        ...(column.reference
+          ? {
+              reference: {
+                source: column.reference.source,
+                column_id: column.reference.columnId,
+              },
+            }
+          : {}),
+      })),
+      rows: source.rows.map((row) => ({
+        id: row.id,
+        cells: row.cells.map(serializeManagedFormulaCell),
+      })),
     };
   }
   if (isComputedFormulaDataSource(source)) {
@@ -428,6 +625,105 @@ function serializeDataSource(source: DataSource): JsonValue {
       columns: [...source.outputColumns],
     },
   };
+}
+
+function serializeManagedFormulaCell(cell: ManagedFormulaCell): JsonValue {
+  const content: JsonValue =
+    cell.content.kind === "formula"
+      ? { kind: "formula", expression: cell.content.expression }
+      : { kind: "literal", value: { ...cell.content.value } };
+  return {
+    content,
+    ...(cell.constraint ? { constraint: cell.constraint } : {}),
+  };
+}
+
+function validateManagedFormulaDataSource(
+  source: ManagedFormulaDataSource,
+  definitions: ReadonlyMap<string, DataSource>,
+): void {
+  if (source.columns.length === 0 || source.columns.length > MAX_TABLE_COLUMNS) {
+    throw new Error(
+      `Managed Formula source \`${source.name}\` requires 1-${MAX_TABLE_COLUMNS} columns.`,
+    );
+  }
+  if (source.rows.length > MAX_TABLE_ROWS || source.rows.length * source.columns.length > MAX_TABLE_CELLS) {
+    throw new Error(
+      `Managed Formula source \`${source.name}\` exceeds the ${MAX_TABLE_ROWS}-row or ${MAX_TABLE_CELLS}-cell limit.`,
+    );
+  }
+  const columnIds = new Set<string>();
+  const columnNames = new Set<string>();
+  for (const column of source.columns) {
+    validateStableId(column.id, `Managed Formula source \`${source.name}\` column`);
+    validateColumnName(column.name, source.name);
+    if (columnIds.has(column.id) || columnNames.has(column.name)) {
+      throw new Error(`Managed Formula source \`${source.name}\` requires unique column ids and names.`);
+    }
+    columnIds.add(column.id);
+    columnNames.add(column.name);
+    if (column.reference) {
+      const target = definitions.get(column.reference.source);
+      if (!isManagedFormulaDataSource(target) || !target.columns.some((candidate) => candidate.id === column.reference?.columnId)) {
+        throw new Error(`Managed Formula source \`${source.name}\` has an invalid column reference.`);
+      }
+    }
+  }
+  const rowIds = new Set<string>();
+  let formulaProgramBytes = 0;
+  for (const row of source.rows) {
+    validateStableId(row.id, `Managed Formula source \`${source.name}\` row`);
+    if (rowIds.has(row.id)) throw new Error(`Managed Formula source \`${source.name}\` requires unique row ids.`);
+    rowIds.add(row.id);
+    if (row.cells.length !== source.columns.length) {
+      throw new Error(`Managed Formula source \`${source.name}\` rows must match its column count.`);
+    }
+    for (const [index, cell] of row.cells.entries()) {
+      if (cell.content.kind === "formula") {
+        if (
+          cell.content.expression.trim() === "" ||
+          cell.content.expression.trimStart().startsWith("=") ||
+          /[\r\n]/u.test(cell.content.expression)
+        ) {
+          throw new Error("Managed Formula expressions must be non-empty single-line RHS expressions without a leading '='.");
+        }
+        formulaProgramBytes += Buffer.byteLength(cell.content.expression, "utf8") + 16;
+        continue;
+      }
+      validateManagedLiteral(cell.content.value, cell.constraint ?? source.columns[index].constraint);
+    }
+  }
+  if (formulaProgramBytes > MAX_FORMULA_PROGRAM_BYTES) {
+    throw new Error(`Managed Formula source \`${source.name}\` program exceeds ${MAX_FORMULA_PROGRAM_BYTES} bytes.`);
+  }
+}
+
+function validateManagedLiteral(value: DataTableCell, constraint: ManagedCellConstraint): void {
+  if (value.type === "real" && !Number.isFinite(value.value)) throw new Error("Managed real values must be finite.");
+  if (value.type === "integer") {
+    if (!/^(?:0|-?[1-9]\d*)$/u.test(value.value)) throw new Error("Managed integer values must be canonical decimal strings.");
+    const integer = BigInt(value.value);
+    if (integer < -(2n ** 63n) || integer > 2n ** 63n - 1n) {
+      throw new Error("Managed integer values must fit in a signed 64-bit value.");
+    }
+  }
+  if (value.type === "string" && Buffer.byteLength(value.value, "utf8") > MAX_MANAGED_TEXT_BYTES) {
+    throw new Error(`Managed text values must be at most ${MAX_MANAGED_TEXT_BYTES} bytes.`);
+  }
+  if (value.type === "null" || constraint === "any") return;
+  if (constraint === "text" && value.type !== "string") throw new Error("A managed Text cell contains a non-text literal.");
+  if (constraint === "number" && value.type !== "integer" && value.type !== "real") throw new Error("A managed Number cell contains a non-number literal.");
+  if (constraint === "boolean" && value.type !== "boolean") throw new Error("A managed Boolean cell contains a non-boolean literal.");
+}
+
+function validateStableId(value: string, owner: string): void {
+  if (!SOURCE_NAME_PATTERN.test(value) || Buffer.byteLength(value, "utf8") > MAX_SOURCE_NAME_BYTES) {
+    throw new Error(`${owner} id \`${value}\` is invalid.`);
+  }
+}
+
+function isManagedCellConstraint(value: JsonValue): value is ManagedCellConstraint {
+  return value === "any" || value === "text" || value === "number" || value === "boolean";
 }
 
 function validateSqliteEditDefinition(
@@ -525,9 +821,9 @@ function validateRhaiDataSource(
         `Rhai source \`${source.name}\` input \`${input.alias}\` references undefined source \`${input.source}\`.`,
       );
     }
-    if (!isQueryFormulaDataSource(target)) {
+    if (!isQueryFormulaDataSource(target) && !isManagedFormulaDataSource(target)) {
       throw new Error(
-        `Rhai source \`${source.name}\` input \`${input.alias}\` must reference a Formula query source.`,
+        `Rhai source \`${source.name}\` input \`${input.alias}\` must reference a managed or query Formula table.`,
       );
     }
   }
@@ -692,6 +988,12 @@ export function isComputedFormulaDataSource(
   source: DataSource | undefined,
 ): source is ComputedFormulaDataSource {
   return source?.type === "formula" && "input" in source;
+}
+
+export function isManagedFormulaDataSource(
+  source: DataSource | undefined,
+): source is ManagedFormulaDataSource {
+  return source?.type === "formula" && "columns" in source;
 }
 
 function invalidRegistry(issue: string, rawRegistry: string): DataSourceRegistryView {

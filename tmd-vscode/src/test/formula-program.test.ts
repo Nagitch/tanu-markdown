@@ -8,6 +8,7 @@ import {
   spreadsheetCellName,
   spreadsheetColumnName,
   translateFormulaExpression,
+  rebaseFormulaExpression,
 } from "../formula-program.js";
 
 test("Formula columns use familiar A1 spreadsheet labels", () => {
@@ -15,6 +16,13 @@ test("Formula columns use familiar A1 spreadsheet labels", () => {
   assert.equal(spreadsheetColumnName(25), "Z");
   assert.equal(spreadsheetColumnName(26), "AA");
   assert.equal(spreadsheetColumnName(127), "DX");
+});
+
+test("Formula extraction rebases absolute coordinates and HEADER references", () => {
+  assert.equal(
+    rebaseFormulaExpression('$B$2 + c3 + HEADER(B) + "A1" + [@Input]', -1, -1),
+    '$A$1 + B2 + HEADER(A) + "A1" + [@Input]',
+  );
 });
 
 test("Formula programs expose and replace individual cell assignments", () => {

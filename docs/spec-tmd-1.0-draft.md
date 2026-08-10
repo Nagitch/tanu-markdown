@@ -1,8 +1,8 @@
 # Tanu Markdown Container Specification 1.0 (Draft)
 
 Status: implemented draft<br>
-Version: 1.0.0-draft.4<br>
-Last reviewed: 2026-08-08
+Version: 1.0.0-draft.5<br>
+Last reviewed: 2026-08-11
 
 This document defines the container contract implemented by `tmd-core`
 `0.0.1`. It is versioned so implementation and interoperability tests can
@@ -114,23 +114,55 @@ Source definitions are stored in a versioned registry inside
 ```json
 {
   "tmd_data_sources": {
-    "schema_version": 5,
+    "schema_version": 6,
     "sources": {
-      "first-note": {
+      "sheet": {
         "type": "formula",
-        "query": "SELECT body FROM sample_notes WHERE id = 1"
-      },
-      "sample-notes": {
-        "type": "formula",
-        "query": "SELECT id, body FROM sample_notes ORDER BY id"
+        "columns": [
+          { "id": "c1", "name": "label", "constraint": "text" },
+          { "id": "c2", "name": "value", "constraint": "any" }
+        ],
+        "rows": [
+          {
+            "id": "r1",
+            "cells": [
+              { "content": { "kind": "literal", "value": { "type": "string", "value": "Total" } } },
+              { "content": { "kind": "formula", "expression": "1 + 2" }, "constraint": "number" }
+            ]
+          }
+        ]
       }
     }
   }
 }
 ```
 
-Registry schema version 5 exposes only `type = "formula"` and `type = "rhai"`.
-A Formula definition containing `query` and optional `edit` is a query Formula:
+Registry schema version 6 exposes only `type = "formula"` and `type = "rhai"`.
+A Formula definition containing `columns` and `rows` is a managed Formula table.
+Columns and rows MUST have unique stable identifiers using the source-name
+character set. Column names MUST be unique. Every row MUST contain exactly one
+cell per ordered column. A column MUST declare `constraint` as `any`, `text`,
+`number`, or `boolean`; a cell MAY declare an override using the same values.
+The effective constraint is the cell override when present and the column
+constraint otherwise. Null satisfies every constraint; other literal and
+evaluated values MUST match it.
+
+A managed cell `content` is exactly one of a tagged `literal` with a typed
+`value`, or a tagged `formula` with a non-empty, single-line right-hand-side
+`expression` that has no leading `=`. Typed literals are null, boolean, real,
+string, or integer; integer JSON values MUST be canonical decimal strings in
+the signed 64-bit range. Formulas are evaluated together over the ordered grid
+using the schema-version-3 language and A1 coordinates. The table and complete
+lowered Formula program are bounded. A Formula result is validated against its
+effective constraint after evaluation.
+
+A managed column MAY contain `"reference": { "source": "...", "column_id": "..." }`. The source
+MUST resolve to a managed Formula table and the stable column id MUST
+exist there. This is declarative relationship metadata and does not imply a
+join or evaluation dependency.
+
+A Formula definition containing `query` and optional `edit` is the legacy
+query Formula mode:
 an identity Formula table that applies no cell program. The query MUST contain
 one non-empty, read-only statement. Query output is normalized to an ordered
 table of column labels and scalar cells. A `scalar` view requires exactly one
@@ -140,7 +172,7 @@ Authors MUST use `ORDER BY` when stable row order is required.
 Legacy registry schema version 1 used `type = "sqlite"` for the same query
 shape. Versions 1 through 4 remain readable; readers normalize those legacy
 definitions to query Formula sources in memory. Writers serialize current
-registries as schema version 5 and MUST NOT emit `type = "sqlite"`.
+registries as schema version 6 and MUST NOT emit `type = "sqlite"`.
 
 SQLite `NULL`, integer, finite real, and UTF-8 text values are supported.
 SQLite BLOB values, non-finite real values, invalid UTF-8 text, and incompatible
@@ -167,9 +199,10 @@ transformations. A Rhai definition has this shape:
 
 `script` MUST be the canonical logical path of a declared UTF-8 attachment.
 Each `inputs` key is the alias exposed beneath the Rhai `inputs` map, and each
-value MUST resolve to a SQLite source in the same registry. Rhai sources MUST
-NOT directly depend on other Rhai sources in schema version 2. SQLite input
-rows become arrays of maps keyed by unique result-column labels.
+value MUST resolve to a compatible Formula table in the same registry. In
+schema version 6 this means a managed Formula table or a query Formula; Rhai
+and computed Formula inputs remain invalid. Input rows become arrays of maps
+keyed by unique result-column labels.
 
 The Rhai result MUST be an array of maps. Every map MUST contain exactly the
 declared `output.columns`; the declaration determines column order. Supported
@@ -236,6 +269,13 @@ schema-version-3 `input`, `program`, and `output` fields. A computed Formula
 not to another computed Formula or a Rhai source. This preserves the existing
 acyclic evaluation graph while reducing the current public source tags to
 Formula and Rhai.
+
+Registry schema version 6 adds SQLite-independent managed Formula tables with
+stable row and column identities, typed literals, progressive column/cell
+constraints, per-cell formulas, and optional declarative column references.
+Rhai inputs may resolve to managed or query Formula tables. Query and computed
+Formula definitions remain readable for compatibility, while current authoring
+tools create managed Formula and Rhai definitions.
 
 These references use ordinary Markdown text and fenced blocks, so unaware
 readers retain passive placeholders rather than executing a query. The source
@@ -327,3 +367,6 @@ schema version 1 through 3 reads.
 Draft 7 adds registry schema version 5, represents read-only database queries
 as identity Formula sources, emits only Formula and Rhai source tags, and
 retains schema version 1 through 4 reads by normalizing legacy SQLite sources.
+Draft 8 adds registry schema version 6, document-native managed Formula tables,
+progressive constraints, per-cell formulas, stable relationship metadata, and
+managed-Formula-to-Rhai inputs while retaining schema version 1 through 5 reads.

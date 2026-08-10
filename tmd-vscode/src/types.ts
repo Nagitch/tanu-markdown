@@ -46,9 +46,44 @@ export interface ComputedFormulaDataSource {
   outputColumns: string[];
 }
 
+export type ManagedCellConstraint = "any" | "text" | "number" | "boolean";
+
+export interface ManagedFormulaColumn {
+  id: string;
+  name: string;
+  constraint: ManagedCellConstraint;
+  reference?: {
+    source: string;
+    columnId: string;
+  };
+}
+
+export type ManagedFormulaCellContent =
+  | { kind: "literal"; value: DataTableCell }
+  | { kind: "formula"; expression: string };
+
+export interface ManagedFormulaCell {
+  content: ManagedFormulaCellContent;
+  /** An explicit cell constraint. Omit to inherit the column constraint. */
+  constraint?: ManagedCellConstraint;
+}
+
+export interface ManagedFormulaRow {
+  id: string;
+  cells: ManagedFormulaCell[];
+}
+
+export interface ManagedFormulaDataSource {
+  name: string;
+  type: "formula";
+  columns: ManagedFormulaColumn[];
+  rows: ManagedFormulaRow[];
+}
+
 export type FormulaDataSource =
   | QueryFormulaDataSource
-  | ComputedFormulaDataSource;
+  | ComputedFormulaDataSource
+  | ManagedFormulaDataSource;
 
 export type DataSource = FormulaDataSource | RhaiDataSource;
 
@@ -94,7 +129,7 @@ export interface TextAttachmentView extends TextAttachmentEdit {}
 
 export interface DataSourceRegistryView {
   editable: boolean;
-  schemaVersion?: 1 | 2 | 3 | 4 | 5;
+  schemaVersion?: 1 | 2 | 3 | 4 | 5 | 6;
   sources: DataSource[];
   issue?: string;
   rawRegistry?: string;

@@ -1,15 +1,17 @@
 # Dynamic Data Views
 
-Status: query Formula, computed Formula, and Rhai-to-table sources implemented;
-additional adapters and renderers proposed.
+Status: managed Formula sheets and Rhai-to-table sources implemented; legacy
+query/computed Formula modes remain readable; additional adapters and renderers
+proposed.
 
 Tracking issues: [#35](https://github.com/Nagitch/tanu-markdown/issues/35),
-[#45](https://github.com/Nagitch/tanu-markdown/issues/45)
+[#45](https://github.com/Nagitch/tanu-markdown/issues/45), and
+[#46](https://github.com/Nagitch/tanu-markdown/issues/46).
 
-This document defines the implemented TMD extension for rendering embedded
-SQLite data, sandboxed Rhai transformations, and bounded spreadsheet-style
-formulas inside document Markdown. It also records planned extension points
-for declared JSON, YAML, and TOML attachments. The implemented contract is
+This document defines the implemented TMD extension for rendering
+document-native tables, sandboxed Rhai transformations, and bounded
+spreadsheet-style formulas inside document Markdown. It also records planned
+extension points for declared JSON, YAML, and TOML attachments. The implemented contract is
 summarized in the
 [TMD 1.0 draft specification](spec-tmd-1.0-draft.md).
 
@@ -27,12 +29,12 @@ summarized in the
 - Keep evaluation read-only, bounded, deterministic where practical, and safe
   for HTML and editor previews.
 
-The current implementation supports query Formula `scalar` and `table` output,
-a Rhai adapter that transforms declared query Formula inputs into a table, and
-a computed Formula adapter that derives table cells from one ordered query
-Formula input. The query itself still runs against the embedded SQLite
-database.
-Structured attachment adapters remain proposed.
+The primary implementation is a managed Formula table whose data and formulas
+live in the document registry without depending on SQLite. Rhai transforms
+declared managed or legacy query Formula inputs into a read-only table. Query
+Formula and computed Formula definitions remain supported for schema-version
+compatibility, but the editor no longer creates them. Structured attachment
+adapters remain proposed.
 
 ## Layered model
 
@@ -138,41 +140,33 @@ or executable code. Definitions are stored under a versioned, namespaced
 {
   "extras": {
     "tmd_data_sources": {
-      "schema_version": 5,
+      "schema_version": 6,
       "sources": {
-        "sales": {
+        "orders": {
           "type": "formula",
-          "query": "SELECT id, category, amount_cents FROM sample_sales ORDER BY id",
-          "edit": {
-            "table": "sample_sales",
-            "key": {
-              "source_column": "id",
-              "table_column": "id"
-            },
-            "columns": {
-              "category": "category",
-              "amount_cents": "amount_cents"
+          "columns": [
+            { "id": "c1", "name": "item", "constraint": "text" },
+            { "id": "c2", "name": "quantity", "constraint": "number" },
+            { "id": "c3", "name": "total", "constraint": "number" }
+          ],
+          "rows": [
+            {
+              "id": "r1",
+              "cells": [
+                { "content": { "kind": "literal", "value": { "type": "string", "value": "Tea" } } },
+                { "content": { "kind": "literal", "value": { "type": "integer", "value": "2" } } },
+                { "content": { "kind": "formula", "expression": "B1 * 450" } }
+              ]
             }
-          }
+          ]
         },
-        "category-summary": {
+        "order-view": {
           "type": "rhai",
-          "script": "views/category-summary.rhai",
-          "inputs": {
-            "sales": "sales"
-          },
+          "script": "views/order-view.rhai",
+          "inputs": { "orders": "orders" },
           "output": {
             "type": "table",
-            "columns": ["category", "total_cents"]
-          }
-        },
-        "sales-formula": {
-          "type": "formula",
-          "input": "sales",
-          "program": "D1 = SUM(C1:C3)\nD2 = D1\nD3 = [@amount_cents] * 2",
-          "output": {
-            "type": "table",
-            "columns": ["id", "category", "amount_cents", "total_cents"]
+            "columns": ["item", "total"]
           }
         }
       }
@@ -191,7 +185,35 @@ Source names are case-sensitive identifiers of 1 to 128 ASCII letters, digits,
 `.`, `_`, and `-`. A name must resolve to exactly one definition in the current
 document.
 
-### Query Formula
+### Managed Formula table
+
+Registry schema version 6 adds the editor's primary table shape. A managed
+Formula table owns ordered columns and rows directly; it does not read or write
+SQLite. New tables start as a 3-by-3 grid whose columns use the `any`
+constraint. Authors can progressively constrain a column or an individual cell
+as `text`, `number`, or `boolean`. A cell override takes precedence over its
+column constraint, and null is accepted by every constraint.
+
+Every row and column has a stable identifier separate from its display name.
+Each cell contains either a typed literal or one single-line Formula right-hand
+side without a leading `=`. Integer literals are decimal strings so the JSON
+bridge preserves the complete signed 64-bit range. Formula coordinates use the
+current ordered grid; the editor rewrites references when rows or columns are
+inserted. The complete table is evaluated before constraints are checked, so a
+Formula result must satisfy the effective cell constraint.
+
+Columns may declare a relationship with
+`reference: { source, column_id }`. This metadata records the result of an
+explicit normalization operation; it does not perform an implicit join. The
+editor suggests normalization only for conservative literal-only candidates,
+shows the candidate with a blue outline, and applies the source replacement and
+new related table as one undoable edit. Range extraction copies a rectangular,
+self-contained selection into another managed Formula table.
+
+Managed Formula tables are editable both in the Table tab and in safe-preview
+`tmd-view:table` output. Rhai output is always read-only.
+
+### Query Formula (legacy authoring mode)
 
 Query Formula sources execute one read-only statement against
 `db/main.sqlite3` and return it unchanged when no Formula program is involved:
@@ -207,7 +229,7 @@ A one-row, one-column result may be consumed by `scalar`. General query results
 produce the table value described below. Authors are responsible for an
 explicit `ORDER BY` when row order matters.
 
-Registry schema version 5 may add an explicit `edit` contract to a query
+Registry schema versions 5 and 6 may add an explicit `edit` contract to a query
 Formula source. `table` and every mapped table column are restricted SQLite
 identifiers. `key.source_column` must occur exactly once in the query result,
 must be non-null and unique there, and maps to `key.table_column` in the target
@@ -218,8 +240,9 @@ writable from its displayed row number.
 
 Schema versions 1 through 4 used `type = "sqlite"` for this query shape.
 Readers keep those registries compatible by normalizing the legacy tag to a
-query Formula in memory. Current writers emit schema version 5 and only the
-`formula` and `rhai` source tags.
+query Formula in memory. Current writers emit schema version 6 and only the
+`formula` and `rhai` source tags. The editor retains query Formula sources but
+does not offer them as a new-table workflow.
 
 ### JSON, YAML, and TOML (proposed)
 
@@ -243,7 +266,8 @@ require an explicit normalization decision before implementation.
 ### Rhai table transformation
 
 A Rhai source refers to a declared script attachment, maps script-visible
-aliases to named query Formula sources, and declares its ordered table columns:
+aliases to named managed or query Formula sources, and declares its ordered
+table columns:
 
 ```json
 {
@@ -261,14 +285,15 @@ aliases to named query Formula sources, and declares its ordered table columns:
 
 Registry schema version 2 added this source type over legacy SQLite inputs;
 those schema version 1 through 4 registries remain readable. In schema version
-5 each `inputs` value must name a query Formula source in the same registry.
+6 each `inputs` value must name a managed or query Formula source in the same
+registry.
 Rhai-to-Rhai and computed-Formula-to-Rhai dependencies are intentionally not
-supported in this slice, which keeps evaluation acyclic and makes every
-database query explicit.
+supported in this slice. Managed Formula inputs have no source dependency, and
+legacy query inputs make every database query explicit.
 
 The host injects one constant map named `inputs`. Each alias contains an array
 of maps whose keys are the corresponding query result-column names. Formula
-query columns must therefore be unique when used as Rhai input. A script returns an
+input columns must therefore be unique when used as Rhai input. A script returns an
 array of maps:
 
 ```rhai
@@ -298,9 +323,9 @@ floating-point, or string. Nested maps, arrays, and other runtime values are
 not valid cells. Authors should sort the returned array when stable row order
 matters. See
 [`tmd-sample/views/category-summary.rhai`](../tmd-sample/views/category-summary.rhai)
-for a complete grouping example.
+for a complete managed-input/read-only-output example.
 
-### Formula table transformation
+### Computed Formula transformation (legacy authoring mode)
 
 Registry schema version 3 adds a small spreadsheet-inspired expression
 language. A computed Formula source names one query source, stores its program
@@ -318,8 +343,8 @@ inline, and declares its complete ordered output columns:
 }
 ```
 
-In schema version 5 the input must resolve directly to a query Formula source
-in the same registry. Computed-Formula-to-Formula and Rhai-to-Formula pipelines
+In schema versions 5 and 6 the input must resolve directly to a query Formula
+source in the same registry. Computed-Formula-to-Formula and Rhai-to-Formula pipelines
 are not supported. The input query defines the sheet's absolute order, so
 authors MUST use `ORDER BY` when cell coordinates need to remain stable.
 RevoGrid sorting and filtering are presentation-only and do not change formula

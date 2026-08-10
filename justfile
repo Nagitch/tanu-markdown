@@ -14,6 +14,9 @@ test:
 
 samples:
     cargo run --locked -p tmd-cli -- validate tmd-sample/sample.tmd
+    printf '%s' '{"schema_version":1,"source":"orders"}' | cargo run --locked -p tmd-cli -- data-source tmd-sample/sample.tmd --json-stdin >/dev/null
+    printf '%s' '{"schema_version":1,"source":"contacts"}' | cargo run --locked -p tmd-cli -- data-source tmd-sample/sample.tmd --json-stdin >/dev/null
+    printf '%s' '{"schema_version":1,"source":"order-report"}' | cargo run --locked -p tmd-cli -- data-source tmd-sample/sample.tmd --json-stdin >/dev/null
 
 doc:
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps

@@ -10,13 +10,15 @@ use std::ops::Range;
 use std::time::{Duration, Instant};
 use tmd_data::{DataScalar, DataTable};
 use tmd_formula::{
-    evaluate_formula_program_with_limits, parse_formula_program, FormulaEvaluationLimits,
+    evaluate_formula_program_with_limits, parse_formula_program, CellRef, FormulaEvaluationLimits,
+    MAX_FORMULA_PROGRAM_BYTES,
 };
 
 /// Manifest `extras` key containing versioned dynamic-data source definitions.
 pub const DATA_SOURCES_EXTRAS_KEY: &str = "tmd_data_sources";
 
-const DATA_SOURCES_SCHEMA_VERSION: u32 = 5;
+const DATA_SOURCES_SCHEMA_VERSION: u32 = 6;
+const FORMULA_QUERY_DATA_SOURCES_SCHEMA_VERSION: u32 = 5;
 const EDITABLE_DATA_SOURCES_SCHEMA_VERSION: u32 = 4;
 const FORMULA_DATA_SOURCES_SCHEMA_VERSION: u32 = 3;
 const RHAI_DATA_SOURCES_SCHEMA_VERSION: u32 = 2;
@@ -42,7 +44,7 @@ const MAX_COLUMN_NAME_BYTES: usize = 256;
 const MAX_SQLITE_IDENTIFIER_BYTES: usize = 128;
 
 /// Versioned collection of named dynamic-data sources.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct DataSourceRegistry {
     /// Schema version read from the registry payload.
     ///
@@ -102,13 +104,14 @@ enum RawDataSourceDefinition {
 enum RawFormulaDefinition {
     Query(RawFormulaQueryDefinition),
     Computed(RawComputedFormulaDefinition),
+    Managed(RawManagedFormulaDefinition),
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawFormulaQueryDefinition {
     query: String,
-    #[serde(default, deserialize_with = "deserialize_present_formula_edit")]
+    #[serde(default, deserialize_with = "deserialize_present_option")]
     edit: Option<SqliteEditDefinition>,
 }
 
@@ -120,13 +123,19 @@ struct RawComputedFormulaDefinition {
     output: DataSourceOutput,
 }
 
-fn deserialize_present_formula_edit<'de, D>(
-    deserializer: D,
-) -> Result<Option<SqliteEditDefinition>, D::Error>
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawManagedFormulaDefinition {
+    columns: Vec<FormulaTableColumn>,
+    rows: Vec<FormulaTableRow>,
+}
+
+fn deserialize_present_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
     D: Deserializer<'de>,
+    T: Deserialize<'de>,
 {
-    SqliteEditDefinition::deserialize(deserializer).map(Some)
+    T::deserialize(deserializer).map(Some)
 }
 
 impl<'de> Deserialize<'de> for DataSourceRegistry {
@@ -163,12 +172,13 @@ impl DataSourceRegistry {
     fn try_from_raw(raw: RawDataSourceRegistry) -> TmdResult<Self> {
         if !matches!(raw.schema_version, 1..=DATA_SOURCES_SCHEMA_VERSION) {
             return Err(TmdError::DataView(format!(
-                "unsupported data-source schema_version {}; expected {}, {}, {}, {}, or {}",
+                "unsupported data-source schema_version {}; expected {}, {}, {}, {}, {}, or {}",
                 raw.schema_version,
                 LEGACY_DATA_SOURCES_SCHEMA_VERSION,
                 RHAI_DATA_SOURCES_SCHEMA_VERSION,
                 FORMULA_DATA_SOURCES_SCHEMA_VERSION,
                 EDITABLE_DATA_SOURCES_SCHEMA_VERSION,
+                FORMULA_QUERY_DATA_SOURCES_SCHEMA_VERSION,
                 DATA_SOURCES_SCHEMA_VERSION
             )));
         }
@@ -193,10 +203,13 @@ impl DataSourceRegistry {
                 DataSourceDefinition::Rhai { inputs, .. } => {
                     for (alias, source_name) in inputs {
                         match self.sources.get(source_name) {
-                            Some(DataSourceDefinition::FormulaQuery { .. }) => {}
+                            Some(
+                                DataSourceDefinition::FormulaQuery { .. }
+                                | DataSourceDefinition::FormulaTable { .. },
+                            ) => {}
                             Some(other) => {
                                 return Err(TmdError::DataView(format!(
-                                    "Rhai source `{name}` input `{alias}` must reference a Formula query source; `{source_name}` is {}",
+                                    "Rhai source `{name}` input `{alias}` must reference a Formula query or managed Formula table source; `{source_name}` is {}",
                                     other.kind_name()
                                 )));
                             }
@@ -222,6 +235,32 @@ impl DataSourceRegistry {
                         )));
                     }
                 },
+                DataSourceDefinition::FormulaTable { columns, .. } => {
+                    for column in columns {
+                        let Some(reference) = &column.reference else {
+                            continue;
+                        };
+                        let Some(DataSourceDefinition::FormulaTable {
+                            columns: target_columns,
+                            ..
+                        }) = self.sources.get(&reference.source)
+                        else {
+                            return Err(TmdError::DataView(format!(
+                                "Formula table source `{name}` column `{}` reference source `{}` must name a managed Formula table",
+                                column.id, reference.source
+                            )));
+                        };
+                        if !target_columns
+                            .iter()
+                            .any(|target| target.id == reference.column_id)
+                        {
+                            return Err(TmdError::DataView(format!(
+                                "Formula table source `{name}` column `{}` references missing column id `{}` in source `{}`",
+                                column.id, reference.column_id, reference.source
+                            )));
+                        }
+                    }
+                }
                 DataSourceDefinition::FormulaQuery { .. } => {}
             }
         }
@@ -233,7 +272,7 @@ impl RawDataSourceDefinition {
     fn into_definition(self, name: &str, schema_version: u32) -> TmdResult<DataSourceDefinition> {
         match self {
             Self::Sqlite { query, edit } => {
-                if schema_version >= DATA_SOURCES_SCHEMA_VERSION {
+                if schema_version >= FORMULA_QUERY_DATA_SOURCES_SCHEMA_VERSION {
                     return Err(TmdError::DataView(format!(
                         "legacy SQLite source `{name}` is supported only in data-source schema_version 1 through {EDITABLE_DATA_SOURCES_SCHEMA_VERSION}; use a Formula query source"
                     )));
@@ -247,9 +286,9 @@ impl RawDataSourceDefinition {
             }
             Self::Formula(definition) => match definition {
                 RawFormulaDefinition::Query(RawFormulaQueryDefinition { query, edit }) => {
-                    if schema_version < DATA_SOURCES_SCHEMA_VERSION {
+                    if schema_version < FORMULA_QUERY_DATA_SOURCES_SCHEMA_VERSION {
                         return Err(TmdError::DataView(format!(
-                            "Formula query source `{name}` requires data-source schema_version {DATA_SOURCES_SCHEMA_VERSION}"
+                            "Formula query source `{name}` requires data-source schema_version {FORMULA_QUERY_DATA_SOURCES_SCHEMA_VERSION}"
                         )));
                     }
                     Ok(DataSourceDefinition::FormulaQuery { query, edit })
@@ -269,6 +308,14 @@ impl RawDataSourceDefinition {
                         program,
                         output,
                     })
+                }
+                RawFormulaDefinition::Managed(RawManagedFormulaDefinition { columns, rows }) => {
+                    if schema_version < DATA_SOURCES_SCHEMA_VERSION {
+                        return Err(TmdError::DataView(format!(
+                            "managed Formula table source `{name}` requires data-source schema_version {DATA_SOURCES_SCHEMA_VERSION}"
+                        )));
+                    }
+                    Ok(DataSourceDefinition::FormulaTable { columns, rows })
                 }
             },
             Self::Rhai {
@@ -292,7 +339,7 @@ impl RawDataSourceDefinition {
 }
 
 /// Definition for one named data source.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum DataSourceDefinition {
     /// One read-only query treated as an identity Formula table.
     FormulaQuery {
@@ -301,11 +348,11 @@ pub enum DataSourceDefinition {
         /// Explicit primary-keyed write-back contract for table editing.
         edit: Option<SqliteEditDefinition>,
     },
-    /// A sandboxed Rhai transformation over declared Formula query inputs.
+    /// A sandboxed Rhai transformation over declared Formula table inputs.
     Rhai {
         /// Logical path of the Rhai script attachment.
         script: String,
-        /// Script-visible aliases mapped to named Formula query sources.
+        /// Script-visible aliases mapped to query or managed Formula table sources.
         inputs: BTreeMap<String, String>,
         /// Required output shape for the script result.
         output: DataSourceOutput,
@@ -319,6 +366,203 @@ pub enum DataSourceDefinition {
         /// Required output table columns.
         output: DataSourceOutput,
     },
+    /// A document-native spreadsheet table with stable row and column identities.
+    FormulaTable {
+        /// Ordered columns defining names, constraints, and optional relationships.
+        columns: Vec<FormulaTableColumn>,
+        /// Ordered rows whose cells align positionally with `columns`.
+        rows: Vec<FormulaTableRow>,
+    },
+}
+
+/// One stable column in a document-native Formula table.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FormulaTableColumn {
+    /// Stable identity retained independently of display-name changes.
+    pub id: String,
+    /// Formula-visible and rendered column name.
+    pub name: String,
+    /// Default type constraint for cells in this column.
+    pub constraint: FormulaCellConstraint,
+    /// Optional declarative relationship to another managed Formula column.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub reference: Option<FormulaTableColumnReference>,
+}
+
+/// Declarative relationship between managed Formula table columns.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FormulaTableColumnReference {
+    /// Managed Formula table source containing the referenced column.
+    pub source: String,
+    /// Stable identity of the referenced column.
+    pub column_id: String,
+}
+
+/// One stable row in a document-native Formula table.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FormulaTableRow {
+    /// Stable identity retained independently of row order.
+    pub id: String,
+    /// Cells aligned positionally with the source's ordered columns.
+    pub cells: Vec<FormulaTableCell>,
+}
+
+/// One literal or calculated cell in a managed Formula table.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FormulaTableCell {
+    /// Literal value or Formula expression stored by the cell.
+    pub content: FormulaTableCellContent,
+    /// Optional override for the containing column's default constraint.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub constraint: Option<FormulaCellConstraint>,
+}
+
+/// Stored content of one managed Formula table cell.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase", deny_unknown_fields)]
+pub enum FormulaTableCellContent {
+    /// A scalar value persisted directly in the registry.
+    Literal {
+        /// Transport-safe scalar representation.
+        value: FormulaTableLiteral,
+    },
+    /// An Excel-like expression evaluated at this cell's coordinate.
+    Formula {
+        /// Right-hand-side expression without a leading `=`.
+        expression: String,
+    },
+}
+
+/// Scalar persisted by a managed Formula table literal cell.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum FormulaTableLiteral {
+    /// Empty cell.
+    Null,
+    /// Boolean cell.
+    Boolean { value: bool },
+    /// Signed 64-bit integer encoded as a JSON string to preserve precision.
+    Integer {
+        #[serde(serialize_with = "i64_json_string::serialize")]
+        value: i64,
+    },
+    /// Finite floating-point cell.
+    Real { value: f64 },
+    /// UTF-8 text cell.
+    String { value: String },
+}
+
+impl<'de> Deserialize<'de> for FormulaTableLiteral {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let object = value.as_object().ok_or_else(|| {
+            D::Error::custom("managed Formula literal must be an exact tagged object")
+        })?;
+        let literal_type = object
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| D::Error::custom("managed Formula literal requires a string `type`"))?;
+        match literal_type {
+            "null" if has_exact_json_keys(object, &["type"]) => Ok(Self::Null),
+            "boolean" if has_exact_json_keys(object, &["type", "value"]) => object
+                .get("value")
+                .and_then(serde_json::Value::as_bool)
+                .map(|value| Self::Boolean { value })
+                .ok_or_else(|| D::Error::custom("managed Formula boolean requires a bool `value`")),
+            "integer" if has_exact_json_keys(object, &["type", "value"]) => {
+                let value = object
+                    .get("value")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| {
+                        D::Error::custom("managed Formula integer requires a string `value`")
+                    })?;
+                i64_json_string::parse(value)
+                    .map(|value| Self::Integer { value })
+                    .map_err(D::Error::custom)
+            }
+            "real" if has_exact_json_keys(object, &["type", "value"]) => object
+                .get("value")
+                .and_then(serde_json::Value::as_f64)
+                .map(|value| Self::Real { value })
+                .ok_or_else(|| D::Error::custom("managed Formula real requires a numeric `value`")),
+            "string" if has_exact_json_keys(object, &["type", "value"]) => object
+                .get("value")
+                .and_then(serde_json::Value::as_str)
+                .map(|value| Self::String {
+                    value: value.to_owned(),
+                })
+                .ok_or_else(|| {
+                    D::Error::custom("managed Formula string requires a string `value`")
+                }),
+            "null" | "boolean" | "integer" | "real" | "string" => Err(D::Error::custom(
+                "managed Formula literal contains missing or unsupported fields",
+            )),
+            other => Err(D::Error::custom(format!(
+                "unknown managed Formula literal type `{other}`"
+            ))),
+        }
+    }
+}
+
+fn has_exact_json_keys(
+    object: &serde_json::Map<String, serde_json::Value>,
+    expected: &[&str],
+) -> bool {
+    object.len() == expected.len() && expected.iter().all(|key| object.contains_key(*key))
+}
+
+/// Effective type constraint for a managed Formula table cell.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FormulaCellConstraint {
+    /// Accept any scalar type.
+    Any,
+    /// Accept null or text.
+    Text,
+    /// Accept null, integer, or real numbers.
+    Number,
+    /// Accept null or boolean.
+    Boolean,
+}
+
+mod i64_json_string {
+    use serde::Serializer;
+
+    pub fn serialize<S>(value: &i64, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&value.to_string())
+    }
+
+    pub(super) fn parse(value: &str) -> Result<i64, &'static str> {
+        let digits = value.strip_prefix('-').unwrap_or(value);
+        if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err("managed Formula integer must be a decimal string");
+        }
+        let parsed: i64 = value
+            .parse()
+            .map_err(|_| "managed Formula integer is outside the signed 64-bit range")?;
+        if parsed.to_string() != value {
+            return Err("managed Formula integer must be a canonical decimal string");
+        }
+        Ok(parsed)
+    }
 }
 
 impl Serialize for DataSourceDefinition {
@@ -346,6 +590,13 @@ impl Serialize for DataSourceDefinition {
                 map.serialize_entry("input", input)?;
                 map.serialize_entry("program", program)?;
                 map.serialize_entry("output", output)?;
+                map.end()
+            }
+            Self::FormulaTable { columns, rows } => {
+                let mut map = serializer.serialize_map(Some(3))?;
+                map.serialize_entry("type", "formula")?;
+                map.serialize_entry("columns", columns)?;
+                map.serialize_entry("rows", rows)?;
                 map.end()
             }
             Self::Rhai {
@@ -477,7 +728,7 @@ impl DataSourceDefinition {
                 }
                 if inputs.is_empty() {
                     return Err(TmdError::DataView(format!(
-                        "Rhai source `{name}` requires at least one Formula query input"
+                        "Rhai source `{name}` requires at least one Formula table input"
                     )));
                 }
                 if inputs.len() > MAX_RHAI_INPUTS {
@@ -512,6 +763,9 @@ impl DataSourceDefinition {
                 })?;
                 output.validate(name, "Formula")?;
             }
+            Self::FormulaTable { columns, rows } => {
+                validate_formula_table(name, columns, rows)?;
+            }
         }
         Ok(())
     }
@@ -521,6 +775,212 @@ impl DataSourceDefinition {
             Self::FormulaQuery { .. } => "Formula query",
             Self::Rhai { .. } => "Rhai",
             Self::Formula { .. } => "Formula",
+            Self::FormulaTable { .. } => "managed Formula table",
+        }
+    }
+}
+
+fn validate_formula_table(
+    name: &str,
+    columns: &[FormulaTableColumn],
+    rows: &[FormulaTableRow],
+) -> TmdResult<()> {
+    if columns.is_empty() {
+        return Err(TmdError::DataView(format!(
+            "managed Formula table source `{name}` requires at least one column"
+        )));
+    }
+    if columns.len() > MAX_TABLE_COLUMNS {
+        return Err(TmdError::DataView(format!(
+            "managed Formula table source `{name}` exceeds {MAX_TABLE_COLUMNS} columns"
+        )));
+    }
+    if rows.len() > MAX_TABLE_ROWS || rows.len().saturating_mul(columns.len()) > MAX_TABLE_CELLS {
+        return Err(TmdError::DataView(format!(
+            "managed Formula table source `{name}` exceeds the table row or cell limit"
+        )));
+    }
+
+    let mut column_ids = BTreeSet::new();
+    let mut column_names = BTreeSet::new();
+    for column in columns {
+        validate_formula_table_id(name, "column", &column.id)?;
+        if !column_ids.insert(column.id.as_str()) {
+            return Err(TmdError::DataView(format!(
+                "managed Formula table source `{name}` repeats column id `{}`",
+                column.id
+            )));
+        }
+        if column.name.is_empty() || column.name.len() > MAX_COLUMN_NAME_BYTES {
+            return Err(TmdError::DataView(format!(
+                "managed Formula table source `{name}` has an empty or overlong column name"
+            )));
+        }
+        if !column_names.insert(column.name.as_str()) {
+            return Err(TmdError::DataView(format!(
+                "managed Formula table source `{name}` repeats column name `{}`",
+                column.name
+            )));
+        }
+        if let Some(reference) = &column.reference {
+            validate_source_name(&reference.source).map_err(|_| {
+                TmdError::DataView(format!(
+                    "managed Formula table source `{name}` column `{}` has invalid reference source `{}`",
+                    column.id, reference.source
+                ))
+            })?;
+            validate_formula_table_id(name, "referenced column", &reference.column_id)?;
+        }
+    }
+
+    let mut row_ids = BTreeSet::new();
+    for row in rows {
+        validate_formula_table_id(name, "row", &row.id)?;
+        if !row_ids.insert(row.id.as_str()) {
+            return Err(TmdError::DataView(format!(
+                "managed Formula table source `{name}` repeats row id `{}`",
+                row.id
+            )));
+        }
+        if row.cells.len() != columns.len() {
+            return Err(TmdError::DataView(format!(
+                "managed Formula table source `{name}` row `{}` has {} cells; expected {}",
+                row.id,
+                row.cells.len(),
+                columns.len()
+            )));
+        }
+        for (column, cell) in columns.iter().zip(&row.cells) {
+            if let FormulaTableCellContent::Literal { value } = &cell.content {
+                let scalar = value.to_data_scalar();
+                validate_formula_table_scalar(name, &row.id, column, cell, &scalar)?;
+            }
+        }
+    }
+
+    if let Some(program) = formula_table_program(name, columns, rows)? {
+        parse_formula_program(&program).map_err(|error| {
+            TmdError::DataView(format!(
+                "managed Formula table source `{name}` program is invalid: {error}"
+            ))
+        })?;
+    }
+    Ok(())
+}
+
+fn validate_formula_table_id(source_name: &str, role: &str, id: &str) -> TmdResult<()> {
+    if id.is_empty()
+        || id.len() > MAX_SOURCE_NAME_BYTES
+        || !id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        return Err(TmdError::DataView(format!(
+            "managed Formula table source `{source_name}` has invalid {role} id `{id}`; use 1-{MAX_SOURCE_NAME_BYTES} ASCII letters, digits, '.', '_' or '-'"
+        )));
+    }
+    Ok(())
+}
+
+fn formula_table_program(
+    name: &str,
+    columns: &[FormulaTableColumn],
+    rows: &[FormulaTableRow],
+) -> TmdResult<Option<String>> {
+    let mut program = String::new();
+    for (row_index, row) in rows.iter().enumerate() {
+        for (column_index, (column, cell)) in columns.iter().zip(&row.cells).enumerate() {
+            let FormulaTableCellContent::Formula { expression } = &cell.content else {
+                continue;
+            };
+            if expression.trim().is_empty()
+                || expression.contains(['\n', '\r'])
+                || expression.trim_start().starts_with('=')
+            {
+                return Err(TmdError::DataView(format!(
+                    "managed Formula table source `{name}` cell row `{}` column `{}` requires a non-empty, single-line RHS expression without a leading `=`",
+                    row.id, column.id
+                )));
+            }
+            let target = CellRef::from_indexes(column_index, row_index)
+                .expect("managed Formula table limits fit spreadsheet coordinates");
+            program.push_str(&target.to_string());
+            program.push_str(" = ");
+            program.push_str(expression);
+            program.push('\n');
+            if program.len() > MAX_FORMULA_PROGRAM_BYTES {
+                return Err(TmdError::DataView(format!(
+                    "managed Formula table source `{name}` program exceeds {MAX_FORMULA_PROGRAM_BYTES} bytes"
+                )));
+            }
+        }
+    }
+    Ok((!program.is_empty()).then_some(program))
+}
+
+fn validate_formula_table_scalar(
+    source_name: &str,
+    row_id: &str,
+    column: &FormulaTableColumn,
+    cell: &FormulaTableCell,
+    value: &DataScalar,
+) -> TmdResult<()> {
+    if let DataScalar::Real(value) = value {
+        if !value.is_finite() {
+            return Err(TmdError::DataView(format!(
+                "managed Formula table source `{source_name}` cell row `{row_id}` column `{}` contains a non-finite real",
+                column.id
+            )));
+        }
+    }
+    if let DataScalar::String(value) = value {
+        if value.len() > MAX_TEXT_BYTES {
+            return Err(TmdError::DataView(format!(
+                "managed Formula table source `{source_name}` cell row `{row_id}` column `{}` text exceeds {MAX_TEXT_BYTES} bytes",
+                column.id
+            )));
+        }
+    }
+    let constraint = cell.constraint.unwrap_or(column.constraint);
+    if !constraint.accepts(value) {
+        return Err(TmdError::DataView(format!(
+            "managed Formula table source `{source_name}` cell row `{row_id}` column `{}` violates its {} constraint",
+            column.id,
+            constraint.name()
+        )));
+    }
+    Ok(())
+}
+
+impl FormulaTableLiteral {
+    fn to_data_scalar(&self) -> DataScalar {
+        match self {
+            Self::Null => DataScalar::Null,
+            Self::Boolean { value } => DataScalar::Boolean(*value),
+            Self::Integer { value } => DataScalar::Integer(*value),
+            Self::Real { value } => DataScalar::Real(*value),
+            Self::String { value } => DataScalar::String(value.clone()),
+        }
+    }
+}
+
+impl FormulaCellConstraint {
+    fn accepts(self, value: &DataScalar) -> bool {
+        matches!(value, DataScalar::Null)
+            || match self {
+                Self::Any => true,
+                Self::Text => matches!(value, DataScalar::String(_)),
+                Self::Number => matches!(value, DataScalar::Integer(_) | DataScalar::Real(_)),
+                Self::Boolean => matches!(value, DataScalar::Boolean(_)),
+            }
+    }
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Any => "any",
+            Self::Text => "text",
+            Self::Number => "number",
+            Self::Boolean => "boolean",
         }
     }
 }
@@ -838,6 +1298,9 @@ pub fn evaluate_data_source(doc: &TmdDoc, name: &str) -> TmdResult<DataValue> {
             program,
             output,
         } => evaluate_formula(doc, &registry, name, input, program, output),
+        DataSourceDefinition::FormulaTable { columns, rows } => {
+            evaluate_formula_table(name, columns, rows).map(DataValue::Table)
+        }
     }
 }
 
@@ -852,7 +1315,9 @@ pub fn data_source_edit_info(doc: &TmdDoc, name: &str) -> TmdResult<Option<DataS
     let input_source = match definition {
         DataSourceDefinition::FormulaQuery { .. } => name,
         DataSourceDefinition::Formula { input, .. } => input,
-        DataSourceDefinition::Rhai { .. } => return Ok(None),
+        DataSourceDefinition::FormulaTable { .. } | DataSourceDefinition::Rhai { .. } => {
+            return Ok(None);
+        }
     };
     let DataSourceDefinition::FormulaQuery {
         query,
@@ -1029,6 +1494,60 @@ fn evaluate_formula(
     }
 }
 
+fn evaluate_formula_table(
+    name: &str,
+    columns: &[FormulaTableColumn],
+    rows: &[FormulaTableRow],
+) -> TmdResult<DataTable> {
+    let output_columns = columns
+        .iter()
+        .map(|column| column.name.clone())
+        .collect::<Vec<_>>();
+    let input_rows = rows
+        .iter()
+        .map(|row| {
+            row.cells
+                .iter()
+                .map(|cell| match &cell.content {
+                    FormulaTableCellContent::Literal { value } => value.to_data_scalar(),
+                    FormulaTableCellContent::Formula { .. } => DataScalar::Null,
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let input = DataTable {
+        columns: output_columns.clone(),
+        rows: input_rows,
+    };
+    let table = if let Some(program) = formula_table_program(name, columns, rows)? {
+        let program = parse_formula_program(&program).map_err(|error| {
+            TmdError::DataView(format!(
+                "managed Formula table source `{name}` program failed: {error}"
+            ))
+        })?;
+        evaluate_formula_program_with_limits(
+            &program,
+            &input,
+            &output_columns,
+            FormulaEvaluationLimits::new(MAX_TABLE_ROWS, MAX_TABLE_CELLS),
+        )
+        .map_err(|error| {
+            TmdError::DataView(format!(
+                "managed Formula table source `{name}` evaluation failed: {error}"
+            ))
+        })?
+    } else {
+        input
+    };
+
+    for (row_definition, row) in rows.iter().zip(&table.rows) {
+        for ((column, cell), value) in columns.iter().zip(&row_definition.cells).zip(row) {
+            validate_formula_table_scalar(name, &row_definition.id, column, cell, value)?;
+        }
+    }
+    Ok(table)
+}
+
 fn evaluate_rhai(
     doc: &TmdDoc,
     registry: &DataSourceRegistry,
@@ -1060,16 +1579,24 @@ fn evaluate_rhai(
 
     let mut rhai_inputs = Map::new();
     for (alias, source_name) in inputs {
-        let DataSourceDefinition::FormulaQuery { query, .. } = registry
+        let definition = registry
             .sources
             .get(source_name)
-            .expect("registry input references were validated")
-        else {
-            unreachable!("Rhai inputs accept only Formula query sources");
-        };
-        let value = evaluate_formula_query(doc, source_name, query)?;
-        let DataValue::Table(table) = value else {
-            unreachable!("Formula query sources always produce tables");
+            .expect("registry input references were validated");
+        let table = match definition {
+            DataSourceDefinition::FormulaQuery { query, .. } => {
+                let DataValue::Table(table) = evaluate_formula_query(doc, source_name, query)?
+                else {
+                    unreachable!("Formula query sources always produce tables");
+                };
+                table
+            }
+            DataSourceDefinition::FormulaTable { columns, rows } => {
+                evaluate_formula_table(source_name, columns, rows)?
+            }
+            DataSourceDefinition::Formula { .. } | DataSourceDefinition::Rhai { .. } => {
+                unreachable!("registry Rhai input references were validated")
+            }
         };
         rhai_inputs.insert(
             alias.as_str().into(),
@@ -1567,7 +2094,7 @@ mod tests {
                     if query == "SELECT 1 AS value"
             ));
             let serialized = serde_json::to_value(&registry).expect("serialize current registry");
-            assert_eq!(serialized["schema_version"], json!(5));
+            assert_eq!(serialized["schema_version"], json!(6));
             assert_eq!(serialized["sources"]["legacy"]["type"], json!("formula"));
         }
     }
@@ -1624,7 +2151,7 @@ mod tests {
             .expect_err("Rhai cannot consume a computed Formula");
         assert!(error
             .to_string()
-            .contains("must reference a Formula query source"));
+            .contains("must reference a Formula query or managed Formula table source"));
     }
 
     #[test]
@@ -1720,6 +2247,364 @@ mod tests {
             registry.sources.get("computed"),
             Some(DataSourceDefinition::Formula { input, .. }) if input == "rows"
         ));
+    }
+
+    #[test]
+    fn evaluates_and_serializes_managed_formula_tables() {
+        let mut doc = TmdDoc::new(String::new()).expect("document");
+        doc.manifest.extras = json!({
+            DATA_SOURCES_EXTRAS_KEY: {
+                "schema_version": 6,
+                "sources": {
+                    "managed": {
+                        "type": "formula",
+                        "columns": [
+                            { "id": "amount", "name": "amount", "constraint": "number" },
+                            { "id": "double", "name": "double", "constraint": "number" },
+                            { "id": "note", "name": "note", "constraint": "text" }
+                        ],
+                        "rows": [
+                            {
+                                "id": "row-1",
+                                "cells": [
+                                    { "content": { "kind": "literal", "value": { "type": "integer", "value": "9007199254740993" } } },
+                                    { "content": { "kind": "formula", "expression": "A1 + 2" } },
+                                    { "content": { "kind": "literal", "value": { "type": "string", "value": "large" } } }
+                                ]
+                            },
+                            {
+                                "id": "row-2",
+                                "cells": [
+                                    { "content": { "kind": "literal", "value": { "type": "null" } } },
+                                    { "content": { "kind": "formula", "expression": "IF(ISNULL(A2), 5, A2)" } },
+                                    {
+                                        "content": { "kind": "literal", "value": { "type": "boolean", "value": true } },
+                                        "constraint": "any"
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                }
+            }
+        });
+
+        assert_eq!(
+            evaluate_data_source(&doc, "managed").expect("managed Formula table"),
+            DataValue::Table(DataTable {
+                columns: vec!["amount".to_owned(), "double".to_owned(), "note".to_owned()],
+                rows: vec![
+                    vec![
+                        DataScalar::Integer(9_007_199_254_740_993),
+                        DataScalar::Integer(9_007_199_254_740_995),
+                        DataScalar::String("large".to_owned()),
+                    ],
+                    vec![
+                        DataScalar::Null,
+                        DataScalar::Integer(5),
+                        DataScalar::Boolean(true),
+                    ],
+                ],
+            })
+        );
+        assert_eq!(
+            data_source_edit_info(&doc, "managed").expect("managed edit metadata"),
+            None
+        );
+
+        let registry = DataSourceRegistry::from_manifest_extras(&doc.manifest.extras)
+            .expect("managed registry");
+        let serialized = serde_json::to_value(registry).expect("serialize managed registry");
+        assert_eq!(serialized["schema_version"], json!(6));
+        assert_eq!(
+            serialized["sources"]["managed"]["rows"][0]["cells"][0]["content"]["value"]["value"],
+            json!("9007199254740993")
+        );
+    }
+
+    #[test]
+    fn enforces_managed_formula_constraints_after_evaluation() {
+        let literal_mismatch = json!({
+            DATA_SOURCES_EXTRAS_KEY: {
+                "schema_version": 6,
+                "sources": {
+                    "managed": {
+                        "type": "formula",
+                        "columns": [
+                            { "id": "flag", "name": "flag", "constraint": "boolean" }
+                        ],
+                        "rows": [{
+                            "id": "row-1",
+                            "cells": [{
+                                "content": { "kind": "literal", "value": { "type": "string", "value": "yes" } }
+                            }]
+                        }]
+                    }
+                }
+            }
+        });
+        let error = DataSourceRegistry::from_manifest_extras(&literal_mismatch)
+            .expect_err("literal must satisfy its effective constraint");
+        assert!(error.to_string().contains("boolean constraint"));
+
+        let mut formula_mismatch = TmdDoc::new(String::new()).expect("document");
+        formula_mismatch.manifest.extras = json!({
+            DATA_SOURCES_EXTRAS_KEY: {
+                "schema_version": 6,
+                "sources": {
+                    "managed": {
+                        "type": "formula",
+                        "columns": [
+                            { "id": "flag", "name": "flag", "constraint": "boolean" }
+                        ],
+                        "rows": [{
+                            "id": "row-1",
+                            "cells": [{ "content": { "kind": "formula", "expression": "1 + 1" } }]
+                        }]
+                    }
+                }
+            }
+        });
+        DataSourceRegistry::from_manifest_extras(&formula_mismatch.manifest.extras)
+            .expect("formula output is checked after evaluation");
+        let error = evaluate_data_source(&formula_mismatch, "managed")
+            .expect_err("evaluated value must satisfy its effective constraint");
+        assert!(error.to_string().contains("boolean constraint"));
+    }
+
+    #[test]
+    fn enforces_exact_managed_formula_shape_and_stable_ids() {
+        let invalid_definitions = [
+            (
+                "managed source in schema 5",
+                5,
+                json!({ "type": "formula", "columns": [], "rows": [] }),
+            ),
+            (
+                "numeric integer transport",
+                6,
+                json!({
+                    "type": "formula",
+                    "columns": [{ "id": "value", "name": "value", "constraint": "any" }],
+                    "rows": [{
+                        "id": "row-1",
+                        "cells": [{ "content": { "kind": "literal", "value": { "type": "integer", "value": 9007199254740993_i64 } } }]
+                    }]
+                }),
+            ),
+            (
+                "null optional constraint",
+                6,
+                json!({
+                    "type": "formula",
+                    "columns": [{ "id": "value", "name": "value", "constraint": "any" }],
+                    "rows": [{
+                        "id": "row-1",
+                        "cells": [{
+                            "content": { "kind": "literal", "value": { "type": "null" } },
+                            "constraint": null
+                        }]
+                    }]
+                }),
+            ),
+            (
+                "null optional reference",
+                6,
+                json!({
+                    "type": "formula",
+                    "columns": [{
+                        "id": "value",
+                        "name": "value",
+                        "constraint": "any",
+                        "reference": null
+                    }],
+                    "rows": []
+                }),
+            ),
+            (
+                "out-of-range integer string",
+                6,
+                json!({
+                    "type": "formula",
+                    "columns": [{ "id": "value", "name": "value", "constraint": "number" }],
+                    "rows": [{
+                        "id": "row-1",
+                        "cells": [{ "content": { "kind": "literal", "value": { "type": "integer", "value": "9223372036854775808" } } }]
+                    }]
+                }),
+            ),
+            (
+                "non-canonical integer string",
+                6,
+                json!({
+                    "type": "formula",
+                    "columns": [{ "id": "value", "name": "value", "constraint": "number" }],
+                    "rows": [{
+                        "id": "row-1",
+                        "cells": [{ "content": { "kind": "literal", "value": { "type": "integer", "value": "01" } } }]
+                    }]
+                }),
+            ),
+            (
+                "unknown cell field",
+                6,
+                json!({
+                    "type": "formula",
+                    "columns": [{ "id": "value", "name": "value", "constraint": "any" }],
+                    "rows": [{
+                        "id": "row-1",
+                        "cells": [{
+                            "content": { "kind": "literal", "value": { "type": "null" } },
+                            "unsupported": true
+                        }]
+                    }]
+                }),
+            ),
+            (
+                "unknown literal field",
+                6,
+                json!({
+                    "type": "formula",
+                    "columns": [{ "id": "value", "name": "value", "constraint": "any" }],
+                    "rows": [{
+                        "id": "row-1",
+                        "cells": [{
+                            "content": {
+                                "kind": "literal",
+                                "value": { "type": "null", "value": null }
+                            }
+                        }]
+                    }]
+                }),
+            ),
+            (
+                "mixed managed and query fields",
+                6,
+                json!({
+                    "type": "formula",
+                    "query": "SELECT 1",
+                    "columns": [{ "id": "value", "name": "value", "constraint": "any" }],
+                    "rows": []
+                }),
+            ),
+            (
+                "duplicate row ids",
+                6,
+                json!({
+                    "type": "formula",
+                    "columns": [{ "id": "value", "name": "value", "constraint": "any" }],
+                    "rows": [
+                        { "id": "same", "cells": [{ "content": { "kind": "literal", "value": { "type": "null" } } }] },
+                        { "id": "same", "cells": [{ "content": { "kind": "literal", "value": { "type": "null" } } }] }
+                    ]
+                }),
+            ),
+            (
+                "formula with a leading equals sign",
+                6,
+                json!({
+                    "type": "formula",
+                    "columns": [{ "id": "value", "name": "value", "constraint": "any" }],
+                    "rows": [{
+                        "id": "row-1",
+                        "cells": [{ "content": { "kind": "formula", "expression": "=1 + 1" } }]
+                    }]
+                }),
+            ),
+        ];
+
+        for (label, schema_version, definition) in invalid_definitions {
+            let extras = json!({
+                DATA_SOURCES_EXTRAS_KEY: {
+                    "schema_version": schema_version,
+                    "sources": { "candidate": definition }
+                }
+            });
+            assert!(
+                DataSourceRegistry::from_manifest_extras(&extras).is_err(),
+                "{label} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn validates_managed_formula_relationships_and_allows_metadata_cycles() {
+        let cyclic = json!({
+            DATA_SOURCES_EXTRAS_KEY: {
+                "schema_version": 6,
+                "sources": {
+                    "left": {
+                        "type": "formula",
+                        "columns": [{
+                            "id": "left-id",
+                            "name": "left",
+                            "constraint": "any",
+                            "reference": { "source": "right", "column_id": "right-id" }
+                        }],
+                        "rows": []
+                    },
+                    "right": {
+                        "type": "formula",
+                        "columns": [{
+                            "id": "right-id",
+                            "name": "right",
+                            "constraint": "any",
+                            "reference": { "source": "left", "column_id": "left-id" }
+                        }],
+                        "rows": []
+                    }
+                }
+            }
+        });
+        DataSourceRegistry::from_manifest_extras(&cyclic)
+            .expect("declarative relationship cycles are permitted");
+
+        let mut missing = cyclic;
+        missing[DATA_SOURCES_EXTRAS_KEY]["sources"]["left"]["columns"][0]["reference"]
+            ["column_id"] = json!("missing");
+        let error = DataSourceRegistry::from_manifest_extras(&missing)
+            .expect_err("relationship column id must resolve");
+        assert!(error.to_string().contains("missing column id"));
+    }
+
+    #[test]
+    fn evaluates_rhai_with_a_managed_formula_input() {
+        let mut doc = TmdDoc::new(String::new()).expect("document");
+        doc.manifest.extras = json!({
+            DATA_SOURCES_EXTRAS_KEY: {
+                "schema_version": 6,
+                "sources": {
+                    "managed": {
+                        "type": "formula",
+                        "columns": [{ "id": "value", "name": "value", "constraint": "number" }],
+                        "rows": [{
+                            "id": "row-1",
+                            "cells": [{ "content": { "kind": "literal", "value": { "type": "integer", "value": "7" } } }]
+                        }]
+                    },
+                    "scripted": {
+                        "type": "rhai",
+                        "script": "views/scripted.rhai",
+                        "inputs": { "managed": "managed" },
+                        "output": { "type": "table", "columns": ["value"] }
+                    }
+                }
+            }
+        });
+        doc.add_attachment(
+            "views/scripted.rhai",
+            "text/x-rhai".parse().expect("Rhai MIME type"),
+            b"[#{ value: inputs.managed[0].value * 3 }]".to_vec(),
+        )
+        .expect("Rhai script attachment");
+
+        assert_eq!(
+            evaluate_data_source(&doc, "scripted").expect("Rhai managed input"),
+            DataValue::Table(DataTable {
+                columns: vec!["value".to_owned()],
+                rows: vec![vec![DataScalar::Integer(21)]],
+            })
+        );
     }
 
     #[test]

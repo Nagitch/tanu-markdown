@@ -127,7 +127,7 @@ test("schema-version-3 registries expose Formula sources and retain Rhai", () =>
   ]);
 });
 
-test("source edits migrate an explicit SQLite edit contract to Formula schema 5", () => {
+test("source edits migrate an explicit SQLite edit contract to Formula schema 6", () => {
   const sources = [
     {
       name: "sales",
@@ -147,7 +147,7 @@ test("source edits migrate an explicit SQLite edit contract to Formula schema 5"
   const extras = extrasWithDataSources(null, sources);
   assert.deepEqual(extras, {
     tmd_data_sources: {
-      schema_version: 5,
+      schema_version: 6,
       sources: {
         sales: {
           type: "formula",
@@ -193,7 +193,7 @@ test("editing sources preserves unrelated manifest extras", () => {
   assert.deepEqual(extras, {
     application: { theme: "dark" },
     tmd_data_sources: {
-      schema_version: 5,
+      schema_version: 6,
       sources: {
         count: {
           type: "formula",
@@ -224,7 +224,7 @@ test("source names that resemble object properties remain ordinary definitions",
   ]);
 });
 
-test("editing Rhai sources writes schema version 5 and preserves output order", () => {
+test("editing Rhai sources writes schema version 6 and preserves output order", () => {
   const extras = extrasWithDataSources(
     { application: { retained: true } },
     [
@@ -246,7 +246,7 @@ test("editing Rhai sources writes schema version 5 and preserves output order", 
   assert.deepEqual(extras, {
     application: { retained: true },
     tmd_data_sources: {
-      schema_version: 5,
+      schema_version: 6,
       sources: {
         sales: {
           type: "formula",
@@ -266,7 +266,7 @@ test("editing Rhai sources writes schema version 5 and preserves output order", 
   });
 });
 
-test("editing Formula sources upgrades the registry to version 5 and round trips", () => {
+test("editing Formula sources upgrades the registry to version 6 and round trips", () => {
   const extras = extrasWithDataSources(
     { application: { retained: true } },
     [
@@ -288,7 +288,7 @@ test("editing Formula sources upgrades the registry to version 5 and round trips
   assert.deepEqual(extras, {
     application: { retained: true },
     tmd_data_sources: {
-      schema_version: 5,
+      schema_version: 6,
       sources: {
         sales: {
           type: "formula",
@@ -339,11 +339,11 @@ test("unsupported registries remain visible and read-only", () => {
 
 test("unknown registry versions remain visible and read-only", () => {
   const registry = inspectDataSourceRegistry({
-    tmd_data_sources: { schema_version: 6, sources: {} },
+    tmd_data_sources: { schema_version: 7, sources: {} },
   });
 
   assert.equal(registry.editable, false);
-  assert.match(registry.issue ?? "", /expected 1, 2, 3, 4 or 5/);
+  assert.match(registry.issue ?? "", /expected 1, 2, 3, 4, 5 or 6/);
 });
 
 test("Formula sources require schema version 3", () => {
@@ -396,6 +396,141 @@ test("schema version 5 accepts Formula query sources and rejects SQLite tags", (
   assert.match(sqlite.issue ?? "", /removed SQLite type/);
 });
 
+test("schema version 6 round trips managed Formula tables and cell constraints", () => {
+  const sources = [
+    {
+      name: "sheet",
+      type: "formula" as const,
+      columns: [
+        { id: "c1", name: "Item", constraint: "text" as const },
+        { id: "c2", name: "Amount", constraint: "any" as const },
+        {
+          id: "c3",
+          name: "Category ref",
+          constraint: "text" as const,
+          reference: { source: "categories", columnId: "c1" },
+        },
+      ],
+      rows: [
+        {
+          id: "r1",
+          cells: [
+            { content: { kind: "literal" as const, value: { type: "string" as const, value: "Tea" } } },
+            {
+              constraint: "number" as const,
+              content: { kind: "formula" as const, expression: "D1 * 2" },
+            },
+            { content: { kind: "literal" as const, value: { type: "string" as const, value: "categories-1" } } },
+          ],
+        },
+      ],
+    },
+    {
+      name: "categories",
+      type: "formula" as const,
+      columns: [{ id: "c1", name: "ID", constraint: "text" as const }],
+      rows: [
+        {
+          id: "r1",
+          cells: [{ content: { kind: "literal" as const, value: { type: "string" as const, value: "categories-1" } } }],
+        },
+      ],
+    },
+  ];
+  const extras = extrasWithDataSources(null, sources);
+  assert.equal(
+    (extras as { tmd_data_sources: { schema_version: number } }).tmd_data_sources.schema_version,
+    6,
+  );
+  assert.deepEqual(
+    inspectDataSourceRegistry(extras).sources,
+    [...sources].sort((left, right) => left.name.localeCompare(right.name)),
+  );
+});
+
+test("Rhai inputs may read managed Formula tables", () => {
+  const sheet = {
+    name: "sheet",
+    type: "formula" as const,
+    columns: [{ id: "c1", name: "Value", constraint: "any" as const }],
+    rows: [{ id: "r1", cells: [{ content: { kind: "literal" as const, value: { type: "integer" as const, value: "1" } } }] }],
+  };
+  assert.doesNotThrow(() =>
+    validateDataSources([
+      sheet,
+      {
+        name: "view",
+        type: "rhai",
+        script: "views/view.rhai",
+        inputs: [{ alias: "rows", source: "sheet" }],
+        outputColumns: ["Value"],
+      },
+    ]),
+  );
+});
+
+test("managed Formula tables require schema 6 and exact cell shapes", () => {
+  const definition = {
+    type: "formula",
+    columns: [{ id: "c1", name: "Value", constraint: "any" }],
+    rows: [
+      {
+        id: "r1",
+        cells: [
+          {
+            content: {
+              kind: "literal",
+              value: { type: "integer", value: "1" },
+            },
+          },
+        ],
+      },
+    ],
+  };
+  assert.equal(
+    inspectDataSourceRegistry({
+      tmd_data_sources: {
+        schema_version: 6,
+        sources: {
+          sheet: {
+            ...definition,
+            rows: [{
+              ...definition.rows[0],
+              cells: [{
+                content: {
+                  ...definition.rows[0].cells[0].content,
+                  unexpected: true,
+                },
+              }],
+            }],
+          },
+        },
+      },
+    }).editable,
+    false,
+  );
+  assert.match(
+    inspectDataSourceRegistry({
+      tmd_data_sources: { schema_version: 5, sources: { sheet: definition } },
+    }).issue ?? "",
+    /requires schema_version 6/,
+  );
+
+  const leadingEquals = {
+    ...definition,
+    rows: [{
+      ...definition.rows[0],
+      cells: [{ content: { kind: "formula", expression: " =1" } }],
+    }],
+  };
+  assert.match(
+    inspectDataSourceRegistry({
+      tmd_data_sources: { schema_version: 6, sources: { sheet: leadingEquals } },
+    }).issue ?? "",
+    /without a leading '='/,
+  );
+});
+
 test("source edits reject duplicate and invalid names", () => {
   assert.throws(
     () =>
@@ -414,7 +549,7 @@ test("source edits reject duplicate and invalid names", () => {
   );
 });
 
-test("Rhai inputs must resolve directly to Formula query sources", () => {
+test("Rhai inputs must resolve directly to a supported Formula table", () => {
   assert.throws(
     () =>
       validateDataSources([
@@ -433,7 +568,7 @@ test("Rhai inputs must resolve directly to Formula query sources", () => {
           outputColumns: ["value"],
         },
       ]),
-    /must reference a Formula query source/,
+    /must reference a managed or query Formula table/,
   );
 });
 

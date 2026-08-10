@@ -9,9 +9,10 @@ It provides:
 - manifests, safe/unique attachment paths, SHA-256 checks, and Markdown
   `attach:` reference validation;
 - an embedded SQLite handle with import, export, reset, and migration helpers;
-- versioned named query Formula and Rhai data sources, bounded read-only SQLite
-  evaluation, sandboxed Rhai-to-table transformations, and integration with
-  the `tmd-formula` engine and `tmd-data` values;
+- versioned managed Formula and Rhai data sources, bounded document-native
+  Formula evaluation, legacy read-only SQLite query compatibility, sandboxed
+  Rhai-to-table transformations, and integration with the `tmd-formula` engine
+  and `tmd-data` values;
 - structured version/database validation reports and atomic path writes;
 - optional C ABI entry points behind the `ffi` feature.
 
@@ -49,8 +50,8 @@ fn main() -> tmd_core::TmdResult<()> {
   embedded database. Reset and migration SQL may own a transaction; schema
   versions are constrained to SQLite's nonnegative 31-bit range.
 - `DataSourceRegistry`, `DataSourceOutput`, `evaluate_data_source`, and the
-  data-view parsers own query Formula/computed Formula/Rhai integration shared
-  by delivery surfaces. Formula language semantics live in `tmd-formula`.
+  data-view parsers own managed Formula/Rhai and legacy Formula integration
+  shared by delivery surfaces. Formula language semantics live in `tmd-formula`.
 - `validate_document` returns machine-readable issues, attachment/data-view
   references, and the embedded database version.
 - `read_from_path` and `write_to_path` provide the common path-based API;

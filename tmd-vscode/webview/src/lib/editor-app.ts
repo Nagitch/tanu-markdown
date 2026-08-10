@@ -1,17 +1,38 @@
 import { defineCustomElements } from "@revolist/revogrid/loader";
 import type {
+  BeforeRangeSaveDataDetails,
   BeforeSaveDataDetails,
   ChangedRange,
   ColumnRegular,
   DataType,
   FocusAfterRenderEvent,
+  InitialHeaderClick,
   RangeArea,
 } from "@revolist/revogrid";
 import { formulaDiagnosticFromIssue } from "../../../src/formula-diagnostics.js";
 import {
   isComputedFormulaDataSource,
+  isManagedFormulaDataSource,
   isQueryFormulaDataSource,
 } from "../../../src/data-sources.js";
+import {
+  cloneManagedFormulaSource,
+  createManagedFormulaDataSource,
+  duplicateManagedColumn,
+  duplicateManagedRow,
+  effectiveCellConstraint,
+  extractManagedRange,
+  findNormalizationCandidate,
+  insertManagedColumn,
+  insertManagedRow,
+  managedCellText,
+  managedLiteralConstraintIssue,
+  normalizeManagedColumns,
+  renameManagedColumn,
+  setManagedCellText,
+  type ManagedTableRange,
+  type NormalizationCandidate,
+} from "../../../src/managed-table.js";
 import {
   formulaExpressionForCell,
   insertFormulaColumns,
@@ -36,6 +57,8 @@ import type {
   DatabaseCellEdit,
   ComputedFormulaDataSource,
   FormulaDataSource,
+  ManagedCellConstraint,
+  ManagedFormulaDataSource,
   RhaiDataSource,
   ValidationReport,
 } from "../../../src/types.js";
@@ -133,19 +156,34 @@ const dataSourceRegistryIssue = requireElement<HTMLElement>(
 const dataSourceRegistryRaw = requireElement<HTMLPreElement>(
   "data-source-registry-raw",
 );
-const addQueryFormulaDataSource = requireElement<HTMLButtonElement>(
-  "add-query-formula-data-source",
+const addManagedFormulaDataSource = requireElement<HTMLButtonElement>(
+  "add-managed-formula-data-source",
 );
 const addRhaiDataSource = requireElement<HTMLButtonElement>("add-rhai-data-source");
-const addFormulaDataSource = requireElement<HTMLButtonElement>(
-  "add-formula-data-source",
-);
 const applyDataSources = requireElement<HTMLButtonElement>("apply-data-sources");
 const dataSourceStatus = requireElement<HTMLElement>("data-source-status");
 const validation = requireElement<HTMLElement>("validation");
 const preview = requireElement<HTMLElement>("preview");
 const previewCard = requireElement<HTMLElement>("preview-card");
 const togglePreview = requireElement<HTMLButtonElement>("toggle-preview");
+const cellConstraint = requireElement<HTMLSelectElement>("cell-constraint");
+const columnConstraint = requireElement<HTMLSelectElement>("column-constraint");
+const columnName = requireElement<HTMLInputElement>("column-name");
+const extractTableRange = requireElement<HTMLButtonElement>("extract-table-range");
+const normalizationStatus = requireElement<HTMLElement>("normalization-status");
+const normalizationSummary = requireElement<HTMLElement>("normalization-summary");
+const normalizeTableRange = requireElement<HTMLButtonElement>("normalize-table-range");
+const tableContextMenu = requireElement<HTMLElement>("table-context-menu");
+const normalizationDialog = requireElement<HTMLDialogElement>("normalization-dialog");
+const normalizationDialogSummary = requireElement<HTMLElement>(
+  "normalization-dialog-summary",
+);
+const normalizationTableName = requireElement<HTMLInputElement>(
+  "normalization-table-name",
+);
+const confirmNormalization = requireElement<HTMLButtonElement>(
+  "confirm-normalization",
+);
 
 let previewTimer: ReturnType<typeof setTimeout> | undefined;
 let rhaiEvaluationTimer: ReturnType<typeof setTimeout> | undefined;
@@ -154,6 +192,7 @@ let dataSourceDrafts: DataSource[] = [];
 let tableSourceDefinitions: DataSource[] = [];
 let dataSourcesEditable = false;
 let dataSourceEditingLocked = true;
+let dataSourceDraftDirty = false;
 let pendingDataSourceRevision: number | undefined;
 let pendingRhaiScriptRevision: number | undefined;
 let pendingFormulaRevision: number | undefined;
@@ -179,6 +218,10 @@ let pendingPreviewCell: HTMLTableCellElement | undefined;
 let previewCellEdit: PreviewCellEdit | undefined;
 let deferredPreviewHtml: string | undefined;
 let tableStructurePending = false;
+let selectedTableRange: ManagedTableRange | undefined;
+let normalizationCandidate: NormalizationCandidate | undefined;
+let pendingTableSourcesRollback: DataSource[] | undefined;
+let pendingTableSourceOptionsRefresh = false;
 
 interface TableCellPosition {
   row: number;
@@ -196,7 +239,7 @@ interface PreviewCellEdit {
 interface SpreadsheetEditMeasurement {
   clientRevision: number;
   startedAt: number;
-  operation: "Cell edit" | "Fill" | "Structure edit";
+  operation: "Cell edit" | "Range edit" | "Fill" | "Structure edit";
   optimisticRenderMs?: number;
 }
 
@@ -219,9 +262,12 @@ void Promise.resolve(defineCustomElements()).then(() => {
   grid.addEventListener("afterfocus", handleTableFocus);
   grid.addEventListener("beforeeditstart", handleTableEditStart);
   grid.addEventListener("beforeedit", handleTableEdit);
+  grid.addEventListener("beforerangeedit", handleTableRangeEdit);
   grid.addEventListener("beforeautofill", handleTableAutofill);
-  grid.addEventListener("selectionchangeinit", handleTableRangeSelection);
   grid.addEventListener("beforerange", handleTableRangeSelection);
+  grid.addEventListener("setrange", handleTableSetRange);
+  grid.addEventListener("beforeheaderclick", handleTableHeaderClick);
+  grid.addEventListener("contextmenu", handleTableContextMenu);
   tableGrid = grid;
   tableGridHost.replaceChildren(grid);
   if (currentTable) void renderTableGrid(currentTable);
@@ -267,6 +313,18 @@ cancelCellEdit.addEventListener("click", () => {
   insertedReference = undefined;
   renderSelectedCell();
 });
+cellConstraint.addEventListener("change", applySelectedCellConstraint);
+columnConstraint.addEventListener("change", () => {
+  if (selectedCell && isManagedConstraint(columnConstraint.value)) {
+    applyColumnConstraint(selectedCell.column, columnConstraint.value);
+  }
+});
+columnName.addEventListener("change", applySelectedColumnName);
+columnName.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  applySelectedColumnName();
+});
 addTableRow.addEventListener("click", () => addFormulaTableRow());
 duplicateTableRow.addEventListener("click", () => duplicateFormulaTableRow());
 insertTableRow.addEventListener("click", () => insertFormulaTableRow());
@@ -275,6 +333,17 @@ duplicateTableColumn.addEventListener("click", () =>
   duplicateFormulaTableColumn(),
 );
 insertTableColumn.addEventListener("click", () => insertFormulaTableColumn());
+extractTableRange.addEventListener("click", extractSelectedManagedRange);
+normalizeTableRange.addEventListener("click", openNormalizationDialog);
+confirmNormalization.addEventListener("click", applyNormalization);
+document.addEventListener("pointerdown", (event) => {
+  if (event.target instanceof Node && !tableContextMenu.contains(event.target)) {
+    tableContextMenu.hidden = true;
+  }
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") tableContextMenu.hidden = true;
+});
 
 requireElement("validate").addEventListener("click", () =>
   host.postMessage({ type: "validate" }),
@@ -316,39 +385,25 @@ tableSource.addEventListener("change", () => {
   renderFormulaProgram();
 });
 
-addQueryFormulaDataSource.addEventListener("click", () => {
-  dataSourceDrafts.push({
-    name: nextDataSourceName("table"),
-    type: "formula",
-    query: "SELECT 1 AS value",
-  });
+addManagedFormulaDataSource.addEventListener("click", () => {
+  dataSourceDrafts.push(
+    createManagedFormulaDataSource(nextDataSourceName("table")),
+  );
   renderDataSourceDrafts();
   markDataSourceDraftChanged();
 });
 
 addRhaiDataSource.addEventListener("click", () => {
   const name = nextDataSourceName("view");
-  const querySource = dataSourceDrafts.find(isQueryFormulaDataSource);
+  const formulaSource = dataSourceDrafts.find(
+    (candidate) => candidate.type === "formula",
+  );
   dataSourceDrafts.push({
     name,
     type: "rhai",
     script: `views/${name}.rhai`,
-    inputs: [{ alias: "rows", source: querySource?.name ?? "" }],
+    inputs: [{ alias: "rows", source: formulaSource?.name ?? "" }],
     outputColumns: ["value"],
-  });
-  renderDataSourceDrafts();
-  markDataSourceDraftChanged();
-});
-
-addFormulaDataSource.addEventListener("click", () => {
-  const name = nextDataSourceName("formula");
-  const querySource = dataSourceDrafts.find(isQueryFormulaDataSource);
-  dataSourceDrafts.push({
-    name,
-    type: "formula",
-    input: querySource?.name ?? "",
-    program: "B1 = SUM(A1:A1)",
-    outputColumns: ["value", "total"],
   });
   renderDataSourceDrafts();
   markDataSourceDraftChanged();
@@ -363,6 +418,7 @@ applyDataSources.addEventListener("click", () => {
   pendingDataSourceRevision = sendDataSourceEdit(
     dataSourceDrafts.map(cloneDataSource),
   );
+  applyDataSources.disabled = true;
   setStatus(dataSourceStatus, "Applying source changes…", "stale");
 });
 
@@ -375,17 +431,34 @@ window.addEventListener("message", (event: MessageEvent<unknown>) => {
     }
     return;
   }
+  if (message.type === "editRejected") {
+    if (!revision.acceptEditAcknowledgement(message)) return;
+    handleRejectedEdit(message.clientRevision, message.issue);
+    return;
+  }
   if (message.type === "editAck") {
     if (!revision.acceptEditAcknowledgement(message)) return;
+    if (message.applied === false) {
+      handleRejectedEdit(
+        message.clientRevision,
+        message.notice ?? "This edit was superseded and was not applied.",
+      );
+      return;
+    }
     if (message.notice) setCellEditStatus(message.notice, "stale");
     if (message.clientRevision === pendingDataSourceRevision) {
       pendingDataSourceRevision = undefined;
+      dataSourceDraftDirty = false;
+      pendingTableSourcesRollback = undefined;
       setStatus(
         dataSourceStatus,
         "Source changes applied. Save the document to persist them.",
         "valid",
       );
       renderTableSourceOptions(dataSourceDrafts);
+      applyDataSources.disabled =
+        !dataSourcesEditable || dataSourceEditingLocked || !dataSourceDraftDirty;
+      configurePreviewTables();
     }
     if (message.clientRevision === pendingRhaiScriptRevision) {
       pendingRhaiScriptRevision = undefined;
@@ -404,7 +477,13 @@ window.addEventListener("message", (event: MessageEvent<unknown>) => {
     if (message.clientRevision === pendingSpreadsheetEdit?.clientRevision) {
       const measurement = pendingSpreadsheetEdit;
       pendingSpreadsheetEdit = undefined;
-      requestTableSource(measurement);
+      pendingTableSourcesRollback = undefined;
+      if (pendingTableSourceOptionsRefresh) {
+        pendingTableSourceOptionsRefresh = false;
+        renderTableSourceOptions(tableSourceDefinitions, measurement);
+      } else {
+        requestTableSource(measurement);
+      }
     }
     return;
   }
@@ -444,6 +523,41 @@ function sendDataSourceEdit(sources: DataSource[]): number | undefined {
   renderValidation(undefined, false);
   queuePreview();
   return clientRevision;
+}
+
+function handleRejectedEdit(clientRevision: number, issue: string): void {
+  const rejectedDataSources = clientRevision === pendingDataSourceRevision;
+  const rejectedSpreadsheet = clientRevision === pendingSpreadsheetEdit?.clientRevision;
+  const rejectedFormula = clientRevision === pendingFormulaRevision;
+  const rejectedRhai = clientRevision === pendingRhaiScriptRevision;
+  const ownsSourceRollback =
+    pendingTableSourcesRollback !== undefined &&
+    (rejectedDataSources || rejectedSpreadsheet);
+  if (rejectedDataSources) pendingDataSourceRevision = undefined;
+  if (rejectedSpreadsheet) pendingSpreadsheetEdit = undefined;
+  if (rejectedFormula) pendingFormulaRevision = undefined;
+  if (rejectedRhai) pendingRhaiScriptRevision = undefined;
+  if (rejectedSpreadsheet) tableStructurePending = false;
+  if (ownsSourceRollback) {
+    rollbackAuthoritativeSources();
+    renderDataSourceDrafts();
+    renderTableSourceOptions(tableSourceDefinitions);
+  }
+  applyDataSources.disabled =
+    !dataSourcesEditable || dataSourceEditingLocked || !dataSourceDraftDirty;
+  if (rejectedDataSources) setStatus(dataSourceStatus, issue, "invalid");
+  if (rejectedFormula) {
+    formulaEvaluationComplete = true;
+    formulaEvaluationIssue = issue;
+    updateFormulaProgramStatus();
+  }
+  if (rejectedRhai) {
+    rhaiEvaluationComplete = true;
+    rhaiEvaluationIssue = issue;
+    updateRhaiScriptStatus();
+  }
+  setCellEditStatus(issue, "invalid");
+  renderTableStructureActions();
 }
 
 function sendRhaiScriptEdit(): void {
@@ -545,7 +659,11 @@ function configurePreviewTables(): void {
     const editable =
       dataSourcesEditable &&
       !dataSourceEditingLocked &&
-      (isComputedFormulaDataSource(source) ||
+      !dataSourceDraftDirty &&
+      pendingDataSourceRevision === undefined &&
+      pendingSpreadsheetEdit === undefined &&
+      (isManagedFormulaDataSource(source) ||
+        isComputedFormulaDataSource(source) ||
         (isQueryFormulaDataSource(source) && source.edit !== undefined));
     table.classList.toggle("tmd-view-table-editable", editable);
     if (!editable) continue;
@@ -575,6 +693,7 @@ function isPreviewCellEditable(
   table: HTMLTableElement,
   cell: HTMLTableCellElement,
 ): boolean {
+  if (isManagedFormulaDataSource(source)) return true;
   if (isComputedFormulaDataSource(source)) return true;
   if (!isQueryFormulaDataSource(source) || !source.edit) return false;
   const column = Number(cell.dataset.tmdColumn);
@@ -600,7 +719,8 @@ function handlePreviewDoubleClick(event: MouseEvent): void {
     !dataSourcesEditable ||
     dataSourceEditingLocked ||
     !isPreviewCellEditable(source, table, cell) ||
-    (!isComputedFormulaDataSource(source) &&
+    (!isManagedFormulaDataSource(source) &&
+      !isComputedFormulaDataSource(source) &&
       !(isQueryFormulaDataSource(source) && source.edit))
   ) {
     return;
@@ -672,7 +792,10 @@ function beginPreviewCellEdit(cell: HTMLTableCellElement): void {
     !sourceName ||
     source.name !== sourceName ||
     !dataSourcesEditable ||
-    dataSourceEditingLocked
+    dataSourceEditingLocked ||
+    dataSourceDraftDirty
+    || pendingDataSourceRevision !== undefined
+    || pendingSpreadsheetEdit !== undefined
   ) {
     return;
   }
@@ -688,14 +811,18 @@ function beginPreviewCellEdit(cell: HTMLTableCellElement): void {
     originalText: cell.textContent ?? "",
   };
   selectedCell = { row, column };
+  selectedTableRange = { top: row, bottom: row, left: column, right: column };
+  const managed = selectedManagedFormulaSource();
   const expression = formulaExpressionForCell(
     selectedComputedFormulaSource()?.program ?? "",
     row,
     column,
   );
-  cell.textContent = expression
-    ? `=${expression.replace(/^=/u, "")}`
-    : cellTextForEditing(currentTable.rows[row]?.[column]);
+  cell.textContent = managed
+    ? managedCellText(managed, row, column)
+    : expression
+      ? `=${expression.replace(/^=/u, "")}`
+      : cellTextForEditing(currentTable.rows[row]?.[column]);
   cell.contentEditable = "plaintext-only";
   cell.classList.add("is-editing");
   cell.focus();
@@ -719,8 +846,13 @@ function commitPreviewCellEdit(cell: HTMLTableCellElement): void {
     );
     return;
   }
+  const originalText = edit.originalText;
   finishPreviewCellEdit(false);
-  void applyCellText({ row: edit.row, column: edit.column }, text);
+  void applyCellText({ row: edit.row, column: edit.column }, text).then(
+    (applied) => {
+      if (!applied && cell.isConnected) cell.textContent = originalText;
+    },
+  );
 }
 
 function cancelPreviewCellEdit(): void {
@@ -768,11 +900,14 @@ function applyModel(model: EditorModelMessage): void {
   clearTimeout(previewTimer);
   clearTimeout(rhaiEvaluationTimer);
   clearTimeout(formulaEvaluationTimer);
+  pendingDataSourceRevision = undefined;
   pendingRhaiScriptRevision = undefined;
   pendingFormulaRevision = undefined;
   pendingSpreadsheetEdit = undefined;
   tableStructurePending = false;
   tableRenderMeasurement = undefined;
+  pendingTableSourcesRollback = undefined;
+  pendingTableSourceOptionsRefresh = false;
   title.value = model.title;
   markdown.value = model.markdown;
   title.disabled = model.editingLocked;
@@ -798,7 +933,10 @@ function applyModel(model: EditorModelMessage): void {
   root.dataset.state = "ready";
 }
 
-function renderTableSourceOptions(sources: readonly DataSource[]): void {
+function renderTableSourceOptions(
+  sources: readonly DataSource[],
+  measurement?: SpreadsheetEditMeasurement,
+): void {
   const tabularSources = sources.filter(isTabularSource);
   tableSourceDefinitions = tabularSources.map(cloneDataSource);
   const names = new Set(tabularSources.map((source) => source.name));
@@ -819,7 +957,7 @@ function renderTableSourceOptions(sources: readonly DataSource[]): void {
     ...(host.getState() ?? {}),
     selectedTableSource,
   });
-  requestTableSource();
+  requestTableSource(measurement);
   requestRhaiScript();
   renderFormulaProgram();
 }
@@ -914,6 +1052,8 @@ async function renderTableSourceResult(
       tableGridHost.hidden = true;
       resetCellEditor();
     }
+    normalizationStatus.hidden = true;
+    normalizationCandidate = undefined;
     setStatus(
       tableSourceStatus,
       message.issue ?? "The selected source could not be displayed as a table.",
@@ -923,7 +1063,7 @@ async function renderTableSourceResult(
     applyFormulaEvaluationIssue(message.issue);
     if (measurement) {
       setCellEditStatus(
-        `${measurement.operation} failed after ${formatDuration(performance.now() - measurement.startedAt)}.`,
+        `${measurement.operation} failed after ${formatDuration(performance.now() - measurement.startedAt)}: ${message.issue ?? "the table could not be evaluated"}`,
         "invalid",
       );
     }
@@ -941,6 +1081,7 @@ async function renderTableSourceResult(
   }
   currentTable = message.table;
   currentTableSource = message.source;
+  renderNormalizationPresence();
   if (
     selectedFormulaSource() &&
     message.table.rows.length > 0 &&
@@ -952,6 +1093,7 @@ async function renderTableSourceResult(
       selectedCell.column >= message.table.columns.length
     ) {
       selectedCell = { row: 0, column: 0 };
+      selectedTableRange = { top: 0, bottom: 0, left: 0, right: 0 };
     }
     renderSelectedCell();
     if (!preservedGrid) {
@@ -968,7 +1110,12 @@ async function renderTableSourceResult(
   }
   setStatus(
     tableSourceStatus,
-    `${message.table.rows.length.toLocaleString()} row${message.table.rows.length === 1 ? "" : "s"} · ${message.table.columns.length.toLocaleString()} column${message.table.columns.length === 1 ? "" : "s"}`,
+    `${message.table.rows.length.toLocaleString()} row${message.table.rows.length === 1 ? "" : "s"} · ${message.table.columns.length.toLocaleString()} column${message.table.columns.length === 1 ? "" : "s"}` +
+      (selectedRhaiSource()
+        ? " · Rhai output (read-only)"
+        : selectedManagedFormulaSource()
+          ? " · Managed Formula (editable)"
+          : ""),
     "valid",
   );
   applyRhaiEvaluationIssue(undefined);
@@ -1093,6 +1240,11 @@ function selectedComputedFormulaSource(): ComputedFormulaDataSource | undefined 
   return isComputedFormulaDataSource(source) ? source : undefined;
 }
 
+function selectedManagedFormulaSource(): ManagedFormulaDataSource | undefined {
+  const source = selectedFormulaSource();
+  return isManagedFormulaDataSource(source) ? source : undefined;
+}
+
 function applyRhaiEvaluationIssue(issue: string | undefined): void {
   if (!selectedRhaiSource()) return;
   rhaiEvaluationComplete = true;
@@ -1149,7 +1301,7 @@ function handleTableFocus(event: CustomEvent<FocusAfterRenderEvent>): void {
   const position = tablePositionFromFocus(event.detail);
   if (!position || !selectedFormulaSource()) return;
   if (
-    selectedComputedFormulaSource() &&
+    (selectedComputedFormulaSource() || selectedManagedFormulaSource()) &&
     formulaBarEditing &&
     editingCell &&
     cellInput.value.startsWith("=")
@@ -1163,6 +1315,12 @@ function handleTableFocus(event: CustomEvent<FocusAfterRenderEvent>): void {
     return;
   }
   selectedCell = position;
+  selectedTableRange = {
+    top: position.row,
+    bottom: position.row,
+    left: position.column,
+    right: position.column,
+  };
   editingCell = undefined;
   insertedReference = undefined;
   renderSelectedCell();
@@ -1170,26 +1328,62 @@ function handleTableFocus(event: CustomEvent<FocusAfterRenderEvent>): void {
 }
 
 function handleTableRangeSelection(event: CustomEvent<ChangedRange>): void {
+  selectedTableRange = rangeAreaToManagedRange(event.detail.newRange);
+  renderTableStructureActions();
   if (!formulaBarEditing || !editingCell || !cellInput.value.startsWith("=")) {
     return;
   }
   insertFormulaReference(event.detail.newRange);
 }
 
+function handleTableSetRange(
+  event: CustomEvent<RangeArea & { type: string }>,
+): void {
+  if (event.detail.type !== "rgRow" || !selectedFormulaSource()) return;
+  selectedTableRange = rangeAreaToManagedRange(event.detail);
+  renderTableStructureActions();
+  if (formulaBarEditing && editingCell && cellInput.value.startsWith("=")) {
+    insertFormulaReference(event.detail);
+  }
+}
+
+function rangeAreaToManagedRange(range: RangeArea): ManagedTableRange {
+  return {
+    top: Math.min(range.y, range.y1),
+    bottom: Math.max(range.y, range.y1),
+    left: Math.min(range.x, range.x1),
+    right: Math.max(range.x, range.x1),
+  };
+}
+
 function handleTableEditStart(event: CustomEvent<BeforeSaveDataDetails>): void {
   const position = tablePositionFromEdit(event.detail);
-  if (!position || !selectedFormulaSource() || !currentTable) {
+  if (
+    !position ||
+    !selectedFormulaSource() ||
+    !currentTable ||
+    dataSourceDraftDirty
+  ) {
     event.preventDefault();
+    if (dataSourceDraftDirty) {
+      setCellEditStatus(
+        "Apply the pending source-definition changes before editing table cells.",
+        "stale",
+      );
+    }
     return;
   }
+  const managed = selectedManagedFormulaSource();
   const expression = formulaExpressionForCell(
     selectedComputedFormulaSource()?.program ?? "",
     position.row,
     position.column,
   );
-  event.detail.val = expression
-    ? `=${expression.replace(/^=/u, "")}`
-    : cellTextForEditing(currentTable.rows[position.row]?.[position.column]);
+  event.detail.val = managed
+    ? managedCellText(managed, position.row, position.column)
+    : expression
+      ? `=${expression.replace(/^=/u, "")}`
+      : cellTextForEditing(currentTable.rows[position.row]?.[position.column]);
 }
 
 function handleTableEdit(event: CustomEvent<BeforeSaveDataDetails>): void {
@@ -1199,13 +1393,95 @@ function handleTableEdit(event: CustomEvent<BeforeSaveDataDetails>): void {
   void applyCellText(position, String(event.detail.val ?? ""));
 }
 
+async function handleTableRangeEdit(
+  event: CustomEvent<BeforeRangeSaveDataDetails>,
+): Promise<void> {
+  event.preventDefault();
+  const source = selectedManagedFormulaSource();
+  if (!source) {
+    setCellEditStatus(
+      "Multi-cell paste and clear are available for managed Formula tables.",
+      "invalid",
+    );
+    return;
+  }
+  if (
+    dataSourceDraftDirty ||
+    dataSourceEditingLocked ||
+    pendingDataSourceRevision !== undefined ||
+    pendingSpreadsheetEdit !== undefined ||
+    tableStructurePending
+  ) {
+    setCellEditStatus(
+      dataSourceDraftDirty
+        ? "Apply the pending source-definition changes before editing table cells."
+        : "Wait for the current table edit to finish.",
+      "stale",
+    );
+    return;
+  }
+  const startedAt = performance.now();
+  try {
+    const updated = cloneManagedFormulaSource(source);
+    const optimisticCells: Array<{
+      position: TableCellPosition;
+      value: DataTableCell;
+    }> = [];
+    for (const [displayRowText, values] of Object.entries(event.detail.data)) {
+      const displayRow = Number(displayRowText);
+      const row = tableRowIndex(event.detail.models[displayRow], displayRow);
+      for (const [prop, value] of Object.entries(values)) {
+        const column = tableColumnIndex(prop);
+        if (column === undefined) continue;
+        const literal = setManagedCellText(
+          updated,
+          row,
+          column,
+          value === null || value === undefined ? "" : String(value),
+        );
+        if (literal) optimisticCells.push({ position: { row, column }, value: literal });
+      }
+    }
+    if (event.detail.newRange) {
+      selectedTableRange = rangeAreaToManagedRange(event.detail.newRange);
+      selectedCell = {
+        row: selectedTableRange.top,
+        column: selectedTableRange.left,
+      };
+    }
+    setCellEditStatus("Applying range edit…", "stale");
+    const optimisticRenderMs = await renderOptimisticCells(
+      optimisticCells,
+      startedAt,
+    );
+    commitManagedSource(updated, {
+      startedAt,
+      operation: "Range edit",
+      ...(optimisticRenderMs === undefined ? {} : { optimisticRenderMs }),
+    });
+    setCellEditStatus(
+      optimisticRenderMs === undefined
+        ? "Recalculating range…"
+        : `Input shown in ${formatDuration(optimisticRenderMs)}; recalculating range…`,
+      "stale",
+    );
+  } catch (error) {
+    setCellEditStatus(errorMessage(error), "invalid");
+  }
+}
+
 async function handleTableAutofill(
   event: CustomEvent<ChangedRange>,
 ): Promise<void> {
   event.preventDefault();
   const source = selectedFormulaSource();
+  const managedSource = selectedManagedFormulaSource();
   const computedSource = selectedComputedFormulaSource();
   if (!source || !currentTable) return;
+  if (managedSource) {
+    applyManagedAutofill(event.detail, managedSource);
+    return;
+  }
   const startedAt = performance.now();
   try {
     let program = computedSource?.program;
@@ -1249,11 +1525,27 @@ async function handleTableAutofill(
           );
           continue;
         }
-        const copiedValue = directInputCell(originPosition);
+        const copiedValue =
+          directInputCell(originPosition) ??
+          currentTable.rows[originPosition.row]?.[originPosition.column];
         if (!copiedValue) {
           throw new Error(
-            `Cell ${spreadsheetCellName(originPosition.row, originPosition.column)} has no Formula or editable query value to copy.`,
+            `Cell ${spreadsheetCellName(originPosition.row, originPosition.column)} has no Formula or rendered value to copy.`,
           );
+        }
+        if (
+          computedSource &&
+          program !== undefined &&
+          !isDirectCellEditable(destination)
+        ) {
+          program = setFormulaCellExpression(
+            program,
+            destination.row,
+            destination.column,
+            formulaLiteral(copiedValue),
+          );
+          optimisticCells.push({ position: destination, value: copiedValue });
+          continue;
         }
         databaseEdits.push(databaseEditForCell(destination, copiedValue));
         optimisticCells.push({ position: destination, value: copiedValue });
@@ -1296,6 +1588,13 @@ function applyFormulaBarEdit(): void {
 }
 
 function addFormulaTableRow(): void {
+  const managed = managedStructureContext();
+  if (managed) {
+    const row = managed.rows.length;
+    insertManagedRow(managed, row);
+    applyManagedStructure(managed, { row, column: selectedCell?.column ?? 0 }, "Adding row…");
+    return;
+  }
   const context = formulaStructureContext();
   if (!context) return;
   const row = context.table.rows.length;
@@ -1304,6 +1603,13 @@ function addFormulaTableRow(): void {
 }
 
 function duplicateFormulaTableRow(): void {
+  const managed = managedStructureContext(true);
+  if (managed && selectedCell) {
+    const row = managed.rows.length;
+    duplicateManagedRow(managed, selectedCell.row, row);
+    applyManagedStructure(managed, { row, column: selectedCell.column }, "Duplicating row…");
+    return;
+  }
   const context = formulaStructureContext(true);
   if (!context || !selectedCell) return;
   const destinationRow = context.table.rows.length;
@@ -1336,6 +1642,12 @@ function duplicateFormulaTableRow(): void {
 }
 
 function insertFormulaTableRow(): void {
+  const managed = managedStructureContext(true);
+  if (managed && selectedCell) {
+    insertManagedRow(managed, selectedCell.row);
+    applyManagedStructure(managed, { ...selectedCell }, "Inserting row…");
+    return;
+  }
   const context = formulaStructureContext(true);
   if (!context || !selectedCell) return;
   const inputRows = context.table.inputRowCount;
@@ -1384,6 +1696,13 @@ function applyFormulaRowStructure(
 }
 
 function addFormulaTableColumn(): void {
+  const managed = managedStructureContext();
+  if (managed) {
+    const column = managed.columns.length;
+    insertManagedColumn(managed, column);
+    applyManagedStructure(managed, { row: selectedCell?.row ?? 0, column }, "Adding column…");
+    return;
+  }
   const context = formulaStructureContext();
   if (!context) return;
   const columns = [...context.source.outputColumns];
@@ -1398,6 +1717,13 @@ function addFormulaTableColumn(): void {
 }
 
 function duplicateFormulaTableColumn(): void {
+  const managed = managedStructureContext(true);
+  if (managed && selectedCell) {
+    const column = managed.columns.length;
+    duplicateManagedColumn(managed, selectedCell.column, column);
+    applyManagedStructure(managed, { row: selectedCell.row, column }, "Duplicating column…");
+    return;
+  }
   const context = formulaStructureContext(true);
   if (!context || !selectedCell) return;
   const destinationColumn = context.source.outputColumns.length;
@@ -1438,6 +1764,12 @@ function duplicateFormulaTableColumn(): void {
 }
 
 function insertFormulaTableColumn(): void {
+  const managed = managedStructureContext(true);
+  if (managed && selectedCell) {
+    insertManagedColumn(managed, selectedCell.column);
+    applyManagedStructure(managed, { ...selectedCell }, "Inserting column…");
+    return;
+  }
   const context = formulaStructureContext(true);
   if (!context || !selectedCell) return;
   const inputColumns = context.table.inputColumnCount;
@@ -1509,12 +1841,16 @@ function applyFormulaColumnStructure(
   renderTableStructureActions();
 }
 
-function formulaStructureContext(requireSelection = false):
-  | { source: ComputedFormulaDataSource; table: DataSourceTable }
-  | undefined {
-  const source = selectedComputedFormulaSource();
+function managedStructureContext(
+  requireSelection = false,
+): ManagedFormulaDataSource | undefined {
+  const source = selectedManagedFormulaSource();
   if (!source || !currentTable) return undefined;
-  if (tableStructurePending || pendingSpreadsheetEdit !== undefined) {
+  if (
+    tableStructurePending ||
+    pendingSpreadsheetEdit !== undefined ||
+    pendingDataSourceRevision !== undefined
+  ) {
     setCellEditStatus(
       "Wait for the current table edit to finish before changing its structure.",
       "stale",
@@ -1523,6 +1859,69 @@ function formulaStructureContext(requireSelection = false):
   }
   if (!dataSourcesEditable || dataSourceEditingLocked) {
     setCellEditStatus("The Formula table is currently read-only.", "invalid");
+    return undefined;
+  }
+  if (dataSourceDraftDirty) {
+    setCellEditStatus(
+      "Apply the pending source-definition changes before changing table structure.",
+      "stale",
+    );
+    return undefined;
+  }
+  if (requireSelection && !selectedCell) {
+    setCellEditStatus("Select a table cell first.", "invalid");
+    return undefined;
+  }
+  return cloneManagedFormulaSource(source);
+}
+
+function applyManagedStructure(
+  source: ManagedFormulaDataSource,
+  selection: TableCellPosition,
+  message: string,
+): void {
+  if (!validateFormulaStructure(source.rows.length, source.columns.length, "")) {
+    return;
+  }
+  selectedCell = selection;
+  selectedTableRange = {
+    top: selection.row,
+    bottom: selection.row,
+    left: selection.column,
+    right: selection.column,
+  };
+  setCellEditStatus(message, "stale");
+  commitManagedSource(source, {
+    startedAt: performance.now(),
+    operation: "Structure edit",
+  });
+}
+
+function formulaStructureContext(requireSelection = false):
+  | { source: ComputedFormulaDataSource; table: DataSourceTable }
+  | undefined {
+  const source = selectedComputedFormulaSource();
+  if (!source || !currentTable) return undefined;
+  if (
+    tableStructurePending ||
+    pendingSpreadsheetEdit !== undefined ||
+    pendingDataSourceRevision !== undefined
+  ) {
+    setCellEditStatus(
+      "Wait for the current table edit to finish before changing its structure.",
+      "stale",
+    );
+    return undefined;
+  }
+  if (!dataSourcesEditable || dataSourceEditingLocked) {
+    setCellEditStatus("The Formula table is currently read-only.", "invalid");
+    return undefined;
+  }
+  if (dataSourceDraftDirty) {
+    setCellEditStatus(
+      "Apply the pending source-definition changes before changing table structure.",
+      "stale",
+    );
     return undefined;
   }
   if (requireSelection && !selectedCell) {
@@ -1583,12 +1982,58 @@ function uniqueColumnName(columns: readonly string[], base: string): string {
 async function applyCellText(
   position: TableCellPosition,
   text: string,
-): Promise<void> {
+): Promise<boolean> {
   const source = selectedFormulaSource();
+  const managedSource = selectedManagedFormulaSource();
   const computedSource = selectedComputedFormulaSource();
-  if (!source || !currentTable) return;
+  if (!source || !currentTable) return false;
+  if (dataSourceDraftDirty) {
+    setCellEditStatus(
+      "Apply the pending source-definition changes before editing table cells.",
+      "stale",
+    );
+    return false;
+  }
+  if (
+    pendingSpreadsheetEdit !== undefined ||
+    pendingDataSourceRevision !== undefined ||
+    tableStructurePending
+  ) {
+    setCellEditStatus("Wait for the current table edit to finish.", "stale");
+    return false;
+  }
   const startedAt = performance.now();
   try {
+    if (managedSource) {
+      const updated = cloneManagedFormulaSource(managedSource);
+      const literal = setManagedCellText(updated, position.row, position.column, text);
+      setCellEditStatus("Applying cell edit…", "stale");
+      const optimisticRenderMs = literal
+        ? await renderOptimisticCells([{ position, value: literal }], startedAt)
+        : undefined;
+      selectedCell = { ...position };
+      selectedTableRange = {
+        top: position.row,
+        bottom: position.row,
+        left: position.column,
+        right: position.column,
+      };
+      formulaBarEditing = false;
+      editingCell = undefined;
+      insertedReference = undefined;
+      commitManagedSource(updated, {
+        startedAt,
+        operation: "Cell edit",
+        ...(optimisticRenderMs === undefined ? {} : { optimisticRenderMs }),
+      });
+      setCellEditStatus(
+        optimisticRenderMs === undefined
+          ? "Recalculating cell…"
+          : `Input shown in ${formatDuration(optimisticRenderMs)}; recalculating cell…`,
+        "stale",
+      );
+      return true;
+    }
     let program = computedSource?.program;
     const databaseEdits: DatabaseCellEdit[] = [];
     const optimisticCells: Array<{
@@ -1652,8 +2097,10 @@ async function applyCellText(
         : `Input shown in ${formatDuration(optimisticRenderMs)}; recalculating cell…`,
       "stale",
     );
+    return true;
   } catch (error) {
     setCellEditStatus(errorMessage(error), "invalid");
+    return false;
   }
 }
 
@@ -1691,6 +2138,89 @@ function sendSpreadsheetEdit(
   renderTableStructureActions();
 }
 
+function commitManagedSource(
+  source: ManagedFormulaDataSource,
+  measurement: Omit<SpreadsheetEditMeasurement, "clientRevision">,
+): void {
+  const nextSources = tableSourceDefinitions.map((candidate) =>
+    candidate.name === source.name
+      ? cloneManagedFormulaSource(source)
+      : cloneDataSource(candidate),
+  );
+  if (!nextSources.some((candidate) => candidate.name === source.name)) {
+    setCellEditStatus("The managed Formula source changed before the edit was applied.", "invalid");
+    return;
+  }
+  stageAuthoritativeSources(nextSources);
+  clearTimeout(formulaEvaluationTimer);
+  tableRequestId += 1;
+  tableRenderMeasurement = undefined;
+  pendingFormulaRevision = undefined;
+  const clientRevision = sendDataSourceEdit(nextSources.map(cloneDataSource));
+  if (clientRevision === undefined) {
+    rollbackAuthoritativeSources();
+    return;
+  }
+  pendingSpreadsheetEdit = { clientRevision, ...measurement };
+  if (measurement.operation === "Structure edit") tableStructurePending = true;
+  renderTableStructureActions();
+  renderNormalizationPresence();
+}
+
+function stageAuthoritativeSources(sources: readonly DataSource[]): void {
+  pendingTableSourcesRollback ??= tableSourceDefinitions.map(cloneDataSource);
+  tableSourceDefinitions = sources.map(cloneDataSource);
+  if (!dataSourceDraftDirty) {
+    dataSourceDrafts = sources.map(cloneDataSource);
+  }
+}
+
+function rollbackAuthoritativeSources(): void {
+  if (!pendingTableSourcesRollback) return;
+  tableSourceDefinitions = pendingTableSourcesRollback.map(cloneDataSource);
+  if (!dataSourceDraftDirty) {
+    dataSourceDrafts = pendingTableSourcesRollback.map(cloneDataSource);
+  }
+  pendingTableSourcesRollback = undefined;
+  pendingTableSourceOptionsRefresh = false;
+}
+
+function applyManagedAutofill(
+  detail: ChangedRange,
+  source: ManagedFormulaDataSource,
+): void {
+  const startedAt = performance.now();
+  try {
+    const updated = cloneManagedFormulaSource(source);
+    for (const [destinationRowText, rowMapping] of Object.entries(detail.mapping)) {
+      const destinationRow = Number(destinationRowText);
+      for (const [destinationProp, origin] of Object.entries(rowMapping)) {
+        const destinationColumn = tableColumnIndex(destinationProp);
+        if (destinationColumn === undefined) continue;
+        const original = source.rows[origin.rowIndex]?.cells[origin.colIndex];
+        const destination = updated.rows[destinationRow]?.cells[destinationColumn];
+        if (!original || !destination) continue;
+        destination.constraint = original.constraint;
+        destination.content =
+          original.content.kind === "formula"
+            ? {
+                kind: "formula",
+                expression: translateFormulaExpression(
+                  original.content.expression,
+                  destinationRow - origin.rowIndex,
+                  destinationColumn - origin.colIndex,
+                ),
+              }
+            : { kind: "literal", value: { ...original.content.value } };
+      }
+    }
+    setCellEditStatus("Applying fill…", "stale");
+    commitManagedSource(updated, { startedAt, operation: "Fill" });
+  } catch (error) {
+    setCellEditStatus(errorMessage(error), "invalid");
+  }
+}
+
 function updateLocalFormulaProgram(sourceName: string, program: string): void {
   for (const sources of [tableSourceDefinitions, dataSourceDrafts]) {
     const source = sources.find(
@@ -1703,6 +2233,7 @@ function updateLocalFormulaProgram(sourceName: string, program: string): void {
 
 function renderSelectedCell(): void {
   const source = selectedFormulaSource();
+  const managedSource = selectedManagedFormulaSource();
   const computedSource = selectedComputedFormulaSource();
   const position = selectedCell;
   if (!source || !currentTable || !position) {
@@ -1716,18 +2247,37 @@ function renderSelectedCell(): void {
     position.row,
     position.column,
   );
-  cellInput.value = expression
-    ? `=${expression.replace(/^=/u, "")}`
-    : cellTextForEditing(currentTable.rows[position.row]?.[position.column]);
+  cellInput.value = managedSource
+    ? managedCellText(managedSource, position.row, position.column)
+    : expression
+      ? `=${expression.replace(/^=/u, "")}`
+      : cellTextForEditing(currentTable.rows[position.row]?.[position.column]);
   const disabled =
     !dataSourcesEditable ||
     dataSourceEditingLocked ||
+    dataSourceDraftDirty ||
     (isQueryFormulaDataSource(source) && !isDirectCellEditable(position));
   cellInput.disabled = disabled;
+  cellConstraint.hidden = !managedSource;
+  cellConstraint.disabled = disabled || !managedSource;
+  columnConstraint.hidden = !managedSource;
+  columnConstraint.disabled = disabled || !managedSource;
+  columnName.hidden = !managedSource;
+  columnName.disabled = disabled || !managedSource;
+  if (managedSource) {
+    cellConstraint.value =
+      managedSource.rows[position.row]?.cells[position.column]?.constraint ??
+      "inherit";
+    columnConstraint.value =
+      managedSource.columns[position.column]?.constraint ?? "any";
+    columnName.value = managedSource.columns[position.column]?.name ?? "";
+  }
   cancelCellEdit.disabled = disabled;
   requireElement<HTMLButtonElement>("apply-cell-edit").disabled = disabled;
   const direct = isDirectCellEditable(position);
-  cellInput.title = computedSource
+  cellInput.title = managedSource
+    ? `Enter a literal or start with = for a Formula. Effective type: ${effectiveCellConstraint(managedSource, position.row, position.column)}.`
+    : computedSource
     ? direct
       ? "Enter a value to update the query table, or start with = to apply a Formula."
       : "Enter a value or start with = to apply a Formula. This cell is not mapped to a writable query column."
@@ -1741,18 +2291,23 @@ function resetCellEditor(): void {
   editingCell = undefined;
   formulaBarEditing = false;
   insertedReference = undefined;
+  selectedTableRange = undefined;
   cellFormulaBar.hidden = true;
   renderTableStructureActions();
 }
 
 function renderTableStructureActions(): void {
   const visible =
-    selectedComputedFormulaSource() !== undefined && currentTable !== undefined;
+    (selectedManagedFormulaSource() !== undefined ||
+      selectedComputedFormulaSource() !== undefined) &&
+    currentTable !== undefined;
   tableStructureActions.hidden = !visible;
   const disabled =
     !visible ||
     !dataSourcesEditable ||
     dataSourceEditingLocked ||
+    dataSourceDraftDirty ||
+    pendingDataSourceRevision !== undefined ||
     tableStructurePending ||
     pendingSpreadsheetEdit !== undefined;
   for (const button of [
@@ -1762,6 +2317,7 @@ function renderTableStructureActions(): void {
     addTableColumn,
     duplicateTableColumn,
     insertTableColumn,
+    extractTableRange,
   ]) {
     button.disabled = disabled;
   }
@@ -1769,6 +2325,415 @@ function renderTableStructureActions(): void {
   insertTableRow.disabled ||= selectedCell === undefined;
   duplicateTableColumn.disabled ||= selectedCell === undefined;
   insertTableColumn.disabled ||= selectedCell === undefined;
+  extractTableRange.disabled ||=
+    selectedManagedFormulaSource() === undefined || selectedTableRange === undefined;
+}
+
+function applySelectedCellConstraint(): void {
+  const source = selectedManagedFormulaSource();
+  if (
+    !source ||
+    !selectedCell ||
+    dataSourceEditingLocked ||
+    dataSourceDraftDirty ||
+    pendingDataSourceRevision !== undefined ||
+    pendingSpreadsheetEdit !== undefined
+  ) return;
+  const updated = cloneManagedFormulaSource(source);
+  const cell = updated.rows[selectedCell.row]?.cells[selectedCell.column];
+  if (!cell) return;
+  const value = cellConstraint.value;
+  if (value === "inherit") {
+    delete cell.constraint;
+  } else if (isManagedConstraint(value)) {
+    cell.constraint = value;
+  } else {
+    return;
+  }
+  const issue = managedLiteralConstraintIssue(
+    cell,
+    cell.constraint ?? updated.columns[selectedCell.column]?.constraint ?? "any",
+  );
+  if (issue) {
+    setCellEditStatus(`${spreadsheetCellName(selectedCell.row, selectedCell.column)} ${issue}.`, "invalid");
+    renderSelectedCell();
+    return;
+  }
+  setCellEditStatus("Applying cell type constraint…", "stale");
+  commitManagedSource(updated, {
+    startedAt: performance.now(),
+    operation: "Cell edit",
+  });
+}
+
+function applyColumnConstraint(
+  column: number,
+  constraint: ManagedCellConstraint,
+): void {
+  const source = selectedManagedFormulaSource();
+  if (
+    !source ||
+    !source.columns[column] ||
+    dataSourceEditingLocked ||
+    dataSourceDraftDirty ||
+    pendingDataSourceRevision !== undefined ||
+    pendingSpreadsheetEdit !== undefined
+  ) return;
+  const updated = cloneManagedFormulaSource(source);
+  updated.columns[column].constraint = constraint;
+  for (const [rowIndex, row] of updated.rows.entries()) {
+    const cell = row.cells[column];
+    if (!cell || cell.constraint) continue;
+    const issue = managedLiteralConstraintIssue(cell, constraint);
+    if (issue) {
+      setCellEditStatus(
+        `${spreadsheetCellName(rowIndex, column)} ${issue}; add a cell override or fix the value first.`,
+        "invalid",
+      );
+      renderSelectedCell();
+      return;
+    }
+  }
+  setCellEditStatus(`Applying ${constraintLabel(constraint)} column constraint…`, "stale");
+  commitManagedSource(updated, {
+    startedAt: performance.now(),
+    operation: "Structure edit",
+  });
+}
+
+function applySelectedColumnName(): void {
+  const source = selectedManagedFormulaSource();
+  if (
+    !source ||
+    !selectedCell ||
+    dataSourceEditingLocked ||
+    dataSourceDraftDirty ||
+    pendingDataSourceRevision !== undefined ||
+    pendingSpreadsheetEdit !== undefined
+  ) {
+    return;
+  }
+  try {
+    const updated = cloneManagedFormulaSource(source);
+    renameManagedColumn(updated, selectedCell.column, columnName.value.trim());
+    setCellEditStatus("Renaming column…", "stale");
+    commitManagedSource(updated, {
+      startedAt: performance.now(),
+      operation: "Structure edit",
+    });
+  } catch (error) {
+    setCellEditStatus(errorMessage(error), "invalid");
+    renderSelectedCell();
+  }
+}
+
+function handleTableHeaderClick(event: CustomEvent<InitialHeaderClick>): void {
+  const original = event.detail.originalEvent;
+  if (original.button !== 2) return;
+  const source = selectedManagedFormulaSource();
+  if (!source || dataSourceEditingLocked || dataSourceDraftDirty) return;
+  original.preventDefault();
+  showColumnContextMenu(event.detail.index, original.clientX, original.clientY);
+}
+
+function showColumnContextMenu(column: number, x: number, y: number): void {
+  const source = selectedManagedFormulaSource();
+  if (!source?.columns[column]) return;
+  showTableContextMenu(
+    x,
+    y,
+    [
+      { label: `Column: ${source.columns[column]?.name ?? column + 1}`, disabled: true },
+      ...managedConstraints().map((constraint) => ({
+        label: `${constraintIcon(constraint)}  Constrain as ${constraintLabel(constraint)}`,
+        action: () => applyColumnConstraint(column, constraint),
+      })),
+    ],
+  );
+}
+
+function handleTableContextMenu(event: MouseEvent): void {
+  const path = event.composedPath();
+  const inHeader = path.some(
+    (item) => item instanceof Element && item.tagName === "REVOGR-HEADER",
+  );
+  if (inHeader) {
+    const headerCell = path.find(
+      (item) => item instanceof Element && item.hasAttribute("data-rgcol"),
+    );
+    const column =
+      headerCell instanceof Element
+        ? Number(headerCell.getAttribute("data-rgcol"))
+        : Number.NaN;
+    if (Number.isSafeInteger(column)) {
+      event.preventDefault();
+      showColumnContextMenu(column, event.clientX, event.clientY);
+    }
+    return;
+  }
+  const source = selectedManagedFormulaSource();
+  if (
+    !source ||
+    !selectedCell ||
+    dataSourceEditingLocked ||
+    dataSourceDraftDirty
+  ) return;
+  event.preventDefault();
+  const position = { ...selectedCell };
+  const effective = effectiveCellConstraint(source, position.row, position.column);
+  showTableContextMenu(
+    event.clientX,
+    event.clientY,
+    [
+      {
+        label: `${spreadsheetCellName(position.row, position.column)} · ${constraintLabel(effective)}`,
+        disabled: true,
+      },
+      {
+        label: "Inherit column type",
+        action: () => setCellConstraintAt(position, undefined),
+      },
+      ...managedConstraints().map((constraint) => ({
+        label: `${constraintIcon(constraint)}  Override as ${constraintLabel(constraint)}`,
+        action: () => setCellConstraintAt(position, constraint),
+      })),
+      { separator: true },
+      { label: "Copy selection to new table", action: extractSelectedManagedRange },
+    ],
+  );
+}
+
+function setCellConstraintAt(
+  position: TableCellPosition,
+  constraint: ManagedCellConstraint | undefined,
+): void {
+  const source = selectedManagedFormulaSource();
+  if (!source) return;
+  const updated = cloneManagedFormulaSource(source);
+  const cell = updated.rows[position.row]?.cells[position.column];
+  if (!cell) return;
+  if (constraint) cell.constraint = constraint;
+  else delete cell.constraint;
+  const issue = managedLiteralConstraintIssue(
+    cell,
+    cell.constraint ?? updated.columns[position.column]?.constraint ?? "any",
+  );
+  if (issue) {
+    setCellEditStatus(`${spreadsheetCellName(position.row, position.column)} ${issue}.`, "invalid");
+    return;
+  }
+  selectedCell = position;
+  setCellEditStatus("Applying cell type constraint…", "stale");
+  commitManagedSource(updated, {
+    startedAt: performance.now(),
+    operation: "Cell edit",
+  });
+}
+
+type ContextMenuItem =
+  | { label: string; action?: () => void; disabled?: boolean; separator?: never }
+  | { separator: true; label?: never; action?: never; disabled?: never };
+
+function showTableContextMenu(
+  x: number,
+  y: number,
+  items: readonly ContextMenuItem[],
+): void {
+  tableContextMenu.replaceChildren();
+  for (const item of items) {
+    if (item.separator) {
+      tableContextMenu.append(document.createElement("hr"));
+      continue;
+    }
+    const button = document.createElement("button");
+    button.type = "button";
+    button.role = "menuitem";
+    button.textContent = item.label;
+    button.disabled = item.disabled ?? false;
+    if (item.action) {
+      button.addEventListener("click", () => {
+        tableContextMenu.hidden = true;
+        item.action?.();
+      });
+    }
+    tableContextMenu.append(button);
+  }
+  tableContextMenu.hidden = false;
+  tableContextMenu.style.left = `${Math.min(x, window.innerWidth - 240)}px`;
+  tableContextMenu.style.top = `${Math.min(y, window.innerHeight - tableContextMenu.offsetHeight - 8)}px`;
+  tableContextMenu.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
+}
+
+function extractSelectedManagedRange(): void {
+  const source = selectedManagedFormulaSource();
+  const range = selectedTableRange;
+  if (!source || !range) {
+    setCellEditStatus("Select a managed Formula table range first.", "invalid");
+    return;
+  }
+  if (
+    dataSourceDraftDirty ||
+    pendingSpreadsheetEdit !== undefined ||
+    pendingDataSourceRevision !== undefined
+  ) {
+    setCellEditStatus("Wait for the current source edit to finish.", "stale");
+    return;
+  }
+  try {
+    const name = nextDataSourceName(`${source.name}-extract`);
+    const extracted = extractManagedRange(source, range, name);
+    const nextSources = [...tableSourceDefinitions.map(cloneDataSource), extracted];
+    stageAuthoritativeSources(nextSources);
+    const clientRevision = sendDataSourceEdit(nextSources.map(cloneDataSource));
+    if (clientRevision === undefined) {
+      rollbackAuthoritativeSources();
+      return;
+    }
+    pendingDataSourceRevision = clientRevision;
+    setCellEditStatus(
+      `Copied ${rangeLabel(range)} to ${name}. Save the document to persist it.`,
+      "valid",
+    );
+    renderDataSourceDrafts();
+  } catch (error) {
+    setCellEditStatus(errorMessage(error), "invalid");
+  }
+}
+
+function renderNormalizationPresence(): void {
+  const source = selectedManagedFormulaSource();
+  normalizationCandidate = source
+    ? findNormalizationCandidate(source)
+    : undefined;
+  normalizationStatus.hidden = normalizationCandidate === undefined;
+  normalizeTableRange.disabled =
+    dataSourceDraftDirty ||
+    dataSourceEditingLocked ||
+    pendingSpreadsheetEdit !== undefined ||
+    pendingDataSourceRevision !== undefined;
+  if (!source || !normalizationCandidate) {
+    normalizationSummary.textContent = "";
+    return;
+  }
+  normalizationSummary.textContent =
+    `Normalization candidate: ${rangeLabel(normalizationCandidate)} contains ` +
+    `${normalizationCandidate.duplicateRows} duplicate row${normalizationCandidate.duplicateRows === 1 ? "" : "s"}.`;
+}
+
+function openNormalizationDialog(): void {
+  const source = selectedManagedFormulaSource();
+  if (
+    !source ||
+    !normalizationCandidate ||
+    dataSourceDraftDirty ||
+    pendingSpreadsheetEdit !== undefined ||
+    pendingDataSourceRevision !== undefined
+  ) return;
+  normalizationTableName.value = nextDataSourceName(`${source.name}-detail`);
+  normalizationDialogSummary.textContent =
+    `${rangeLabel(normalizationCandidate)} will become a ${normalizationCandidate.uniqueRows}-row table. ` +
+    `${source.name} will keep a typed reference column.`;
+  normalizationDialog.showModal();
+  normalizationTableName.select();
+}
+
+function applyNormalization(): void {
+  const source = selectedManagedFormulaSource();
+  const candidate = normalizationCandidate;
+  const name = normalizationTableName.value.trim();
+  if (!source || !candidate) return;
+  if (
+    dataSourceDraftDirty ||
+    pendingSpreadsheetEdit !== undefined ||
+    pendingDataSourceRevision !== undefined
+  ) {
+    setCellEditStatus("Wait for the current source edit to finish.", "stale");
+    return;
+  }
+  if (!/^[A-Za-z0-9._-]{1,128}$/u.test(name) || tableSourceDefinitions.some((item) => item.name === name)) {
+    normalizationTableName.setCustomValidity("Enter a unique valid source name.");
+    normalizationTableName.reportValidity();
+    return;
+  }
+  normalizationTableName.setCustomValidity("");
+  try {
+    const normalized = normalizeManagedColumns(source, candidate, name);
+    const nextSources = tableSourceDefinitions.map(cloneDataSource);
+    const sourceIndex = nextSources.findIndex((item) => item.name === source.name);
+    if (sourceIndex < 0) throw new Error("The source changed before normalization could be applied.");
+    nextSources[sourceIndex] = normalized.source;
+    nextSources.push(normalized.target);
+    rewriteNormalizedColumnReferences(nextSources, source, candidate, normalized.target);
+    stageAuthoritativeSources(nextSources);
+    const startedAt = performance.now();
+    const clientRevision = sendDataSourceEdit(nextSources.map(cloneDataSource));
+    if (clientRevision === undefined) {
+      rollbackAuthoritativeSources();
+      return;
+    }
+    pendingSpreadsheetEdit = { clientRevision, startedAt, operation: "Structure edit" };
+    pendingTableSourceOptionsRefresh = true;
+    tableStructurePending = true;
+    normalizationDialog.close();
+    setCellEditStatus("Applying normalization…", "stale");
+    renderDataSourceDrafts();
+    renderTableStructureActions();
+  } catch (error) {
+    setCellEditStatus(errorMessage(error), "invalid");
+  }
+}
+
+function rewriteNormalizedColumnReferences(
+  sources: DataSource[],
+  original: ManagedFormulaDataSource,
+  candidate: NormalizationCandidate,
+  target: ManagedFormulaDataSource,
+): void {
+  const movedColumnIds = new Map(
+    original.columns
+      .slice(candidate.left, candidate.right + 1)
+      .map((column, index) => [column.id, target.columns[index + 1]?.id]),
+  );
+  for (const source of sources) {
+    if (!isManagedFormulaDataSource(source)) continue;
+    for (const column of source.columns) {
+      const reference = column.reference;
+      if (!reference || reference.source !== original.name) continue;
+      const targetColumnId = movedColumnIds.get(reference.columnId);
+      if (!targetColumnId) continue;
+      reference.source = target.name;
+      reference.columnId = targetColumnId;
+    }
+  }
+}
+
+function rangeLabel(range: ManagedTableRange): string {
+  return `${spreadsheetCellName(range.top, range.left)}:${spreadsheetCellName(range.bottom, range.right)}`;
+}
+
+function managedConstraints(): readonly ManagedCellConstraint[] {
+  return ["any", "text", "number", "boolean"];
+}
+
+function isManagedConstraint(value: string): value is ManagedCellConstraint {
+  return managedConstraints().includes(value as ManagedCellConstraint);
+}
+
+function constraintLabel(constraint: ManagedCellConstraint): string {
+  return constraint[0].toUpperCase() + constraint.slice(1);
+}
+
+function constraintIcon(constraint: ManagedCellConstraint): string {
+  switch (constraint) {
+    case "text":
+      return "Abc";
+    case "number":
+      return "123";
+    case "boolean":
+      return "T/F";
+    default:
+      return "◇";
+  }
 }
 
 function insertFormulaReference(range: RangeArea): void {
@@ -1982,8 +2947,11 @@ async function renderTableGrid(
   const spreadsheetEditable =
     dataSourcesEditable &&
     !dataSourceEditingLocked &&
-    (isComputedFormulaDataSource(formulaSource) ||
+    !dataSourceDraftDirty &&
+    (isManagedFormulaDataSource(formulaSource) ||
+      isComputedFormulaDataSource(formulaSource) ||
       (isQueryFormulaDataSource(formulaSource) && table.editable !== undefined));
+  tableGrid.readonly = !spreadsheetEditable;
   const queryEditableColumns = new Set(
     isQueryFormulaDataSource(formulaSource)
       ? (table.editable?.editableColumns ?? [])
@@ -1991,6 +2959,7 @@ async function renderTableGrid(
   );
   if (
     spreadsheetEditable &&
+    !isManagedFormulaDataSource(formulaSource) &&
     previousTable &&
     tablesHaveSameShape(previousTable, table)
   ) {
@@ -2007,9 +2976,14 @@ async function renderTableGrid(
     );
     return true;
   }
+  const managedCandidate = isManagedFormulaDataSource(formulaSource)
+    ? findNormalizationCandidate(formulaSource)
+    : undefined;
   tableGrid.columns = table.columns.map(
     (name, index): ColumnRegular => ({
-      name,
+      name: isManagedFormulaDataSource(formulaSource)
+        ? managedColumnLabel(formulaSource, index, name)
+        : name,
       prop: tableColumnProp(index),
       readonly:
         !spreadsheetEditable ||
@@ -2017,6 +2991,52 @@ async function renderTableGrid(
           !queryEditableColumns.has(name)),
       sortable: !spreadsheetEditable,
       size: Math.min(360, Math.max(120, name.length * 8 + 36)),
+      ...(isManagedFormulaDataSource(formulaSource)
+        ? {
+            cellProperties: (properties) => {
+              const row = tableRowIndex(properties.model, properties.rowIndex);
+              const style = managedCandidate
+                ? normalizationCellOutline(managedCandidate, row, index)
+                : undefined;
+              return style ? { style: { boxShadow: style } } : undefined;
+            },
+            cellTemplate: (createElement, properties) => {
+              const row = tableRowIndex(properties.model, properties.rowIndex);
+              const marker = managedCellMarker(formulaSource, table, row, index);
+              return createElement(
+                "span",
+                {
+                  title: marker.title,
+                  style: {
+                    display: "flex",
+                    alignItems: "center",
+                    gap: ".35rem",
+                    minWidth: "0",
+                  },
+                },
+                [
+                  createElement(
+                    "span",
+                    {
+                      style: {
+                        flex: "0 0 auto",
+                        color: "var(--vscode-descriptionForeground)",
+                        fontSize: ".72em",
+                        fontWeight: "600",
+                      },
+                    },
+                    marker.label,
+                  ),
+                  createElement(
+                    "span",
+                    { style: { overflow: "hidden", textOverflow: "ellipsis" } },
+                    String(properties.value ?? ""),
+                  ),
+                ],
+              );
+            },
+          }
+        : {}),
     }),
   );
   tableGrid.source = table.rows.map(
@@ -2029,6 +3049,64 @@ async function renderTableGrid(
       }) as DataType,
   );
   return false;
+}
+
+function managedColumnLabel(
+  source: ManagedFormulaDataSource,
+  index: number,
+  fallbackName: string,
+): string {
+  const column = source.columns[index];
+  const relationship = column?.reference ? "↗  " : "";
+  return `${relationship}${constraintIcon(column?.constraint ?? "any")}  ${column?.name ?? fallbackName}`;
+}
+
+function managedCellMarker(
+  source: ManagedFormulaDataSource,
+  table: DataSourceTable,
+  row: number,
+  column: number,
+): { label: string; title: string } {
+  const cell = source.rows[row]?.cells[column];
+  const constraint = effectiveCellConstraint(source, row, column);
+  if (cell?.content.kind === "formula") {
+    const result = table.rows[row]?.[column]?.type ?? "unknown";
+    return { label: "fx", title: `Formula · ${constraintLabel(constraint)} constraint · ${result} result` };
+  }
+  const result = table.rows[row]?.[column]?.type;
+  const label =
+    result === "string"
+      ? "Abc"
+      : result === "integer" || result === "real"
+        ? "123"
+        : result === "boolean"
+          ? "T/F"
+          : "∅";
+  return {
+    label,
+    title: `${constraintLabel(constraint)} constraint · ${result ?? "null"} value`,
+  };
+}
+
+function normalizationCellOutline(
+  range: ManagedTableRange,
+  row: number,
+  column: number,
+): string | undefined {
+  if (
+    row < range.top ||
+    row > range.bottom ||
+    column < range.left ||
+    column > range.right
+  ) {
+    return undefined;
+  }
+  const shadows: string[] = [];
+  if (column === range.left) shadows.push("inset 2px 0 var(--vscode-focusBorder)");
+  if (column === range.right) shadows.push("inset -2px 0 var(--vscode-focusBorder)");
+  if (row === range.top) shadows.push("inset 0 2px var(--vscode-focusBorder)");
+  if (row === range.bottom) shadows.push("inset 0 -2px var(--vscode-focusBorder)");
+  return shadows.length > 0 ? shadows.join(",") : undefined;
 }
 
 function tableColumnProp(index: number): string {
@@ -2132,21 +3210,27 @@ function renderDataSourceRegistry(
   registry: DataSourceRegistryView,
   editingLocked: boolean,
 ): void {
+  const preserveDrafts = dataSourceDraftDirty;
   dataSourcesEditable = registry.editable;
   dataSourceEditingLocked = editingLocked;
-  dataSourceDrafts = registry.sources.map(cloneDataSource);
+  if (!preserveDrafts) {
+    dataSourceDraftDirty = false;
+    dataSourceDrafts = registry.sources.map(cloneDataSource);
+  }
   dataSourceRegistryIssue.textContent = registry.issue ?? "";
   dataSourceRegistryRaw.hidden = typeof registry.rawRegistry !== "string";
   dataSourceRegistryRaw.textContent = registry.rawRegistry ?? "";
-  addQueryFormulaDataSource.disabled =
+  addManagedFormulaDataSource.disabled =
     !dataSourcesEditable || dataSourceEditingLocked;
   addRhaiDataSource.disabled = !dataSourcesEditable || dataSourceEditingLocked;
-  addFormulaDataSource.disabled = !dataSourcesEditable || dataSourceEditingLocked;
-  applyDataSources.disabled = !dataSourcesEditable || dataSourceEditingLocked;
+  applyDataSources.disabled =
+    !dataSourcesEditable || dataSourceEditingLocked || !dataSourceDraftDirty;
   setStatus(
     dataSourceStatus,
     dataSourcesEditable
-      ? "Edit a source, then apply the changes to make the document dirty."
+      ? preserveDrafts
+        ? "Unapplied source changes were retained while the document refreshed. Review and apply them when ready."
+        : "Edit a source, then apply the changes to make the document dirty."
       : "This registry is read-only in the current editor.",
     dataSourcesEditable ? "stale" : "invalid",
   );
@@ -2166,6 +3250,8 @@ function renderDataSourceDrafts(): void {
     type.textContent =
       source.type === "rhai"
         ? "type: rhai"
+        : isManagedFormulaDataSource(source)
+          ? "type: formula · managed table"
         : isQueryFormulaDataSource(source)
           ? "type: formula · query table"
           : "type: formula · computed";
@@ -2186,7 +3272,12 @@ function renderDataSourceDrafts(): void {
         markDataSourceDraftChanged();
       }),
     );
-    if (isQueryFormulaDataSource(source)) {
+    if (isManagedFormulaDataSource(source)) {
+      const summary = document.createElement("p");
+      summary.className = "section-description";
+      summary.textContent = `${source.rows.length} rows · ${source.columns.length} columns · edit cells and constraints in the Table tab`;
+      card.append(summary);
+    } else if (isQueryFormulaDataSource(source)) {
       card.append(
         labelledTextarea("SQL query", source.query, "source-query", (value) => {
           source.query = value;
@@ -2246,7 +3337,7 @@ function renderDataSourceDrafts(): void {
           markDataSourceDraftChanged();
         }),
         labelledTextarea(
-          "Formula query inputs (one alias = source mapping per line)",
+          "Formula table inputs (one alias = source mapping per line)",
           rhaiInputMappingsText(source.inputs),
           "source-definition",
           (value) => {
@@ -2345,6 +3436,9 @@ function cloneDataSource(source: DataSource): DataSource {
       outputColumns: [...source.outputColumns],
     };
   }
+  if (isManagedFormulaDataSource(source)) {
+    return cloneManagedFormulaSource(source);
+  }
   if (isComputedFormulaDataSource(source)) {
     return { ...source, outputColumns: [...source.outputColumns] };
   }
@@ -2428,6 +3522,26 @@ function validateDataSourceDrafts(): string | undefined {
   }
   const definitions = new Map(dataSourceDrafts.map((source) => [source.name, source]));
   for (const source of dataSourceDrafts) {
+    if (isManagedFormulaDataSource(source)) {
+      if (source.columns.length === 0 || source.columns.length > MAX_TABLE_COLUMNS) {
+        return `Managed Formula tables require 1-${MAX_TABLE_COLUMNS} columns.`;
+      }
+      if (
+        source.rows.length > MAX_TABLE_ROWS ||
+        source.rows.length * source.columns.length > MAX_TABLE_CELLS
+      ) {
+        return `Managed Formula tables support at most ${MAX_TABLE_ROWS} rows and ${MAX_TABLE_CELLS} cells.`;
+      }
+      if (new Set(source.columns.map((column) => column.id)).size !== source.columns.length ||
+          new Set(source.columns.map((column) => column.name)).size !== source.columns.length) {
+        return "Managed Formula column ids and names must be unique.";
+      }
+      if (new Set(source.rows.map((row) => row.id)).size !== source.rows.length ||
+          source.rows.some((row) => row.cells.length !== source.columns.length)) {
+        return "Managed Formula row ids must be unique and each row must match the column count.";
+      }
+      continue;
+    }
     if (isQueryFormulaDataSource(source)) {
       if (source.query.trim() === "") return "Formula table queries cannot be empty.";
       if (new TextEncoder().encode(source.query).length > 65_536) {
@@ -2480,8 +3594,8 @@ function validateDataSourceDrafts(): string | undefined {
         }
         const target = definitions.get(input.source);
         if (!target) return "Each Rhai input must reference an existing source.";
-        if (!isQueryFormulaDataSource(target)) {
-          return "Rhai inputs can reference Formula query sources only.";
+        if (!target || target.type !== "formula" || isComputedFormulaDataSource(target)) {
+          return "Rhai inputs can reference managed or query Formula tables only.";
         }
       }
     } else {
@@ -2536,6 +3650,14 @@ function validateScriptPath(script: string): string | undefined {
 }
 
 function markDataSourceDraftChanged(): void {
+  dataSourceDraftDirty = true;
+  applyDataSources.disabled =
+    !dataSourcesEditable || dataSourceEditingLocked || pendingDataSourceRevision !== undefined;
+  if (tableGrid) tableGrid.readonly = true;
+  renderSelectedCell();
+  renderTableStructureActions();
+  renderNormalizationPresence();
+  configurePreviewTables();
   setStatus(
     dataSourceStatus,
     "Source changes are not applied to the document yet.",
@@ -2580,6 +3702,7 @@ function isEditorHostMessage(value: unknown): value is EditorHostMessage {
     "type" in value &&
     (value.type === "model" ||
       value.type === "editAck" ||
+      value.type === "editRejected" ||
       value.type === "preview" ||
       value.type === "dataSourceTable" ||
       value.type === "rhaiScript")

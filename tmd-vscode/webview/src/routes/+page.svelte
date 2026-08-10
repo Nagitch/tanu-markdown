@@ -59,9 +59,14 @@
             <button id="add-table-column" type="button">Add column</button>
             <button id="duplicate-table-column" type="button">Duplicate column</button>
             <button id="insert-table-column" type="button">Insert column</button>
+            <button id="extract-table-range" type="button">Copy selection to table</button>
           </div>
           <div class="table-result-heading">
             <p id="table-source-status" class="stale" role="status">Loading sources…</p>
+            <div id="normalization-status" class="normalization-status" hidden>
+              <span id="normalization-summary"></span>
+              <button id="normalize-table-range" type="button">Review normalization</button>
+            </div>
           </div>
           <form id="cell-formula-bar" class="cell-formula-bar" hidden>
             <label>
@@ -71,6 +76,29 @@
             <label class="cell-input-field">
               <span class="formula-symbol" aria-hidden="true">fx</span>
               <input id="cell-input" type="text" autocomplete="off" spellcheck="false" aria-label="Cell value or formula" />
+            </label>
+            <label>
+              <span class="visually-hidden">Cell type constraint</span>
+              <select id="cell-constraint" aria-label="Cell type constraint">
+                <option value="inherit">Inherit column</option>
+                <option value="any">Any</option>
+                <option value="text">Text</option>
+                <option value="number">Number</option>
+                <option value="boolean">Boolean</option>
+              </select>
+            </label>
+            <label>
+              <span class="visually-hidden">Column type constraint</span>
+              <select id="column-constraint" aria-label="Column type constraint">
+                <option value="any">Column: Any</option>
+                <option value="text">Column: Text</option>
+                <option value="number">Column: Number</option>
+                <option value="boolean">Column: Boolean</option>
+              </select>
+            </label>
+            <label>
+              <span class="visually-hidden">Column name</span>
+              <input id="column-name" type="text" autocomplete="off" spellcheck="false" aria-label="Column name" />
             </label>
             <button id="apply-cell-edit" type="submit">Apply</button>
             <button id="cancel-cell-edit" type="button">Cancel</button>
@@ -111,9 +139,8 @@
           <pre id="data-source-registry-raw" class="registry-raw" hidden></pre>
           <div id="data-sources"></div>
           <div class="data-source-actions">
-            <button id="add-query-formula-data-source" type="button">Add Formula table</button>
+            <button id="add-managed-formula-data-source" type="button">Add Formula table</button>
             <button id="add-rhai-data-source" type="button">Add Rhai source</button>
-            <button id="add-formula-data-source" type="button">Add computed Formula</button>
             <button id="apply-data-sources" type="button">Apply source changes</button>
           </div>
           <p id="data-source-status" class="stale"></p>
@@ -135,4 +162,17 @@
     </section>
   </main>
   <footer id="cell-edit-status" class="status-bar cell-edit-status stale" role="status" hidden></footer>
+  <div id="table-context-menu" class="table-context-menu" role="menu" hidden></div>
+  <dialog id="normalization-dialog" class="normalization-dialog">
+    <form method="dialog">
+      <h2>Normalize into a related table?</h2>
+      <p id="normalization-dialog-summary"></p>
+      <label class="field"><span>New table name</span><input id="normalization-table-name" type="text" /></label>
+      <p class="section-description">The selected literal columns will become a deduplicated Formula table. This table will keep one reference column. The change is one undoable edit.</p>
+      <div class="dialog-actions">
+        <button value="cancel" type="submit">Cancel</button>
+        <button id="confirm-normalization" value="default" type="button">Normalize</button>
+      </div>
+    </form>
+  </dialog>
 </div>

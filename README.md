@@ -1,11 +1,12 @@
 # Tanu Markdown
 
 Tanu Markdown (TMD) is a self-contained document format that keeps Markdown,
-metadata, attachments, and a SQLite database in one portable file. Markdown
-can render named, read-only database queries as identity Formula sources, and
-sandboxed Rhai scripts or bounded spreadsheet-style Formula programs can
-transform those declared query inputs into tables. Formula tables backed by an
-explicit keyed edit contract can also stage safe SQLite cell updates.
+metadata, attachments, and a SQLite database in one portable file. Its primary
+table model is a document-native Formula sheet: a loose `Any` grid can be
+edited first, then progressively constrained as text, number, or boolean data,
+with individual cells optionally becoming bounded formulas. Sandboxed Rhai
+scripts can consume Formula tables and publish read-only derived results.
+Legacy query-backed Formula definitions remain readable for compatibility.
 
 This repository contains the Rust document library, the installed `tmd`
 command-line interface, a C-compatible dynamic library, a VS Code custom
@@ -74,8 +75,8 @@ tmd export-html notes.tmd notes.html --self-contained
 The CLI also exposes schema-versioned JSON updates and previews, complete
 attachment lifecycle commands, read-only JSON database queries, migrations,
 and database import/export. HTML export and VS Code preview share the same safe
-Rust renderer for attachments, read-only query Formula sources, and sandboxed
-Rhai-to-table and computed Formula transformations. Configure
+Rust renderer for attachments, managed Formula sheets, and sandboxed
+Rhai-to-table transformations. Configure
 `tanuMarkdown.cliPath` if `tmd` is not on the VS Code process `PATH`.
 
 ## Validation

@@ -140,10 +140,24 @@ li { margin: .35rem 0; }
 .table-result-heading p { margin: .25rem 0 .65rem; }
 .cell-formula-bar {
   display: grid;
-  grid-template-columns: 5.5rem minmax(12rem, 1fr) auto auto;
+  grid-template-columns: 5.5rem minmax(12rem, 1fr) 9.5rem 9.5rem minmax(8rem, 11rem) auto auto;
   gap: .35rem;
   align-items: stretch;
   margin: 0 0 .5rem;
+}
+.normalization-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .75rem;
+  margin: 0 0 .65rem;
+  padding: .55rem .65rem;
+  border: 1px solid var(--vscode-focusBorder);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--vscode-focusBorder) 9%, transparent);
+}
+.normalization-status button {
+  flex: 0 0 auto;
 }
 .cell-formula-bar input { height: 100%; }
 .cell-name { text-align: center; font-family: var(--vscode-editor-font-family); }
@@ -209,6 +223,46 @@ li { margin: .35rem 0; }
   --revo-grid-font-family: var(--vscode-font-family);
   --revo-grid-font-size: var(--vscode-font-size);
 }
+.table-context-menu {
+  position: fixed;
+  z-index: 12;
+  min-width: 13rem;
+  padding: .3rem;
+  border: 1px solid var(--vscode-menu-border, var(--card-border));
+  border-radius: 4px;
+  color: var(--vscode-menu-foreground, var(--vscode-foreground));
+  background: var(--vscode-menu-background, var(--vscode-editor-background));
+  box-shadow: 0 .4rem 1.4rem rgb(0 0 0 / 28%);
+}
+.table-context-menu button {
+  display: block;
+  width: 100%;
+  padding: .4rem .55rem;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  text-align: left;
+}
+.table-context-menu button:hover,
+.table-context-menu button:focus-visible {
+  background: var(--vscode-menu-selectionBackground, var(--vscode-list-hoverBackground));
+}
+.table-context-menu hr {
+  margin: .25rem;
+  border: 0;
+  border-top: 1px solid var(--vscode-menu-separatorBackground, var(--card-border));
+}
+.normalization-dialog {
+  width: min(32rem, calc(100vw - 2rem));
+  color: var(--vscode-foreground);
+  background: var(--vscode-editor-background);
+  border: 1px solid var(--vscode-focusBorder);
+  border-radius: 6px;
+  box-shadow: 0 .7rem 2.5rem rgb(0 0 0 / 35%);
+}
+.normalization-dialog::backdrop { background: rgb(0 0 0 / 45%); }
+.normalization-dialog h2 { margin-top: 0; font-size: 1.05rem; }
+.dialog-actions { display: flex; justify-content: flex-end; gap: .5rem; }
 .source-script-panel {
   margin-top: 1rem;
   padding-top: 1rem;
@@ -287,4 +341,5 @@ li { margin: .35rem 0; }
   .app-bar { align-items: flex-start; flex-direction: column; }
   .source-script-heading { align-items: flex-start; flex-direction: column; }
   .cell-formula-bar { grid-template-columns: 5rem minmax(8rem, 1fr); }
+  .normalization-status { align-items: flex-start; flex-direction: column; }
 }

@@ -135,6 +135,85 @@ export function translateFormulaExpression(
   return result;
 }
 
+/** Rebase every coordinate in an expression when moving it to another sheet origin. */
+export function rebaseFormulaExpression(
+  expression: string,
+  rowDelta: number,
+  columnDelta: number,
+): string {
+  if (!Number.isSafeInteger(rowDelta) || !Number.isSafeInteger(columnDelta)) {
+    throw new Error("Formula rebase offsets must be safe integers.");
+  }
+  let result = "";
+  let index = 0;
+  let inString = false;
+  let escaped = false;
+  let bracketDepth = 0;
+  while (index < expression.length) {
+    const character = expression[index] ?? "";
+    if (inString) {
+      result += character;
+      if (character === '"' && !escaped) inString = false;
+      if (character === "\\" && !escaped) escaped = true;
+      else escaped = false;
+      index += 1;
+      continue;
+    }
+    if (character === '"') {
+      inString = true;
+      result += character;
+      index += 1;
+      continue;
+    }
+    if (
+      character === "/" &&
+      expression[index + 1] === "/" &&
+      bracketDepth === 0
+    ) {
+      result += expression.slice(index);
+      break;
+    }
+    if (character === "[") bracketDepth += 1;
+    if (character === "]") bracketDepth = Math.max(0, bracketDepth - 1);
+    if (bracketDepth === 0) {
+      const previous = expression[index - 1];
+      const header = /^HEADER\s*\(\s*([A-Za-z]+)\s*\)/iu.exec(
+        expression.slice(index),
+      );
+      if (header && !isReferenceIdentifierCharacter(previous)) {
+        const column = spreadsheetColumnIndex(header[1] ?? "") + columnDelta;
+        if (column < 0) {
+          throw new Error("Formula extraction would move a HEADER reference before column A.");
+        }
+        result += `HEADER(${spreadsheetColumnName(column)})`;
+        index += header[0].length;
+        continue;
+      }
+      const cell = /^(\$?)([A-Za-z]+)(\$?)([1-9][0-9]*)/u.exec(
+        expression.slice(index),
+      );
+      const next = cell ? expression[index + cell[0].length] : undefined;
+      if (
+        cell &&
+        !isReferenceIdentifierCharacter(previous) &&
+        !isReferenceIdentifierCharacter(next)
+      ) {
+        const column = spreadsheetColumnIndex(cell[2] ?? "") + columnDelta;
+        const row = Number(cell[4]) - 1 + rowDelta;
+        if (column < 0 || row < 0) {
+          throw new Error("Formula extraction would move a reference before A1.");
+        }
+        result += `${cell[1] ?? ""}${spreadsheetColumnName(column)}${cell[3] ?? ""}${row + 1}`;
+        index += cell[0].length;
+        continue;
+      }
+    }
+    result += character;
+    index += 1;
+  }
+  return result;
+}
+
 /** Insert rows into a Formula program, shifting targets and references below them. */
 export function insertFormulaRows(
   program: string,

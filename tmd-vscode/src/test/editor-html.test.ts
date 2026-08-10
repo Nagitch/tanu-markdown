@@ -58,8 +58,12 @@ test("custom editor loads the bundled SvelteKit app with webview resource URIs",
   assert.match(html, /id="table-structure-actions"/);
   assert.match(html, /id="add-table-row"/);
   assert.match(html, /id="insert-table-column"/);
-  assert.match(html, /id="add-query-formula-data-source"/);
-  assert.match(html, /id="add-formula-data-source"/);
+  assert.match(html, /id="add-managed-formula-data-source"/);
+  assert.doesNotMatch(html, /id="add-formula-data-source"/);
+  assert.match(html, /id="cell-constraint"/);
+  assert.match(html, /id="column-constraint"/);
+  assert.match(html, /id="column-name"/);
+  assert.match(html, /id="normalization-status"/);
   assert.doesNotMatch(html, /id="add-sqlite-data-source"/);
   assert.match(html, /name="csp-nonce"/);
   assert.match(

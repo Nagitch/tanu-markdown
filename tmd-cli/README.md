@@ -125,15 +125,15 @@ source = "sample-notes"
 ```
 ````
 
-The implemented renderers are `scalar` and `table`. A query Formula source may
-execute one bounded, read-only SQLite statement; Rhai and computed Formula
-sources transform declared query Formula inputs. Values are
-escaped and never reparsed as Markdown or HTML. Validation reports undefined
+The implemented renderers are `scalar` and `table`. Managed Formula sources
+store typed literals and per-cell formulas directly; Rhai sources transform
+declared managed or legacy query Formula inputs into read-only tables. Values
+are escaped and never reparsed as Markdown or HTML. Validation reports undefined
 sources, unsupported renderers, query/formula failures, and shape mismatches.
 Formula uses A1 coordinates over data rows, rectangular ranges such as
 `B1:B3`, header references such as `[amount]`, and functions such as `SUM`.
 See [dynamic data views](../docs/dynamic-data-views.md) for registry schema
-version 5 and legacy compatibility.
+version 6 and legacy compatibility.
 
 ## Embedded database
 

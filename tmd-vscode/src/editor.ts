@@ -16,6 +16,10 @@ import type {
   DataSource,
   DatabaseCellEdit,
   DataTableCell,
+  ManagedCellConstraint,
+  ManagedFormulaCell,
+  ManagedFormulaColumn,
+  ManagedFormulaRow,
   SqliteEditDefinition,
   ValidationReport,
 } from "./types.js";
@@ -136,6 +140,17 @@ export class TanuMarkdownEditorProvider
       try {
         await this.handleMessage(document, panel, message);
       } catch (error) {
+        const clientRevision = mutationClientRevision(message);
+        if (clientRevision !== undefined) {
+          this.panelClientRevisions.accept(panel, clientRevision);
+          await panel.webview.postMessage({
+            type: "editRejected",
+            clientRevision,
+            contentRevision: document.contentRevision,
+            issue: boundedMessage(error),
+          });
+          return;
+        }
         await this.errorHandler(error);
       }
     });
@@ -279,7 +294,7 @@ export class TanuMarkdownEditorProvider
         }
         const dataSources = parseDataSources(message.dataSources);
         if (!dataSources) {
-          return;
+          throw new Error("The editor sent an invalid data-source definition.");
         }
         validateDataSources(dataSources);
         dataSources.sort((left, right) => left.name.localeCompare(right.name));
@@ -335,6 +350,12 @@ export class TanuMarkdownEditorProvider
           (source) => source.name === message.source,
         );
         if (formulaSource?.type !== "formula") return;
+        if (
+          !isQueryFormulaDataSource(formulaSource) &&
+          !isComputedFormulaDataSource(formulaSource)
+        ) {
+          return;
+        }
         if (
           isComputedFormulaDataSource(formulaSource) !==
           (message.formulaProgram !== undefined)
@@ -598,6 +619,8 @@ export class TanuMarkdownEditorProvider
         type: "editAck",
         clientRevision,
         contentRevision: document.contentRevision,
+        applied: false,
+        notice: "This edit was superseded by a newer editor operation and was not applied.",
       });
       return;
     }
@@ -630,6 +653,7 @@ export class TanuMarkdownEditorProvider
       type: "editAck",
       clientRevision,
       contentRevision: document.contentRevision,
+      applied: true,
       ...(notice === undefined ? {} : { notice }),
     });
   }
@@ -695,6 +719,34 @@ function parseDataSources(value: unknown): DataSource[] | undefined {
       !("type" in source)
     ) {
       return undefined;
+    }
+    if (
+      source.type === "formula" &&
+      hasOnlyKeys(source, ["name", "type", "columns", "rows"]) &&
+      "columns" in source &&
+      Array.isArray(source.columns) &&
+      "rows" in source &&
+      Array.isArray(source.rows)
+    ) {
+      const columns: ManagedFormulaColumn[] = [];
+      for (const column of source.columns) {
+        const parsed = parseManagedFormulaColumn(column);
+        if (!parsed) return undefined;
+        columns.push(parsed);
+      }
+      const rows: ManagedFormulaRow[] = [];
+      for (const row of source.rows) {
+        const parsed = parseManagedFormulaRow(row);
+        if (!parsed) return undefined;
+        rows.push(parsed);
+      }
+      sources.push({
+        name: source.name,
+        type: "formula",
+        columns,
+        rows,
+      });
+      continue;
     }
     if (
       source.type === "formula" &&
@@ -770,6 +822,114 @@ function parseDataSources(value: unknown): DataSource[] | undefined {
     });
   }
   return sources;
+}
+
+function parseManagedFormulaColumn(value: unknown): ManagedFormulaColumn | undefined {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !hasOnlyKeys(value, ["id", "name", "constraint", "reference"]) ||
+    !("id" in value) ||
+    typeof value.id !== "string" ||
+    !("name" in value) ||
+    typeof value.name !== "string" ||
+    !("constraint" in value) ||
+    !isManagedConstraint(value.constraint)
+  ) {
+    return undefined;
+  }
+  if (!("reference" in value)) {
+    return { id: value.id, name: value.name, constraint: value.constraint };
+  }
+  const reference = value.reference;
+  if (
+    typeof reference !== "object" ||
+    reference === null ||
+    !hasOnlyKeys(reference, ["source", "columnId"]) ||
+    !("source" in reference) ||
+    typeof reference.source !== "string" ||
+    !("columnId" in reference) ||
+    typeof reference.columnId !== "string"
+  ) {
+    return undefined;
+  }
+  return {
+    id: value.id,
+    name: value.name,
+    constraint: value.constraint,
+    reference: { source: reference.source, columnId: reference.columnId },
+  };
+}
+
+function parseManagedFormulaRow(value: unknown): ManagedFormulaRow | undefined {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !hasOnlyKeys(value, ["id", "cells"]) ||
+    !("id" in value) ||
+    typeof value.id !== "string" ||
+    !("cells" in value) ||
+    !Array.isArray(value.cells)
+  ) {
+    return undefined;
+  }
+  const cells: ManagedFormulaCell[] = [];
+  for (const cell of value.cells) {
+    const parsed = parseManagedFormulaCell(cell);
+    if (!parsed) return undefined;
+    cells.push(parsed);
+  }
+  return { id: value.id, cells };
+}
+
+function parseManagedFormulaCell(value: unknown): ManagedFormulaCell | undefined {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !hasOnlyKeys(value, ["content", "constraint"]) ||
+    !("content" in value) ||
+    typeof value.content !== "object" ||
+    value.content === null ||
+    ("constraint" in value && !isManagedConstraint(value.constraint))
+  ) {
+    return undefined;
+  }
+  let constraint: ManagedCellConstraint | undefined;
+  if ("constraint" in value && isManagedConstraint(value.constraint)) {
+    constraint = value.constraint;
+  }
+  const content = value.content;
+  if (
+    hasOnlyKeys(content, ["kind", "expression"]) &&
+    "kind" in content &&
+    content.kind === "formula" &&
+    "expression" in content &&
+    typeof content.expression === "string"
+  ) {
+    return {
+      content: { kind: "formula", expression: content.expression },
+      ...(constraint ? { constraint } : {}),
+    };
+  }
+  if (
+    hasOnlyKeys(content, ["kind", "value"]) &&
+    "kind" in content &&
+    content.kind === "literal" &&
+    "value" in content &&
+    isDataTableCell(content.value)
+  ) {
+    return {
+      content: { kind: "literal", value: { ...content.value } },
+      ...(constraint ? { constraint } : {}),
+    };
+  }
+  return undefined;
+}
+
+function isManagedConstraint(
+  value: unknown,
+): value is "any" | "text" | "number" | "boolean" {
+  return value === "any" || value === "text" || value === "number" || value === "boolean";
 }
 
 function hasOnlyKeys(
@@ -854,8 +1014,8 @@ function isDataTableCell(value: unknown): value is DataTableCell {
   if (typeof value !== "object" || value === null || !("type" in value)) {
     return false;
   }
-  if (value.type === "null") return true;
-  if (!("value" in value)) return false;
+  if (value.type === "null") return hasOnlyKeys(value, ["type"]);
+  if (!hasOnlyKeys(value, ["type", "value"]) || !("value" in value)) return false;
   return (
     (value.type === "boolean" && typeof value.value === "boolean") ||
     (value.type === "integer" &&
@@ -921,6 +1081,21 @@ function boundedMessage(error: unknown, maximumCharacters = 2_000): string {
   return message.length <= maximumCharacters
     ? message
     : `${message.slice(0, maximumCharacters)}…`;
+}
+
+function mutationClientRevision(message: unknown): number | undefined {
+  if (!isEditorRequest(message)) return undefined;
+  if (
+    message.type !== "edit" &&
+    message.type !== "editDataSources" &&
+    message.type !== "editSpreadsheet" &&
+    message.type !== "editRhaiScript"
+  ) {
+    return undefined;
+  }
+  return Number.isSafeInteger(message.clientRevision) && message.clientRevision > 0
+    ? message.clientRevision
+    : undefined;
 }
 
 export function editorHtml(

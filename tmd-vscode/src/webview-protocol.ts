@@ -75,7 +75,15 @@ export interface EditorAcknowledgementMessage {
   type: "editAck";
   clientRevision: number;
   contentRevision: number;
+  applied?: boolean;
   notice?: string;
+}
+
+export interface EditorRejectionMessage {
+  type: "editRejected";
+  clientRevision: number;
+  contentRevision: number;
+  issue: string;
 }
 
 export interface EditorPreviewMessage {
@@ -109,6 +117,7 @@ export interface EditorRhaiScriptMessage {
 export type EditorHostMessage =
   | EditorModelMessage
   | EditorAcknowledgementMessage
+  | EditorRejectionMessage
   | EditorPreviewMessage
   | EditorDataSourceTableMessage
   | EditorRhaiScriptMessage;

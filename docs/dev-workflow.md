@@ -31,12 +31,12 @@ To exercise the custom editor:
 
 The pre-launch task incrementally rebuilds Rust and TypeScript, restages the
 CLI, validates `tmd-sample/sample.tmd`, and opens that file in an Extension
-Development Host window. Its Preview tab evaluates the query-Formula-to-Rhai
-category summary through the same CLI/core path used by packaged extensions.
-The Sources tab edits schema-version-5 query Formula, computed Formula, and Rhai
-tables. Rhai script bodies remain attachments, while Formula programs are
-inline source definitions; unsaved definition changes are previewed without
-first writing the document.
+Development Host window. Its Preview tab evaluates managed Formula tables and
+a managed-Formula-to-Rhai view through the same CLI/core path used by packaged
+extensions. The Sources tab creates schema-version-6 managed Formula and Rhai
+tables. Rhai script bodies remain attachments, while managed cell values,
+constraints, and formulas are inline source definitions; unsaved changes are
+previewed without first writing the document.
 
 The default build task (**Terminal: Run Build Task**) runs the same preparation
 script without starting an Extension Development Host.
