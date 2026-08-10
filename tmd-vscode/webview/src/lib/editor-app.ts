@@ -27,8 +27,10 @@ import {
   insertManagedRow,
   managedCellText,
   managedLiteralConstraintIssue,
+  managedVisibleColumnCount,
   normalizeManagedColumns,
   renameManagedColumn,
+  renameManagedReferencedColumn,
   setManagedCellText,
   type ManagedTableRange,
   type NormalizationCandidate,
@@ -1698,7 +1700,7 @@ function applyFormulaRowStructure(
 function addFormulaTableColumn(): void {
   const managed = managedStructureContext();
   if (managed) {
-    const column = managed.columns.length;
+    const column = managedVisibleColumnCount(managed);
     insertManagedColumn(managed, column);
     applyManagedStructure(managed, { row: selectedCell?.row ?? 0, column }, "Adding column…");
     return;
@@ -1719,7 +1721,7 @@ function addFormulaTableColumn(): void {
 function duplicateFormulaTableColumn(): void {
   const managed = managedStructureContext(true);
   if (managed && selectedCell) {
-    const column = managed.columns.length;
+    const column = managedVisibleColumnCount(managed);
     duplicateManagedColumn(managed, selectedCell.column, column);
     applyManagedStructure(managed, { row: selectedCell.row, column }, "Duplicating column…");
     return;
@@ -2147,7 +2149,15 @@ function commitManagedSource(
       ? cloneManagedFormulaSource(source)
       : cloneDataSource(candidate),
   );
-  if (!nextSources.some((candidate) => candidate.name === source.name)) {
+  commitManagedSources(nextSources, source.name, measurement);
+}
+
+function commitManagedSources(
+  nextSources: DataSource[],
+  expectedSourceName: string,
+  measurement: Omit<SpreadsheetEditMeasurement, "clientRevision">,
+): void {
+  if (!nextSources.some((candidate) => candidate.name === expectedSourceName)) {
     setCellEditStatus("The managed Formula source changed before the edit was applied.", "invalid");
     return;
   }
@@ -2414,10 +2424,24 @@ function applySelectedColumnName(): void {
     return;
   }
   try {
-    const updated = cloneManagedFormulaSource(source);
-    renameManagedColumn(updated, selectedCell.column, columnName.value.trim());
+    const nextSources = tableSourceDefinitions.map(cloneDataSource);
+    const updated = nextSources.find(
+      (candidate): candidate is ManagedFormulaDataSource =>
+        isManagedFormulaDataSource(candidate) && candidate.name === source.name,
+    );
+    if (!updated) throw new Error("The managed Formula source changed before the edit was applied.");
+    const previousName = updated.columns[selectedCell.column]?.name;
+    if (!previousName) throw new Error("The selected managed column no longer exists.");
+    const nextName = columnName.value.trim();
+    renameManagedColumn(updated, selectedCell.column, nextName);
+    renameManagedReferencedColumn(
+      nextSources.filter(isManagedFormulaDataSource),
+      updated.name,
+      previousName,
+      nextName,
+    );
     setCellEditStatus("Renaming column…", "stale");
-    commitManagedSource(updated, {
+    commitManagedSources(nextSources, updated.name, {
       startedAt: performance.now(),
       operation: "Structure edit",
     });
@@ -2632,7 +2656,7 @@ function openNormalizationDialog(): void {
   normalizationTableName.value = nextDataSourceName(`${source.name}-detail`);
   normalizationDialogSummary.textContent =
     `${rangeLabel(normalizationCandidate)} will become a ${normalizationCandidate.uniqueRows}-row table. ` +
-    `${source.name} will keep a typed reference column.`;
+    `${source.name} will keep the displayed columns linked to it.`;
   normalizationDialog.showModal();
   normalizationTableName.select();
 }
@@ -2692,7 +2716,7 @@ function rewriteNormalizedColumnReferences(
   const movedColumnIds = new Map(
     original.columns
       .slice(candidate.left, candidate.right + 1)
-      .map((column, index) => [column.id, target.columns[index + 1]?.id]),
+      .map((column, index) => [column.id, target.columns[index]?.id]),
   );
   for (const source of sources) {
     if (!isManagedFormulaDataSource(source)) continue;
@@ -3268,14 +3292,23 @@ function renderDataSourceDrafts(): void {
     card.append(heading);
     card.append(
       labelledInput("Source name", source.name, (value) => {
+        const previousName = source.name;
         source.name = value;
+        if (previousName !== value) {
+          rewriteDraftSourceReferences(previousName, value);
+        }
         markDataSourceDraftChanged();
       }),
     );
     if (isManagedFormulaDataSource(source)) {
       const summary = document.createElement("p");
       summary.className = "section-description";
-      summary.textContent = `${source.rows.length} rows · ${source.columns.length} columns · edit cells and constraints in the Table tab`;
+      const visibleColumns = managedVisibleColumnCount(source);
+      const storageColumns = source.columns.length - visibleColumns;
+      summary.textContent =
+        `${source.rows.length} rows · ${visibleColumns} columns` +
+        (storageColumns > 0 ? ` · ${storageColumns} internal relationship column${storageColumns === 1 ? "" : "s"}` : "") +
+        " · edit cells and constraints in the Table tab";
       card.append(summary);
     } else if (isQueryFormulaDataSource(source)) {
       card.append(
@@ -3511,6 +3544,24 @@ function nextDataSourceName(prefix: string): string {
   return `${prefix}-${suffix}`;
 }
 
+function rewriteDraftSourceReferences(previousName: string, nextName: string): void {
+  for (const source of dataSourceDrafts) {
+    if (isManagedFormulaDataSource(source)) {
+      for (const column of source.columns) {
+        if (column.reference?.source === previousName) {
+          column.reference.source = nextName;
+        }
+      }
+    } else if (source.type === "rhai") {
+      for (const input of source.inputs) {
+        if (input.source === previousName) input.source = nextName;
+      }
+    } else if (isComputedFormulaDataSource(source) && source.input === previousName) {
+      source.input = nextName;
+    }
+  }
+}
+
 function validateDataSourceDrafts(): string | undefined {
   const names = new Set<string>();
   for (const source of dataSourceDrafts) {
@@ -3535,6 +3586,13 @@ function validateDataSourceDrafts(): string | undefined {
       if (new Set(source.columns.map((column) => column.id)).size !== source.columns.length ||
           new Set(source.columns.map((column) => column.name)).size !== source.columns.length) {
         return "Managed Formula column ids and names must be unique.";
+      }
+      const visibleColumns = managedVisibleColumnCount(source);
+      if (
+        visibleColumns === 0 ||
+        source.columns.slice(visibleColumns).some((column) => column.hidden !== true)
+      ) {
+        return "Managed Formula internal columns, when present, must form a trailing suffix after at least one visible column.";
       }
       if (new Set(source.rows.map((row) => row.id)).size !== source.rows.length ||
           source.rows.some((row) => row.cells.length !== source.columns.length)) {

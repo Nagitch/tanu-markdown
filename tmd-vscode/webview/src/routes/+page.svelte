@@ -168,7 +168,7 @@
       <h2>Normalize into a related table?</h2>
       <p id="normalization-dialog-summary"></p>
       <label class="field"><span>New table name</span><input id="normalization-table-name" type="text" /></label>
-      <p class="section-description">The selected literal columns will become a deduplicated Formula table. This table will keep one reference column. The change is one undoable edit.</p>
+      <p class="section-description">The selected literals will become a deduplicated Formula table. Their visible columns stay in this table as generated REF formulas, backed by an internal relationship key. The change is one undoable edit.</p>
       <div class="dialog-actions">
         <button value="cancel" type="submit">Cancel</button>
         <button id="confirm-normalization" value="default" type="button">Normalize</button>

@@ -9,7 +9,9 @@ tab to try the following sources:
   cells.
 - `contacts` is a literal-only, all-Any table whose repeated `city` and `country`
   values produce a normalization candidate. The editor outlines that range in
-  blue and can split it into a related managed table.
+  blue and can split it into a related managed table. After applying the
+  suggestion, `city` and `country` keep displaying their original values
+  through generated `REF` formulas; generated relationship keys stay internal.
 - `order-report` is a read-only Rhai result over `orders`. The editable script is
   [`views/category-summary.rhai`](views/category-summary.rhai), and identical
   bytes are stored as an attachment in `sample.tmd`.

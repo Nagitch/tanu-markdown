@@ -12,6 +12,7 @@ import {
   normalizeManagedColumns,
   parseManagedCellText,
   renameManagedColumn,
+  renameManagedReferencedColumn,
 } from "../managed-table.js";
 
 test("new Formula tables start as unconstrained 3 by 3 sheets", () => {
@@ -43,6 +44,29 @@ test("renaming a managed column preserves named Formula references", () => {
     '=[@Input] + LEN("[Column 1]") // [Column 1]',
   );
   assert.throws(() => renameManagedColumn(source, 0, "Column 2"), /unique/);
+});
+
+test("renaming a referenced column updates only related REF target arguments", () => {
+  const target = createManagedFormulaDataSource("places");
+  target.columns[0].name = "City";
+  const source = createManagedFormulaDataSource("orders");
+  source.columns[2] = {
+    id: "c3",
+    name: "place_ref",
+    constraint: "text",
+    reference: { source: "places", columnId: "c3" },
+  };
+  source.rows[0].cells[0].content = {
+    kind: "formula",
+    expression:
+      'REF([@place_ref], "City") + REF([@other_ref], "City") + "REF([@place_ref], \\"City\\")" // REF([@place_ref], "City")',
+  };
+  renameManagedColumn(target, 0, "Locality");
+  renameManagedReferencedColumn([source, target], "places", "City", "Locality");
+  assert.equal(
+    managedCellText(source, 0, 0),
+    '=REF([@place_ref], "Locality") + REF([@other_ref], "City") + "REF([@place_ref], \\"City\\")" // REF([@place_ref], "City")',
+  );
 });
 
 test("Any inference stays loose while explicit constraints are strict", () => {
@@ -165,18 +189,42 @@ test("literal duplicates are offered and normalized into a referenced table", ()
   const result = normalizeManagedColumns(source, candidate, "places");
   assert.deepEqual(result.source.columns.map((column) => column.name), [
     "Order",
-    "places ref",
-  ]);
-  assert.deepEqual(result.source.columns[1].reference, {
-    source: "places",
-    columnId: "c1",
-  });
-  assert.equal(result.target.rows.length, 2);
-  assert.deepEqual(result.target.columns.map((column) => column.name), [
-    "ID",
     "City",
     "Country",
+    "places_ref",
   ]);
+  assert.deepEqual(result.source.columns[3].reference, {
+    source: "places",
+    columnId: "c3",
+  });
+  assert.equal(result.source.columns[3].hidden, true);
+  assert.equal(
+    managedCellText(result.source, 0, 1),
+    '=REF([@places_ref], "City")',
+  );
+  assert.equal(
+    managedCellText(result.source, 0, 2),
+    '=REF([@places_ref], "Country")',
+  );
+  assert.equal(managedCellText(result.source, 0, 3), "places-1");
+  assert.equal(result.target.rows.length, 2);
+  assert.deepEqual(result.target.columns.map((column) => column.name), [
+    "City",
+    "Country",
+    "ID",
+  ]);
+  assert.equal(result.target.columns[2].hidden, true);
+
+  insertManagedRow(result.source, 1);
+  assert.equal(
+    managedCellText(result.source, 1, 1),
+    '=REF([@places_ref], "City")',
+  );
+  assert.equal(
+    managedCellText(result.source, 1, 2),
+    '=REF([@places_ref], "Country")',
+  );
+  assert.equal(managedCellText(result.source, 1, 3), "");
 });
 
 test("normalization keeps the generated identity column name unique", () => {
@@ -197,5 +245,5 @@ test("normalization keeps the generated identity column name unique", () => {
   const candidate = findNormalizationCandidate(source);
   assert.ok(candidate);
   const result = normalizeManagedColumns(source, candidate, "groups");
-  assert.equal(result.target.columns[0].name, "ID 2");
+  assert.equal(result.target.columns[2].name, "ID 2");
 });

@@ -52,6 +52,8 @@ export interface ManagedFormulaColumn {
   id: string;
   name: string;
   constraint: ManagedCellConstraint;
+  /** Storage-only column omitted from evaluated table output. Hidden columns form a trailing suffix. */
+  hidden?: boolean;
   reference?: {
     source: string;
     columnId: string;
@@ -129,7 +131,7 @@ export interface TextAttachmentView extends TextAttachmentEdit {}
 
 export interface DataSourceRegistryView {
   editable: boolean;
-  schemaVersion?: 1 | 2 | 3 | 4 | 5 | 6;
+  schemaVersion?: 1 | 2 | 3 | 4 | 5 | 6 | 7;
   sources: DataSource[];
   issue?: string;
   rawRegistry?: string;

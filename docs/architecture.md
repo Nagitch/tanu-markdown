@@ -117,13 +117,17 @@ are document edits, while preview and table evaluation receive them as bounded
 in-memory attachment overrides. Debounced evaluation failures are translated
 to CodeMirror lint diagnostics when the Rhai runtime reports a source
 location. Managed Formula rows, columns, typed literals, constraints, and
-per-cell expressions are stored inline in schema-version-6 source definitions.
+per-cell expressions are stored inline in schema-version-6 source definitions;
+schema version 7 adds trailing hidden columns used for relationship storage and
+bounded cross-table `REF` evaluation.
 Their edits flow immediately through the ordinary source-definition
 dirty/save/backup/undo lifecycle; table reevaluation is debounced, and the
 CLI/core returns typed Formula diagnostics. The editor uses stable row and
 column identities for structure edits and rewrites position-based A1 references
 when inserting data. Range extraction and normalization update source
-definitions atomically. Query-backed and computed Formula modes keep their
+definitions atomically; normalization retains the original visible columns as
+`REF` formulas and stores its generated keys in hidden trailing columns.
+Query-backed and computed Formula modes keep their
 previous SQLite staging path for compatibility but are not created by the
 current editor.
 

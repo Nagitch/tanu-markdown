@@ -50,9 +50,11 @@ its UTF-8 script in a CodeMirror editor. Script drafts participate in the same
 document dirty state, save, backup, undo, and redo lifecycle as Markdown and
 source-definition edits. Table and preview evaluation receive the draft as a
 bounded attachment override, so sandbox errors are reported without first
-writing the document. Managed Formula cells are inline schema-version-6 source
-definitions and use the same dirty, save, backup, undo, and redo lifecycle. The
-Sources tab creates only Formula and Rhai source types; schema versions 1-5 and
+writing the document. Managed Formula cells are inline source definitions;
+current schema version 7 also stores normalization keys in trailing hidden
+columns and resolves generated cross-table `REF` formulas. These edits use the
+same dirty, save, backup, undo, and redo lifecycle. The Sources tab creates only
+Formula and Rhai source types; schema versions 1-6 and
 legacy SQLite/query/computed modes remain readable for compatibility. Rhai
 table output is always read-only. An older configured external CLI falls back
 to the local safe Markdown renderer.

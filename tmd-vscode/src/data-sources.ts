@@ -19,7 +19,8 @@ const RHAI_REGISTRY_SCHEMA_VERSION = 2;
 const FORMULA_REGISTRY_SCHEMA_VERSION = 3;
 const EDITABLE_REGISTRY_SCHEMA_VERSION = 4;
 const QUERY_REGISTRY_SCHEMA_VERSION = 5;
-const CURRENT_REGISTRY_SCHEMA_VERSION = 6;
+const MANAGED_FORMULA_REGISTRY_SCHEMA_VERSION = 6;
+const CURRENT_REGISTRY_SCHEMA_VERSION = 7;
 const MAX_SOURCE_NAME_BYTES = 128;
 const MAX_QUERY_BYTES = 64 * 1024;
 const MAX_FORMULA_PROGRAM_BYTES = 256 * 1024;
@@ -79,10 +80,11 @@ export function inspectDataSourceRegistry(extras: JsonValue): DataSourceRegistry
     schemaVersion !== FORMULA_REGISTRY_SCHEMA_VERSION &&
     schemaVersion !== EDITABLE_REGISTRY_SCHEMA_VERSION &&
     schemaVersion !== QUERY_REGISTRY_SCHEMA_VERSION &&
+    schemaVersion !== MANAGED_FORMULA_REGISTRY_SCHEMA_VERSION &&
     schemaVersion !== CURRENT_REGISTRY_SCHEMA_VERSION
   ) {
     return invalidRegistry(
-      `Data-source schema_version ${String(schemaVersion)} is not editable; expected 1, 2, 3, 4, 5 or 6.`,
+      `Data-source schema_version ${String(schemaVersion)} is not editable; expected 1 through 7.`,
       rawRegistry,
     );
   }
@@ -96,7 +98,11 @@ export function inspectDataSourceRegistry(extras: JsonValue): DataSourceRegistry
       return invalidRegistry(`Data source \`${name}\` is not an object.`, rawRegistry);
     }
     if (definition.type === "sqlite") {
-      if (schemaVersion === QUERY_REGISTRY_SCHEMA_VERSION || schemaVersion === CURRENT_REGISTRY_SCHEMA_VERSION) {
+      if (
+        schemaVersion === QUERY_REGISTRY_SCHEMA_VERSION ||
+        schemaVersion === MANAGED_FORMULA_REGISTRY_SCHEMA_VERSION ||
+        schemaVersion === CURRENT_REGISTRY_SCHEMA_VERSION
+      ) {
         return invalidRegistry(
           `Data source \`${name}\` uses the removed SQLite type; use a Formula query source.`,
           rawRegistry,
@@ -124,10 +130,11 @@ export function inspectDataSourceRegistry(extras: JsonValue): DataSourceRegistry
         schemaVersion !== FORMULA_REGISTRY_SCHEMA_VERSION &&
         schemaVersion !== EDITABLE_REGISTRY_SCHEMA_VERSION &&
         schemaVersion !== QUERY_REGISTRY_SCHEMA_VERSION &&
+        schemaVersion !== MANAGED_FORMULA_REGISTRY_SCHEMA_VERSION &&
         schemaVersion !== CURRENT_REGISTRY_SCHEMA_VERSION
       ) {
         return invalidRegistry(
-          `Rhai data source \`${name}\` requires schema_version 2, 3, 4, 5 or 6.`,
+          `Rhai data source \`${name}\` requires schema_version 2 through 7.`,
           rawRegistry,
         );
       }
@@ -143,13 +150,20 @@ export function inspectDataSourceRegistry(extras: JsonValue): DataSourceRegistry
     }
     if (definition.type === "formula") {
       if ("columns" in definition || "rows" in definition) {
-        if (schemaVersion !== CURRENT_REGISTRY_SCHEMA_VERSION) {
+        if (
+          schemaVersion !== MANAGED_FORMULA_REGISTRY_SCHEMA_VERSION &&
+          schemaVersion !== CURRENT_REGISTRY_SCHEMA_VERSION
+        ) {
           return invalidRegistry(
-            `Managed Formula source \`${name}\` requires schema_version 6.`,
+            `Managed Formula source \`${name}\` requires schema_version 6 or 7.`,
             rawRegistry,
           );
         }
-        const source = parseManagedFormulaDataSource(name, definition);
+        const source = parseManagedFormulaDataSource(
+          name,
+          definition,
+          schemaVersion >= CURRENT_REGISTRY_SCHEMA_VERSION,
+        );
         if (!source) {
           return invalidRegistry(
             `Data source \`${name}\` is not an editable managed Formula table.`,
@@ -160,9 +174,13 @@ export function inspectDataSourceRegistry(extras: JsonValue): DataSourceRegistry
         continue;
       }
       if ("query" in definition) {
-        if (schemaVersion !== QUERY_REGISTRY_SCHEMA_VERSION && schemaVersion !== CURRENT_REGISTRY_SCHEMA_VERSION) {
+        if (
+          schemaVersion !== QUERY_REGISTRY_SCHEMA_VERSION &&
+          schemaVersion !== MANAGED_FORMULA_REGISTRY_SCHEMA_VERSION &&
+          schemaVersion !== CURRENT_REGISTRY_SCHEMA_VERSION
+        ) {
           return invalidRegistry(
-            `Formula query source \`${name}\` requires schema_version 5 or 6.`,
+            `Formula query source \`${name}\` requires schema_version 5, 6 or 7.`,
             rawRegistry,
           );
         }
@@ -180,10 +198,11 @@ export function inspectDataSourceRegistry(extras: JsonValue): DataSourceRegistry
         schemaVersion !== FORMULA_REGISTRY_SCHEMA_VERSION &&
         schemaVersion !== EDITABLE_REGISTRY_SCHEMA_VERSION &&
         schemaVersion !== QUERY_REGISTRY_SCHEMA_VERSION &&
+        schemaVersion !== MANAGED_FORMULA_REGISTRY_SCHEMA_VERSION &&
         schemaVersion !== CURRENT_REGISTRY_SCHEMA_VERSION
       ) {
         return invalidRegistry(
-          `Computed Formula data source \`${name}\` requires schema_version 3, 4, 5 or 6.`,
+          `Computed Formula data source \`${name}\` requires schema_version 3 through 7.`,
           rawRegistry,
         );
       }
@@ -422,6 +441,7 @@ function parseFormulaDataSource(
 function parseManagedFormulaDataSource(
   name: string,
   definition: { [key: string]: JsonValue },
+  allowHiddenColumns: boolean,
 ): ManagedFormulaDataSource | undefined {
   if (
     hasUnknownKeys(definition, new Set(["type", "columns", "rows"])) ||
@@ -434,9 +454,14 @@ function parseManagedFormulaDataSource(
   for (const value of definition.columns) {
     if (
       !isObject(value) ||
-      hasUnknownKeys(value, new Set(["id", "name", "constraint", "reference"])) ||
+      hasUnknownKeys(
+        value,
+        new Set(["id", "name", "constraint", "hidden", "reference"]),
+      ) ||
       typeof value.id !== "string" ||
       typeof value.name !== "string" ||
+      (value.hidden !== undefined &&
+        (!allowHiddenColumns || typeof value.hidden !== "boolean")) ||
       !isManagedCellConstraint(value.constraint)
     ) {
       return undefined;
@@ -460,6 +485,7 @@ function parseManagedFormulaDataSource(
       id: value.id,
       name: value.name,
       constraint: value.constraint,
+      ...(value.hidden === true ? { hidden: true } : {}),
       ...(reference ? { reference } : {}),
     });
   }
@@ -586,6 +612,7 @@ function serializeDataSource(source: DataSource): JsonValue {
         id: column.id,
         name: column.name,
         constraint: column.constraint,
+        ...(column.hidden ? { hidden: true } : {}),
         ...(column.reference
           ? {
               reference: {
@@ -654,7 +681,19 @@ function validateManagedFormulaDataSource(
   }
   const columnIds = new Set<string>();
   const columnNames = new Set<string>();
+  let hiddenColumnsStarted = false;
+  let visibleColumns = 0;
   for (const column of source.columns) {
+    if (column.hidden) {
+      hiddenColumnsStarted = true;
+    } else {
+      if (hiddenColumnsStarted) {
+        throw new Error(
+          `Managed Formula source \`${source.name}\` hidden columns must form a trailing suffix.`,
+        );
+      }
+      visibleColumns += 1;
+    }
     validateStableId(column.id, `Managed Formula source \`${source.name}\` column`);
     validateColumnName(column.name, source.name);
     if (columnIds.has(column.id) || columnNames.has(column.name)) {
@@ -668,6 +707,11 @@ function validateManagedFormulaDataSource(
         throw new Error(`Managed Formula source \`${source.name}\` has an invalid column reference.`);
       }
     }
+  }
+  if (visibleColumns === 0) {
+    throw new Error(
+      `Managed Formula source \`${source.name}\` requires at least one visible column.`,
+    );
   }
   const rowIds = new Set<string>();
   let formulaProgramBytes = 0;

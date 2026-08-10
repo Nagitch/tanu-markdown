@@ -67,10 +67,13 @@ alternate-format APIs and tooling are outside the implemented contract.
 Dynamic views primarily use document-native managed Formula sheets. Their
 ordered rows and columns have stable identities, cells contain typed literals
 or bounded A1-style formulas, and `any`, `text`, `number`, and `boolean`
-constraints can be applied progressively per column or cell. Sandboxed Rhai
+constraints can be applied progressively per column or cell. Explicit bounded
+`REF` formulas can use hidden relationship keys to read another managed table,
+including the generated references that preserve visible values after
+normalization. Sandboxed Rhai
 scripts transform declared managed or legacy query Formula inputs into strictly
-declared, read-only tables. Registry schema version 6 exposes only `formula`
-and `rhai` source tags; versions 1 through 5 remain readable, including legacy
+declared, read-only tables. Registry schema version 7 exposes only `formula`
+and `rhai` source tags; versions 1 through 6 remain readable, including legacy
 SQLite-backed query and computed Formula modes.
 Definitions live in the versioned `manifest.extras.tmd_data_sources` registry.
 JSON, YAML, TOML, `list`, and `code` are planned extensions documented in

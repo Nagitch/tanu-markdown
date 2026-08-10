@@ -114,7 +114,7 @@ Source definitions are stored in a versioned registry inside
 ```json
 {
   "tmd_data_sources": {
-    "schema_version": 6,
+    "schema_version": 7,
     "sources": {
       "sheet": {
         "type": "formula",
@@ -137,7 +137,7 @@ Source definitions are stored in a versioned registry inside
 }
 ```
 
-Registry schema version 6 exposes only `type = "formula"` and `type = "rhai"`.
+Registry schema version 7 exposes only `type = "formula"` and `type = "rhai"`.
 A Formula definition containing `columns` and `rows` is a managed Formula table.
 Columns and rows MUST have unique stable identifiers using the source-name
 character set. Column names MUST be unique. Every row MUST contain exactly one
@@ -158,8 +158,23 @@ effective constraint after evaluation.
 
 A managed column MAY contain `"reference": { "source": "...", "column_id": "..." }`. The source
 MUST resolve to a managed Formula table and the stable column id MUST
-exist there. This is declarative relationship metadata and does not imply a
-join or evaluation dependency.
+exist there. The metadata alone does not perform a join. A Formula MAY perform
+an explicit bounded lookup with `REF([@reference_column], "target_column")`.
+Its first argument MUST name a current-row column containing the lookup key and
+the column's relationship metadata determines the target source and stable key
+column. Its second argument names the target value column. A null key returns
+null; a non-null key MUST match exactly one target row. Missing or duplicate
+keys, missing relationship metadata, missing columns, and evaluation cycles
+produce Formula diagnostics.
+
+Schema version 7 adds the optional boolean `hidden` field to managed columns.
+Hidden columns MUST form a trailing suffix and at least one column MUST remain
+visible. They participate in internal Formula evaluation and relationship
+lookup but are omitted from the table value exposed to Markdown, Rhai, and the
+editor. Schema version 6 managed tables remain readable but cannot contain
+hidden columns. Normalization uses version 7 to retain the original visible
+columns as generated `REF` formulas while storing foreign and identity keys in
+hidden columns.
 
 A Formula definition containing `query` and optional `edit` is the legacy
 query Formula mode:
@@ -172,7 +187,7 @@ Authors MUST use `ORDER BY` when stable row order is required.
 Legacy registry schema version 1 used `type = "sqlite"` for the same query
 shape. Versions 1 through 4 remain readable; readers normalize those legacy
 definitions to query Formula sources in memory. Writers serialize current
-registries as schema version 6 and MUST NOT emit `type = "sqlite"`.
+registries as schema version 7 and MUST NOT emit `type = "sqlite"`.
 
 SQLite `NULL`, integer, finite real, and UTF-8 text values are supported.
 SQLite BLOB values, non-finite real values, invalid UTF-8 text, and incompatible
@@ -200,7 +215,7 @@ transformations. A Rhai definition has this shape:
 `script` MUST be the canonical logical path of a declared UTF-8 attachment.
 Each `inputs` key is the alias exposed beneath the Rhai `inputs` map, and each
 value MUST resolve to a compatible Formula table in the same registry. In
-schema version 6 this means a managed Formula table or a query Formula; Rhai
+schema versions 6 and 7 this means a managed Formula table or a query Formula; Rhai
 and computed Formula inputs remain invalid. Input rows become arrays of maps
 keyed by unique result-column labels.
 
@@ -276,6 +291,11 @@ constraints, per-cell formulas, and optional declarative column references.
 Rhai inputs may resolve to managed or query Formula tables. Query and computed
 Formula definitions remain readable for compatibility, while current authoring
 tools create managed Formula and Rhai definitions.
+
+Registry schema version 7 adds trailing hidden managed columns and explicit
+bounded cross-table `REF` evaluation. Current authoring tools use these fields
+to preserve visible values after normalization without exposing generated
+relationship keys as user data.
 
 These references use ordinary Markdown text and fenced blocks, so unaware
 readers retain passive placeholders rather than executing a query. The source
@@ -370,3 +390,5 @@ retains schema version 1 through 4 reads by normalizing legacy SQLite sources.
 Draft 8 adds registry schema version 6, document-native managed Formula tables,
 progressive constraints, per-cell formulas, stable relationship metadata, and
 managed-Formula-to-Rhai inputs while retaining schema version 1 through 5 reads.
+Draft 9 adds registry schema version 7, trailing hidden relationship storage,
+and bounded `REF` evaluation while retaining schema version 1 through 6 reads.

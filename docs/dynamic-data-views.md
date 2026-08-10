@@ -140,7 +140,7 @@ or executable code. Definitions are stored under a versioned, namespaced
 {
   "extras": {
     "tmd_data_sources": {
-      "schema_version": 6,
+      "schema_version": 7,
       "sources": {
         "orders": {
           "type": "formula",
@@ -204,11 +204,23 @@ Formula result must satisfy the effective cell constraint.
 
 Columns may declare a relationship with
 `reference: { source, column_id }`. This metadata records the result of an
-explicit normalization operation; it does not perform an implicit join. The
-editor suggests normalization only for conservative literal-only candidates,
-shows the candidate with a blue outline, and applies the source replacement and
-new related table as one undoable edit. Range extraction copies a rectangular,
-self-contained selection into another managed Formula table.
+explicit normalization operation; it does not perform an implicit join by
+itself. `REF([@detail_ref], "city")` performs an explicit lookup: the first
+argument names the current-row reference/key column, its relationship metadata
+selects the target source and stable key column, and the second argument names
+the target display column. Null keys return null. Non-null keys must match one
+row; missing or duplicate keys and dependency cycles are reported as Formula
+errors.
+
+Schema version 7 adds trailing hidden columns. They remain available to Formula
+evaluation but are omitted from public table output. The editor suggests
+normalization only for conservative literal-only candidates, shows the
+candidate with a blue outline, and applies the source replacement and new
+related table as one undoable edit. The original visible columns become
+generated `REF` formulas, so their displayed values stay unchanged; the source
+foreign key and target identity column are stored internally. Range extraction
+copies a rectangular, self-contained selection into another managed Formula
+table.
 
 Managed Formula tables are editable both in the Table tab and in safe-preview
 `tmd-view:table` output. Rhai output is always read-only.
@@ -229,7 +241,7 @@ A one-row, one-column result may be consumed by `scalar`. General query results
 produce the table value described below. Authors are responsible for an
 explicit `ORDER BY` when row order matters.
 
-Registry schema versions 5 and 6 may add an explicit `edit` contract to a query
+Registry schema versions 5 through 7 may add an explicit `edit` contract to a query
 Formula source. `table` and every mapped table column are restricted SQLite
 identifiers. `key.source_column` must occur exactly once in the query result,
 must be non-null and unique there, and maps to `key.table_column` in the target
@@ -240,7 +252,7 @@ writable from its displayed row number.
 
 Schema versions 1 through 4 used `type = "sqlite"` for this query shape.
 Readers keep those registries compatible by normalizing the legacy tag to a
-query Formula in memory. Current writers emit schema version 6 and only the
+query Formula in memory. Current writers emit schema version 7 and only the
 `formula` and `rhai` source tags. The editor retains query Formula sources but
 does not offer them as a new-table workflow.
 
@@ -343,7 +355,7 @@ inline, and declares its complete ordered output columns:
 }
 ```
 
-In schema versions 5 and 6 the input must resolve directly to a query Formula
+In schema versions 5 through 7 the input must resolve directly to a query Formula
 source in the same registry. Computed-Formula-to-Formula and Rhai-to-Formula pipelines
 are not supported. The input query defines the sheet's absolute order, so
 authors MUST use `ORDER BY` when cell coordinates need to remain stable.

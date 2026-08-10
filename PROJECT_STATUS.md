@@ -14,11 +14,11 @@ a functional custom editor backed exclusively by that bridge.
 | Component | Current state |
 | --- | --- |
 | `tmd-data` | Defines transport-neutral, serde-compatible scalar and ordered-table values shared by data-source adapters and computation engines |
-| `tmd-formula` | Implements the bounded Formula parser, opaque program representation, dependency-aware evaluator, built-in functions, caller-supplied table limits, and structured diagnostics without depending on TMD or SQLite |
-| `tmd-core` | Implements the document model, structured validation, safe attachment handling, atomic writes, SQLite import/export/migration, managed Formula table evaluation and constraints, legacy query/computed Formula evaluation, explicit transactional keyed table edits, sandboxed Rhai-to-table transformations, legacy SQLite-source compatibility, ZIP I/O, and optional C ABI functions |
+| `tmd-formula` | Implements the bounded Formula parser, opaque program representation, dependency-aware evaluator, built-in functions, caller-supplied table limits and reference resolution, and structured diagnostics without depending on TMD or SQLite |
+| `tmd-core` | Implements the document model, structured validation, safe attachment handling, atomic writes, SQLite import/export/migration, managed Formula table evaluation, constraints, hidden relationship storage and cross-table `REF`, legacy query/computed Formula evaluation, explicit transactional keyed table edits, sandboxed Rhai-to-table transformations, legacy SQLite-source compatibility, ZIP I/O, and optional C ABI functions |
 | `tmd-cli` | Installs `tmd`; implements document create/inspect/update/publish/validate, attachment lifecycle including bounded UTF-8 reads and draft overrides, staged SQLite cell edits, shared safe preview/HTML rendering, typed table-source evaluation with edit metadata, dynamic `scalar`/`table` views, and embedded database lifecycle/query commands |
 | `tmd-core-ffi` | Builds a `cdylib` wrapper and retains the exported `tmd-core` FFI symbols |
-| `tmd-vscode` | Implements a CSP-restricted static SvelteKit Web UI with a RevoGrid managed Formula editor, 3-by-3 Any table creation, progressive column/cell constraints, per-cell formulas and type presence, arbitrary row/column insertion and duplication, range extraction, normalization candidates and atomic relationship creation, double-click column auto-sizing, editable Formula tables in safe preview, read-only Rhai output, a sticky operation status bar, and a shared local document session whose edits participate in undo, preview, save, revert, and backup |
+| `tmd-vscode` | Implements a CSP-restricted static SvelteKit Web UI with a RevoGrid managed Formula editor, 3-by-3 Any table creation, progressive column/cell constraints, per-cell formulas and type presence, arbitrary row/column insertion and duplication, range extraction, value-preserving normalization with generated `REF` formulas, double-click column auto-sizing, editable Formula tables in safe preview, read-only Rhai output, a sticky operation status bar, and a shared local document session whose edits participate in undo, preview, save, revert, and backup |
 | `tmd-sample` | Contains a `.tmd` sample demonstrating managed Any/typed tables, per-cell Formula results, literal normalization presence, and a read-only Rhai view |
 
 ## Verified behavior
@@ -37,7 +37,8 @@ The `tmd-core` test suite covers:
 - `.tmd` round trips;
 - embedded SQLite export, import, reset, and migration;
 - managed Formula literal and dependency evaluation, progressive constraints,
-  stable relationships, managed-Formula-to-Rhai input, legacy query/computed
+  stable relationships, hidden relationship storage, cross-table `REF`,
+  managed-Formula-to-Rhai input, legacy query/computed
   Formula behavior, transactional keyed SQLite cell edits, strict table-output
   validation, and dynamic-view validation;
 - path-based read/write helpers;
@@ -68,9 +69,10 @@ platform-specific VSIX artifacts.
   [issue #35](https://github.com/Nagitch/tanu-markdown/issues/35).
 - Managed Formula editing supports arbitrary row and column insertion,
   duplication, per-cell formulas, progressive types, safe-preview editing,
-  range extraction, and conservative literal normalization. Legacy
+  range extraction, and conservative literal normalization that preserves
+  displayed values through generated references. Legacy
   query-backed modes retain their previous write-back limitations. Multi-sheet
-  formulas, automatic relational joins, database row insertion, richer display
+  formulas, automatic relational joins beyond explicit `REF`, database row insertion, richer display
   formatting, and collaborative conflict handling remain outside this slice.
 - The C ABI does not ship generated headers or a stable ABI compatibility
   policy.

@@ -6,6 +6,7 @@ import {
   sameDataSources,
   validateDataSources,
 } from "../data-sources.js";
+import { createManagedFormulaDataSource } from "../managed-table.js";
 
 test("legacy registries expose SQLite queries as ordered Formula tables", () => {
   const registry = inspectDataSourceRegistry({
@@ -127,7 +128,7 @@ test("schema-version-3 registries expose Formula sources and retain Rhai", () =>
   ]);
 });
 
-test("source edits migrate an explicit SQLite edit contract to Formula schema 6", () => {
+test("source edits migrate an explicit SQLite edit contract to Formula schema 7", () => {
   const sources = [
     {
       name: "sales",
@@ -147,7 +148,7 @@ test("source edits migrate an explicit SQLite edit contract to Formula schema 6"
   const extras = extrasWithDataSources(null, sources);
   assert.deepEqual(extras, {
     tmd_data_sources: {
-      schema_version: 6,
+      schema_version: 7,
       sources: {
         sales: {
           type: "formula",
@@ -193,7 +194,7 @@ test("editing sources preserves unrelated manifest extras", () => {
   assert.deepEqual(extras, {
     application: { theme: "dark" },
     tmd_data_sources: {
-      schema_version: 6,
+      schema_version: 7,
       sources: {
         count: {
           type: "formula",
@@ -224,7 +225,7 @@ test("source names that resemble object properties remain ordinary definitions",
   ]);
 });
 
-test("editing Rhai sources writes schema version 6 and preserves output order", () => {
+test("editing Rhai sources writes schema version 7 and preserves output order", () => {
   const extras = extrasWithDataSources(
     { application: { retained: true } },
     [
@@ -246,7 +247,7 @@ test("editing Rhai sources writes schema version 6 and preserves output order", 
   assert.deepEqual(extras, {
     application: { retained: true },
     tmd_data_sources: {
-      schema_version: 6,
+      schema_version: 7,
       sources: {
         sales: {
           type: "formula",
@@ -266,7 +267,7 @@ test("editing Rhai sources writes schema version 6 and preserves output order", 
   });
 });
 
-test("editing Formula sources upgrades the registry to version 6 and round trips", () => {
+test("editing Formula sources upgrades the registry to version 7 and round trips", () => {
   const extras = extrasWithDataSources(
     { application: { retained: true } },
     [
@@ -288,7 +289,7 @@ test("editing Formula sources upgrades the registry to version 6 and round trips
   assert.deepEqual(extras, {
     application: { retained: true },
     tmd_data_sources: {
-      schema_version: 6,
+      schema_version: 7,
       sources: {
         sales: {
           type: "formula",
@@ -339,11 +340,11 @@ test("unsupported registries remain visible and read-only", () => {
 
 test("unknown registry versions remain visible and read-only", () => {
   const registry = inspectDataSourceRegistry({
-    tmd_data_sources: { schema_version: 7, sources: {} },
+    tmd_data_sources: { schema_version: 8, sources: {} },
   });
 
   assert.equal(registry.editable, false);
-  assert.match(registry.issue ?? "", /expected 1, 2, 3, 4, 5 or 6/);
+  assert.match(registry.issue ?? "", /expected 1 through 7/);
 });
 
 test("Formula sources require schema version 3", () => {
@@ -396,7 +397,7 @@ test("schema version 5 accepts Formula query sources and rejects SQLite tags", (
   assert.match(sqlite.issue ?? "", /removed SQLite type/);
 });
 
-test("schema version 6 round trips managed Formula tables and cell constraints", () => {
+test("schema version 6 managed Formula tables upgrade to version 7", () => {
   const sources = [
     {
       name: "sheet",
@@ -440,7 +441,7 @@ test("schema version 6 round trips managed Formula tables and cell constraints",
   const extras = extrasWithDataSources(null, sources);
   assert.equal(
     (extras as { tmd_data_sources: { schema_version: number } }).tmd_data_sources.schema_version,
-    6,
+    7,
   );
   assert.deepEqual(
     inspectDataSourceRegistry(extras).sources,
@@ -469,7 +470,7 @@ test("Rhai inputs may read managed Formula tables", () => {
   );
 });
 
-test("managed Formula tables require schema 6 and exact cell shapes", () => {
+test("managed Formula tables require schema 6 or 7 and exact cell shapes", () => {
   const definition = {
     type: "formula",
     columns: [{ id: "c1", name: "Value", constraint: "any" }],
@@ -528,6 +529,49 @@ test("managed Formula tables require schema 6 and exact cell shapes", () => {
       tmd_data_sources: { schema_version: 6, sources: { sheet: leadingEquals } },
     }).issue ?? "",
     /without a leading '='/,
+  );
+
+  const hidden = {
+    ...definition,
+    columns: [{ ...definition.columns[0], hidden: true }],
+  };
+  assert.match(
+    inspectDataSourceRegistry({
+      tmd_data_sources: { schema_version: 6, sources: { sheet: hidden } },
+    }).issue ?? "",
+    /not an editable managed Formula table/,
+  );
+
+  const validHiddenSuffix = {
+    ...definition,
+    columns: [
+      definition.columns[0],
+      { id: "c2", name: "Storage", constraint: "text", hidden: true },
+    ],
+    rows: [{
+      ...definition.rows[0],
+      cells: [
+        definition.rows[0].cells[0],
+        { content: { kind: "literal", value: { type: "string", value: "key-1" } } },
+      ],
+    }],
+  };
+  const parsed = inspectDataSourceRegistry({
+    tmd_data_sources: { schema_version: 7, sources: { sheet: validHiddenSuffix } },
+  });
+  assert.equal(parsed.editable, true);
+  assert.equal(
+    parsed.sources[0]?.type === "formula" && "columns" in parsed.sources[0]
+      ? parsed.sources[0].columns[1]?.hidden
+      : undefined,
+    true,
+  );
+
+  const invalidHiddenOrder = createManagedFormulaDataSource("invalid");
+  invalidHiddenOrder.columns[0].hidden = true;
+  assert.throws(
+    () => validateDataSources([invalidHiddenOrder]),
+    /trailing suffix/,
   );
 });
 

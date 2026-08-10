@@ -164,6 +164,33 @@ export function renameManagedColumn(
   }
 }
 
+export function renameManagedReferencedColumn(
+  sources: readonly ManagedFormulaDataSource[],
+  targetSourceName: string,
+  previousName: string,
+  nextName: string,
+): void {
+  for (const source of sources) {
+    const referenceColumns = new Set(
+      source.columns
+        .filter((column) => column.reference?.source === targetSourceName)
+        .map((column) => column.name),
+    );
+    if (referenceColumns.size === 0) continue;
+    for (const row of source.rows) {
+      for (const cell of row.cells) {
+        if (cell.content.kind !== "formula") continue;
+        cell.content.expression = rewriteRefTargetColumn(
+          cell.content.expression,
+          referenceColumns,
+          previousName,
+          nextName,
+        );
+      }
+    }
+  }
+}
+
 export function setManagedCellText(
   source: ManagedFormulaDataSource,
   row: number,
@@ -184,11 +211,19 @@ export function insertManagedRow(
   index: number,
 ): void {
   const program = insertFormulaRows(managedFormulaProgram(source), index);
+  const templateCells = source.columns.map((_, column) =>
+    managedColumnTemplateCell(source, column),
+  );
   source.rows.splice(index, 0, {
     id: nextStableId(source.rows.map((row) => row.id), "r"),
-    cells: source.columns.map(() => blankManagedCell()),
+    cells: templateCells.map(cloneManagedCell),
   });
   applyManagedFormulaProgram(source, program);
+  for (const [column, template] of templateCells.entries()) {
+    if (template.content.kind === "formula") {
+      source.rows[index].cells[column] = cloneManagedCell(template);
+    }
+  }
 }
 
 export function duplicateManagedRow(
@@ -216,6 +251,7 @@ export function insertManagedColumn(
   source: ManagedFormulaDataSource,
   index: number,
 ): void {
+  index = Math.min(index, managedVisibleColumnCount(source));
   const program = insertFormulaColumns(managedFormulaProgram(source), index);
   source.columns.splice(index, 0, {
     id: nextStableId(source.columns.map((column) => column.id), "c"),
@@ -231,6 +267,7 @@ export function duplicateManagedColumn(
   origin: number,
   destination = source.columns.length,
 ): void {
+  destination = Math.min(destination, managedVisibleColumnCount(source));
   const original = source.columns[origin];
   if (!original) throw new Error("Select a column to duplicate.");
   source.columns.splice(destination, 0, {
@@ -250,6 +287,25 @@ export function duplicateManagedColumn(
     }
     row.cells.splice(destination, 0, cloned);
   }
+}
+
+export function managedVisibleColumnCount(source: ManagedFormulaDataSource): number {
+  const firstHidden = source.columns.findIndex((column) => column.hidden === true);
+  return firstHidden < 0 ? source.columns.length : firstHidden;
+}
+
+function managedColumnTemplateCell(
+  source: ManagedFormulaDataSource,
+  column: number,
+): ManagedFormulaCell {
+  const expressions = source.rows.map((row) => {
+    const content = row.cells[column]?.content;
+    return content?.kind === "formula" ? content.expression : undefined;
+  });
+  const [first] = expressions;
+  return first !== undefined && expressions.every((expression) => expression === first)
+    ? { content: { kind: "formula", expression: first } }
+    : blankManagedCell();
 }
 
 export function extractManagedRange(
@@ -361,6 +417,9 @@ export function normalizeManagedColumns(
   targetName: string,
 ): { source: ManagedFormulaDataSource; target: ManagedFormulaDataSource } {
   const updated = cloneManagedFormulaSource(source);
+  if (updated.columns.length >= 128) {
+    throw new Error("Normalization requires room for one internal reference column.");
+  }
   if (
     updated.rows.some((row) =>
       row.cells.some((cell) => cell.content.kind !== "literal"),
@@ -369,7 +428,7 @@ export function normalizeManagedColumns(
     throw new Error("Normalization is available only while the managed table contains literals.");
   }
   const selectedColumns = updated.columns.slice(candidate.left, candidate.right + 1);
-  const targetIdColumnId = "c1";
+  const targetIdColumnId = `c${selectedColumns.length + 1}`;
   const selectedNames = new Set(selectedColumns.map((column) => column.name));
   let targetIdColumnName = "ID";
   let targetIdSuffix = 2;
@@ -388,31 +447,49 @@ export function normalizeManagedColumns(
       targetRows.push({
         id: `r${targetRows.length + 1}`,
         cells: [
-          { content: { kind: "literal", value: { type: "string", value: id } } },
           ...selectedCells.map(cloneManagedCell),
+          { content: { kind: "literal", value: { type: "string", value: id } } },
         ],
       });
     }
   }
+  if (
+    updated.rows.length * (updated.columns.length + 1) > 10_000 ||
+    targetRows.length * (selectedColumns.length + 1) > 10_000
+  ) {
+    throw new Error("Normalization would exceed the 10,000-cell managed table limit.");
+  }
   const referenceColumn = {
     id: nextStableId(updated.columns.map((column) => column.id), "c"),
-    name: uniqueManagedColumnName(updated, `${targetName} ref`),
+    name: uniqueManagedColumnName(updated, `${targetName}_ref`),
     constraint: "text" as const,
+    hidden: true,
     reference: { source: targetName, columnId: targetIdColumnId },
   };
-  updated.columns.splice(
-    candidate.left,
-    candidate.right - candidate.left + 1,
-    referenceColumn,
-  );
+  for (let column = candidate.left; column <= candidate.right; column += 1) {
+    delete updated.columns[column]?.reference;
+  }
+  updated.columns.push(referenceColumn);
   for (const row of updated.rows) {
     const selectedCells = row.cells.slice(candidate.left, candidate.right + 1);
     const id = tupleIds.get(literalTupleKey(selectedCells));
-    row.cells.splice(
-      candidate.left,
-      candidate.right - candidate.left + 1,
-      { content: { kind: "literal", value: { type: "string", value: id ?? "" } } },
-    );
+    for (const [offset, selectedCell] of selectedCells.entries()) {
+      const targetColumn = selectedColumns[offset];
+      if (!targetColumn) continue;
+      row.cells[candidate.left + offset] = {
+        content: {
+          kind: "formula",
+          expression: `REF([@${referenceColumn.name}], ${JSON.stringify(targetColumn.name)})`,
+        },
+        ...(selectedCell.constraint ? { constraint: selectedCell.constraint } : {}),
+      };
+    }
+    row.cells.push({
+      content: {
+        kind: "literal",
+        value: { type: "string", value: id ?? "" },
+      },
+    });
   }
   return {
     source: updated,
@@ -420,12 +497,17 @@ export function normalizeManagedColumns(
       name: targetName,
       type: "formula",
       columns: [
-        { id: targetIdColumnId, name: targetIdColumnName, constraint: "text" },
         ...selectedColumns.map((column, index) => ({
           ...column,
-          id: `c${index + 2}`,
+          id: `c${index + 1}`,
           ...(column.reference ? { reference: { ...column.reference } } : {}),
         })),
+        {
+          id: targetIdColumnId,
+          name: targetIdColumnName,
+          constraint: "text",
+          hidden: true,
+        },
       ],
       rows: targetRows,
     },
@@ -604,6 +686,81 @@ function rewriteNamedColumnReference(
     index += 1;
   }
   return result;
+}
+
+function rewriteRefTargetColumn(
+  expression: string,
+  referenceColumns: ReadonlySet<string>,
+  previousName: string,
+  nextName: string,
+): string {
+  let result = "";
+  let index = 0;
+  let inString = false;
+  let escaped = false;
+  while (index < expression.length) {
+    const character = expression[index] ?? "";
+    if (inString) {
+      result += character;
+      if (character === '"' && !escaped) inString = false;
+      if (character === "\\" && !escaped) escaped = true;
+      else escaped = false;
+      index += 1;
+      continue;
+    }
+    if (character === '"') {
+      inString = true;
+      result += character;
+      index += 1;
+      continue;
+    }
+    if (character === "/" && expression[index + 1] === "/") {
+      result += expression.slice(index);
+      break;
+    }
+    const previous = expression[index - 1];
+    const ref = /^REF\s*\(\s*\[@([^\]]+)\]\s*,\s*/iu.exec(
+      expression.slice(index),
+    );
+    if (
+      ref &&
+      !isFormulaReferenceIdentifierCharacter(previous) &&
+      referenceColumns.has(ref[1] ?? "")
+    ) {
+      const stringStart = index + ref[0].length;
+      const stringEnd = jsonStringEnd(expression, stringStart);
+      if (stringEnd !== undefined) {
+        const encodedName = expression.slice(stringStart, stringEnd);
+        let decodedName: unknown;
+        try {
+          decodedName = JSON.parse(encodedName);
+        } catch {
+          decodedName = undefined;
+        }
+        const closing = /^\s*\)/u.exec(expression.slice(stringEnd));
+        if (decodedName === previousName && closing) {
+          result += `${ref[0]}${JSON.stringify(nextName)}`;
+          index = stringEnd;
+          continue;
+        }
+      }
+    }
+    result += character;
+    index += 1;
+  }
+  return result;
+}
+
+function jsonStringEnd(expression: string, start: number): number | undefined {
+  if (expression[start] !== '"') return undefined;
+  let escaped = false;
+  for (let index = start + 1; index < expression.length; index += 1) {
+    const character = expression[index];
+    if (character === '"' && !escaped) return index + 1;
+    if (character === "\\" && !escaped) escaped = true;
+    else escaped = false;
+  }
+  return undefined;
 }
 
 function isFormulaReferenceIdentifierCharacter(
