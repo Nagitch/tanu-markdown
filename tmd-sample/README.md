@@ -38,6 +38,9 @@ tmd export-html tmd-sample/sample.tmd sample.html --self-contained
 ```
 
 The repository `samples` check validates the container and evaluates every
-declared source. Schema and rendering details are documented in
+declared source. The extension's sample normalization E2E also applies the
+`contacts` suggestion in memory and verifies the real CLI returns the same
+columns and cells after the editor-host message boundary. Schema and rendering
+details are documented in
 [`docs/dynamic-data-views.md`](../docs/dynamic-data-views.md) and
 [`docs/format-overview.md`](../docs/format-overview.md).

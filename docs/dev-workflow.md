@@ -68,10 +68,12 @@ just check-all
 | Extension install | `npm ci --prefix tmd-vscode` |
 | Extension type check | `npm run check --prefix tmd-vscode` |
 | Extension tests | `npm test --prefix tmd-vscode` |
+| Sample normalization E2E | `TMD_E2E_CLI=../target/debug/tmd npm run test:e2e --prefix tmd-vscode` |
 | Extension package | `npm run pack --prefix tmd-vscode` |
 
 `just check-all` runs all checks. CI uses `--locked` for Cargo to ensure the
-committed dependency graph is reproducible.
+committed dependency graph is reproducible. The normalization E2E requires a
+current `target/debug/tmd`, which `just check-all` and CI build first.
 
 ## Dependency updates
 

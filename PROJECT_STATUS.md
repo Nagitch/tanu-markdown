@@ -46,8 +46,11 @@ The `tmd-core` test suite covers:
 
 CLI integration tests exercise the full `.tmd` lifecycle, including draft Rhai
 attachment and Formula program evaluation. Extension tests cover its process
-boundary, edit metadata, Formula copy translation, script diagnostics,
-document-state integration, and safe preview.
+boundary, Schema v7 message validation, edit metadata, Formula copy translation,
+script diagnostics, document-state integration, and safe preview. A cross-stack
+E2E loads the reference sample, normalizes `contacts`, passes the generated
+definitions through the editor-host boundary, and verifies the real CLI returns
+the same displayed values.
 Repository CI additionally checks formatting, Clippy, rustdoc, samples,
 extension tests, generic VSIX
 packaging, static Linux CLI verification, and native CLI staging for

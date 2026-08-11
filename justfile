@@ -25,6 +25,7 @@ extension:
     npm ci --prefix tmd-vscode
     npm run check --prefix tmd-vscode
     npm test --prefix tmd-vscode
+    TMD_E2E_CLI="../target/debug/tmd" npm run test:e2e --prefix tmd-vscode
     npm run pack --prefix tmd-vscode
 
 check-all: fmt-check lint test samples doc extension

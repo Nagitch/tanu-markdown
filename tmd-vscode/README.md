@@ -120,8 +120,15 @@ From the repository root:
 npm ci --prefix tmd-vscode
 npm run check --prefix tmd-vscode
 npm test --prefix tmd-vscode
+cargo build --locked -p tmd-cli
+TMD_E2E_CLI=../target/debug/tmd npm run test:e2e --prefix tmd-vscode
 npm run pack --prefix tmd-vscode
 ```
+
+The sample E2E test loads `tmd-sample/sample.tmd`, normalizes `contacts`, sends
+the resulting Schema v7 definitions through the extension-host message parser,
+and evaluates the draft with the real CLI to ensure every displayed value is
+preserved.
 
 The generic development VSIX does not contain a native CLI. CI builds the CLI
 on matching Linux, macOS, and Windows x64/arm64 runners, stages it under
