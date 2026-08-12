@@ -73,9 +73,13 @@
               <span class="visually-hidden">Selected cell</span>
               <input id="cell-name" class="cell-name" type="text" readonly aria-label="Selected cell" />
             </label>
-            <label class="cell-input-field">
+            <label id="cell-input-field" class="cell-input-field">
               <span class="formula-symbol" aria-hidden="true">fx</span>
               <input id="cell-input" type="text" autocomplete="off" spellcheck="false" aria-label="Cell value or formula" />
+            </label>
+            <label id="reference-target-field" class="reference-target-field" hidden>
+              <span id="reference-target-label" class="reference-target-label">🔒 Reference</span>
+              <select id="reference-target" aria-label="Referenced table row"></select>
             </label>
             <label>
               <span class="visually-hidden">Cell type constraint</span>

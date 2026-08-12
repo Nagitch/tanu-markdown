@@ -19,7 +19,8 @@ use tmd_formula::{
 /// Manifest `extras` key containing versioned dynamic-data source definitions.
 pub const DATA_SOURCES_EXTRAS_KEY: &str = "tmd_data_sources";
 
-const DATA_SOURCES_SCHEMA_VERSION: u32 = 7;
+const DATA_SOURCES_SCHEMA_VERSION: u32 = 8;
+const LEGACY_REFERENCE_DATA_SOURCES_SCHEMA_VERSION: u32 = 7;
 const MANAGED_FORMULA_DATA_SOURCES_SCHEMA_VERSION: u32 = 6;
 const FORMULA_QUERY_DATA_SOURCES_SCHEMA_VERSION: u32 = 5;
 const EDITABLE_DATA_SOURCES_SCHEMA_VERSION: u32 = 4;
@@ -51,8 +52,8 @@ const MAX_SQLITE_IDENTIFIER_BYTES: usize = 128;
 pub struct DataSourceRegistry {
     /// Schema version read from the registry payload.
     ///
-    /// Serialization always emits the current schema version after legacy
-    /// source definitions have been normalized.
+    /// Serialization emits the current schema unless a readable legacy
+    /// hidden-column relationship must remain in schema version 7.
     pub schema_version: u32,
     /// Definitions keyed by the name referenced from Markdown.
     pub sources: BTreeMap<String, DataSourceDefinition>,
@@ -63,8 +64,19 @@ impl Serialize for DataSourceRegistry {
     where
         S: Serializer,
     {
+        let schema_version = if self.sources.values().any(|definition| {
+            matches!(
+                definition,
+                DataSourceDefinition::FormulaTable { columns, .. }
+                    if columns.iter().any(|column| column.hidden || column.reference.is_some())
+            )
+        }) {
+            LEGACY_REFERENCE_DATA_SOURCES_SCHEMA_VERSION
+        } else {
+            DATA_SOURCES_SCHEMA_VERSION
+        };
         let mut map = serializer.serialize_map(Some(2))?;
-        map.serialize_entry("schema_version", &DATA_SOURCES_SCHEMA_VERSION)?;
+        map.serialize_entry("schema_version", &schema_version)?;
         map.serialize_entry("sources", &self.sources)?;
         map.end()
     }
@@ -131,6 +143,8 @@ struct RawComputedFormulaDefinition {
 struct RawManagedFormulaDefinition {
     columns: Vec<FormulaTableColumn>,
     rows: Vec<FormulaTableRow>,
+    #[serde(default)]
+    reference_groups: Vec<FormulaTableReferenceGroup>,
 }
 
 fn deserialize_present_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
@@ -232,7 +246,11 @@ impl DataSourceRegistry {
                         )));
                     }
                 },
-                DataSourceDefinition::FormulaTable { columns, .. } => {
+                DataSourceDefinition::FormulaTable {
+                    columns,
+                    reference_groups,
+                    ..
+                } => {
                     for column in columns {
                         let Some(reference) = &column.reference else {
                             continue;
@@ -257,12 +275,141 @@ impl DataSourceRegistry {
                             )));
                         }
                     }
+                    for group in reference_groups {
+                        let Some(DataSourceDefinition::FormulaTable {
+                            columns: target_columns,
+                            ..
+                        }) = self.sources.get(&group.source)
+                        else {
+                            return Err(TmdError::DataView(format!(
+                                "Formula table source `{name}` reference group `{}` target `{}` must name a managed Formula table",
+                                group.id, group.source
+                            )));
+                        };
+                        if target_columns
+                            .iter()
+                            .filter(|column| column.identity)
+                            .count()
+                            != 1
+                        {
+                            return Err(TmdError::DataView(format!(
+                                "Formula table source `{name}` reference group `{}` target `{}` requires exactly one identity column",
+                                group.id, group.source
+                            )));
+                        }
+                        for mapping in &group.columns {
+                            let Some(target_column) = target_columns
+                                .iter()
+                                .find(|column| column.id == mapping.target_column_id)
+                            else {
+                                return Err(TmdError::DataView(format!(
+                                    "Formula table source `{name}` reference group `{}` target `{}` has no column id `{}`",
+                                    group.id,
+                                    group.source,
+                                    mapping.target_column_id
+                                )));
+                            };
+                            let local_column = columns
+                                .iter()
+                                .position(|column| column.id == mapping.column_id)
+                                .expect("local reference group columns were validated");
+                            let DataSourceDefinition::FormulaTable { rows, .. } = definition else {
+                                unreachable!()
+                            };
+                            for row_id in &group.rows {
+                                let row = rows
+                                    .iter()
+                                    .find(|row| row.id == *row_id)
+                                    .expect("reference group rows were validated");
+                                match &row.cells[local_column].content {
+                                    FormulaTableCellContent::Literal {
+                                        value: FormulaTableLiteral::Null,
+                                    } => {}
+                                    FormulaTableCellContent::Formula { expression } => {
+                                        let Some((source, _, target_name)) =
+                                            parse_direct_ref_expression(expression)
+                                        else {
+                                            return Err(TmdError::DataView(format!(
+                                                "Formula table source `{name}` reference group `{}` row `{row_id}` column `{}` requires a direct three-argument REF or NULL",
+                                                group.id, mapping.column_id
+                                            )));
+                                        };
+                                        if source != group.source
+                                            || target_name != target_column.name
+                                        {
+                                            return Err(TmdError::DataView(format!(
+                                                "Formula table source `{name}` reference group `{}` row `{row_id}` column `{}` does not match its target mapping",
+                                                group.id, mapping.column_id
+                                            )));
+                                        }
+                                    }
+                                    _ => {
+                                        return Err(TmdError::DataView(format!(
+                                            "Formula table source `{name}` reference group `{}` row `{row_id}` column `{}` requires a direct three-argument REF or NULL",
+                                            group.id, mapping.column_id
+                                        )));
+                                    }
+                                }
+                            }
+                        }
+                        for row_id in &group.rows {
+                            let DataSourceDefinition::FormulaTable { rows, .. } = definition else {
+                                unreachable!()
+                            };
+                            let row = rows
+                                .iter()
+                                .find(|row| row.id == *row_id)
+                                .expect("reference group rows were validated");
+                            let mut selected_identity: Option<Option<String>> = None;
+                            for mapping in &group.columns {
+                                let local_column = columns
+                                    .iter()
+                                    .position(|column| column.id == mapping.column_id)
+                                    .expect("local reference group columns were validated");
+                                let identity = match &row.cells[local_column].content {
+                                    FormulaTableCellContent::Literal {
+                                        value: FormulaTableLiteral::Null,
+                                    } => None,
+                                    FormulaTableCellContent::Formula { expression } => {
+                                        parse_direct_ref_expression(expression)
+                                            .map(|(_, identity, _)| identity)
+                                    }
+                                    _ => None,
+                                };
+                                if selected_identity
+                                    .as_ref()
+                                    .is_some_and(|selected| selected != &identity)
+                                {
+                                    return Err(TmdError::DataView(format!(
+                                        "Formula table source `{name}` reference group `{}` row `{row_id}` mixes target identities or NULL cells",
+                                        group.id
+                                    )));
+                                }
+                                selected_identity = Some(identity);
+                            }
+                        }
+                    }
                 }
                 DataSourceDefinition::FormulaQuery { .. } => {}
             }
         }
         Ok(())
     }
+}
+
+fn parse_direct_ref_expression(expression: &str) -> Option<(String, String, String)> {
+    let expression = expression.trim();
+    let open = expression.find('(')?;
+    if !expression[..open].trim().eq_ignore_ascii_case("REF") {
+        return None;
+    }
+    let arguments = expression[open + 1..].strip_suffix(')')?;
+    let values = serde_json::from_str::<Vec<String>>(&format!("[{arguments}]")).ok()?;
+    if values.len() != 3 {
+        return None;
+    }
+    let mut values = values.into_iter();
+    Some((values.next()?, values.next()?, values.next()?))
 }
 
 impl RawDataSourceDefinition {
@@ -306,20 +453,45 @@ impl RawDataSourceDefinition {
                         output,
                     })
                 }
-                RawFormulaDefinition::Managed(RawManagedFormulaDefinition { columns, rows }) => {
+                RawFormulaDefinition::Managed(RawManagedFormulaDefinition {
+                    columns,
+                    rows,
+                    reference_groups,
+                }) => {
                     if schema_version < MANAGED_FORMULA_DATA_SOURCES_SCHEMA_VERSION {
                         return Err(TmdError::DataView(format!(
                             "managed Formula table source `{name}` requires data-source schema_version {MANAGED_FORMULA_DATA_SOURCES_SCHEMA_VERSION}"
                         )));
                     }
-                    if schema_version < DATA_SOURCES_SCHEMA_VERSION
+                    if schema_version < LEGACY_REFERENCE_DATA_SOURCES_SCHEMA_VERSION
                         && columns.iter().any(|column| column.hidden)
                     {
                         return Err(TmdError::DataView(format!(
-                            "managed Formula table source `{name}` hidden columns require data-source schema_version {DATA_SOURCES_SCHEMA_VERSION}"
+                            "managed Formula table source `{name}` hidden columns require data-source schema_version {LEGACY_REFERENCE_DATA_SOURCES_SCHEMA_VERSION}"
                         )));
                     }
-                    Ok(DataSourceDefinition::FormulaTable { columns, rows })
+                    if schema_version < DATA_SOURCES_SCHEMA_VERSION
+                        && (columns.iter().any(|column| column.identity)
+                            || !reference_groups.is_empty())
+                    {
+                        return Err(TmdError::DataView(format!(
+                            "managed Formula table source `{name}` identity columns and reference groups require data-source schema_version {DATA_SOURCES_SCHEMA_VERSION}"
+                        )));
+                    }
+                    if schema_version >= DATA_SOURCES_SCHEMA_VERSION
+                        && columns
+                            .iter()
+                            .any(|column| column.hidden || column.reference.is_some())
+                    {
+                        return Err(TmdError::DataView(format!(
+                            "managed Formula table source `{name}` uses removed hidden-column reference fields"
+                        )));
+                    }
+                    Ok(DataSourceDefinition::FormulaTable {
+                        columns,
+                        rows,
+                        reference_groups,
+                    })
                 }
             },
             Self::Rhai {
@@ -376,6 +548,8 @@ pub enum DataSourceDefinition {
         columns: Vec<FormulaTableColumn>,
         /// Ordered rows whose cells align positionally with `columns`.
         rows: Vec<FormulaTableRow>,
+        /// Visible, unlockable editing constraints over direct REF cells.
+        reference_groups: Vec<FormulaTableReferenceGroup>,
     },
 }
 
@@ -389,6 +563,9 @@ pub struct FormulaTableColumn {
     pub name: String,
     /// Default type constraint for cells in this column.
     pub constraint: FormulaCellConstraint,
+    /// Whether this visible column is the stable lookup key for direct REF.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub identity: bool,
     /// Whether the column is retained for Formula storage but omitted from
     /// rendered, CLI, and script-facing table output.
     #[serde(default, skip_serializing_if = "is_false")]
@@ -414,6 +591,30 @@ pub struct FormulaTableColumnReference {
     pub source: String,
     /// Stable identity of the referenced column.
     pub column_id: String,
+}
+
+/// One protected group of visible direct-REF cells.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FormulaTableReferenceGroup {
+    /// Stable group identity.
+    pub id: String,
+    /// Referenced managed Formula table.
+    pub source: String,
+    /// Stable local rows covered by the constraint.
+    pub rows: Vec<String>,
+    /// Local-to-target column mappings updated together.
+    pub columns: Vec<FormulaTableReferenceColumn>,
+}
+
+/// One column mapping in a protected reference group.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FormulaTableReferenceColumn {
+    /// Stable local column identity.
+    pub column_id: String,
+    /// Stable target column identity.
+    pub target_column_id: String,
 }
 
 /// One stable row in a document-native Formula table.
@@ -604,11 +805,22 @@ impl Serialize for DataSourceDefinition {
                 map.serialize_entry("output", output)?;
                 map.end()
             }
-            Self::FormulaTable { columns, rows } => {
-                let mut map = serializer.serialize_map(Some(3))?;
+            Self::FormulaTable {
+                columns,
+                rows,
+                reference_groups,
+            } => {
+                let mut map = serializer.serialize_map(Some(if reference_groups.is_empty() {
+                    3
+                } else {
+                    4
+                }))?;
                 map.serialize_entry("type", "formula")?;
                 map.serialize_entry("columns", columns)?;
                 map.serialize_entry("rows", rows)?;
+                if !reference_groups.is_empty() {
+                    map.serialize_entry("reference_groups", reference_groups)?;
+                }
                 map.end()
             }
             Self::Rhai {
@@ -775,8 +987,12 @@ impl DataSourceDefinition {
                 })?;
                 output.validate(name, "Formula")?;
             }
-            Self::FormulaTable { columns, rows } => {
-                validate_formula_table(name, columns, rows)?;
+            Self::FormulaTable {
+                columns,
+                rows,
+                reference_groups,
+            } => {
+                validate_formula_table(name, columns, rows, reference_groups)?;
             }
         }
         Ok(())
@@ -796,6 +1012,7 @@ fn validate_formula_table(
     name: &str,
     columns: &[FormulaTableColumn],
     rows: &[FormulaTableRow],
+    reference_groups: &[FormulaTableReferenceGroup],
 ) -> TmdResult<()> {
     if columns.is_empty() {
         return Err(TmdError::DataView(format!(
@@ -817,7 +1034,17 @@ fn validate_formula_table(
     let mut column_names = BTreeSet::new();
     let mut hidden_columns_started = false;
     let mut visible_columns = 0usize;
+    let mut identity_columns = 0usize;
     for column in columns {
+        if column.identity {
+            identity_columns += 1;
+            if column.hidden {
+                return Err(TmdError::DataView(format!(
+                    "managed Formula table source `{name}` identity column `{}` must be visible",
+                    column.id
+                )));
+            }
+        }
         if column.hidden {
             hidden_columns_started = true;
         } else {
@@ -861,6 +1088,11 @@ fn validate_formula_table(
             "managed Formula table source `{name}` requires at least one visible column"
         )));
     }
+    if identity_columns > 1 {
+        return Err(TmdError::DataView(format!(
+            "managed Formula table source `{name}` supports at most one identity column"
+        )));
+    }
 
     let mut row_ids = BTreeSet::new();
     for row in rows {
@@ -893,6 +1125,61 @@ fn validate_formula_table(
                 "managed Formula table source `{name}` program is invalid: {error}"
             ))
         })?;
+    }
+
+    let row_ids = rows
+        .iter()
+        .map(|row| row.id.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut group_ids = BTreeSet::new();
+    let mut occupied = BTreeSet::new();
+    for group in reference_groups {
+        validate_formula_table_id(name, "reference group", &group.id)?;
+        validate_source_name(&group.source).map_err(|_| {
+            TmdError::DataView(format!(
+                "managed Formula table source `{name}` reference group `{}` has invalid target `{}`",
+                group.id, group.source
+            ))
+        })?;
+        if !group_ids.insert(group.id.as_str()) {
+            return Err(TmdError::DataView(format!(
+                "managed Formula table source `{name}` repeats reference group id `{}`",
+                group.id
+            )));
+        }
+        if group.rows.is_empty() || group.columns.is_empty() {
+            return Err(TmdError::DataView(format!(
+                "managed Formula table source `{name}` reference group `{}` cannot be empty",
+                group.id
+            )));
+        }
+        let mut local_rows = BTreeSet::new();
+        for row_id in &group.rows {
+            if !row_ids.contains(row_id.as_str()) || !local_rows.insert(row_id.as_str()) {
+                return Err(TmdError::DataView(format!(
+                    "managed Formula table source `{name}` reference group `{}` has invalid row id `{row_id}`",
+                    group.id
+                )));
+            }
+        }
+        let mut local_columns = BTreeSet::new();
+        for mapping in &group.columns {
+            if !column_ids.contains(mapping.column_id.as_str())
+                || !local_columns.insert(mapping.column_id.as_str())
+            {
+                return Err(TmdError::DataView(format!(
+                    "managed Formula table source `{name}` reference group `{}` has invalid column id `{}`",
+                    group.id, mapping.column_id
+                )));
+            }
+            for row_id in &group.rows {
+                if !occupied.insert((row_id.as_str(), mapping.column_id.as_str())) {
+                    return Err(TmdError::DataView(format!(
+                        "managed Formula table source `{name}` has overlapping reference groups"
+                    )));
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -1582,7 +1869,7 @@ impl<'registry> ManagedFormulaEvaluator<'registry> {
             )));
         }
         let (columns, rows) = match self.registry.sources.get(name) {
-            Some(DataSourceDefinition::FormulaTable { columns, rows }) => {
+            Some(DataSourceDefinition::FormulaTable { columns, rows, .. }) => {
                 (columns.clone(), rows.clone())
             }
             Some(other) => {
@@ -1665,6 +1952,22 @@ impl<'registry> ManagedFormulaEvaluator<'registry> {
                 validate_formula_table_scalar(name, &row_definition.id, column, cell, value)?;
             }
         }
+        if let Some(identity_column) = columns.iter().position(|column| column.identity) {
+            let mut identities = Vec::new();
+            for (row_index, row) in table.rows.iter().enumerate() {
+                let Some(value) = row.get(identity_column) else {
+                    continue;
+                };
+                if matches!(value, DataScalar::Null) || identities.contains(value) {
+                    return Err(TmdError::DataView(format!(
+                        "managed Formula table source `{name}` identity column `{}` requires unique non-null values; row {} is invalid",
+                        columns[identity_column].name,
+                        row_index + 1
+                    )));
+                }
+                identities.push(value.clone());
+            }
+        }
         Ok(table)
     }
 }
@@ -1683,20 +1986,30 @@ impl FormulaReferenceResolver for ManagedFormulaReferenceResolver<'_, '_, '_> {
         if matches!(request.reference_value, DataScalar::Null) {
             return Ok(DataScalar::Null);
         }
+        if let Some(target_source) = request.target_source {
+            return self.resolve_direct_reference(
+                target_source,
+                request.reference_value,
+                request.target_column,
+            );
+        }
+        let reference_column = request.reference_column.ok_or_else(|| {
+            "REF request has neither a direct target nor a legacy reference column".to_owned()
+        })?;
         let source_column = self
             .source_columns
             .iter()
-            .find(|column| column.name == request.reference_column)
+            .find(|column| column.name == reference_column)
             .ok_or_else(|| {
                 format!(
                     "REF source `{}` has no column `{}`",
-                    self.source_name, request.reference_column
+                    self.source_name, reference_column
                 )
             })?;
         let reference = source_column.reference.as_ref().ok_or_else(|| {
             format!(
                 "REF column `{}` in source `{}` has no relationship metadata",
-                request.reference_column, self.source_name
+                reference_column, self.source_name
             )
         })?;
         let target_columns = match self.evaluator.registry.sources.get(&reference.source) {
@@ -1752,6 +2065,59 @@ impl FormulaReferenceResolver for ManagedFormulaReferenceResolver<'_, '_, '_> {
                 "REF key `{}` matches multiple rows in `{}`",
                 request.reference_value.display_text(),
                 reference.source
+            ));
+        }
+        Ok(value)
+    }
+}
+
+impl ManagedFormulaReferenceResolver<'_, '_, '_> {
+    fn resolve_direct_reference(
+        &mut self,
+        target_source: &str,
+        reference_value: DataScalar,
+        target_column: &str,
+    ) -> Result<DataScalar, String> {
+        let target_columns = match self.evaluator.registry.sources.get(target_source) {
+            Some(DataSourceDefinition::FormulaTable { columns, .. }) => columns.clone(),
+            _ => {
+                return Err(format!(
+                    "REF target `{target_source}` is not a managed Formula table"
+                ))
+            }
+        };
+        let key_column = target_columns
+            .iter()
+            .position(|column| column.identity)
+            .ok_or_else(|| format!("REF target `{target_source}` has no identity column"))?;
+        let value_column = target_columns
+            .iter()
+            .position(|column| column.name == target_column)
+            .ok_or_else(|| {
+                format!("REF target `{target_source}` has no column `{target_column}`")
+            })?;
+        let target = self
+            .evaluator
+            .evaluate_full(target_source)
+            .map_err(|error| error.to_string())?;
+        let mut matches = target
+            .rows
+            .iter()
+            .filter(|row| row.get(key_column) == Some(&reference_value));
+        let row = matches.next().ok_or_else(|| {
+            format!(
+                "REF identity `{}` was not found in `{target_source}`",
+                reference_value.display_text()
+            )
+        })?;
+        let value = row
+            .get(value_column)
+            .cloned()
+            .ok_or_else(|| format!("REF target `{target_source}` row is malformed"))?;
+        if matches.next().is_some() {
+            return Err(format!(
+                "REF identity `{}` matches multiple rows in `{target_source}`",
+                reference_value.display_text()
             ));
         }
         Ok(value)
@@ -2305,7 +2671,7 @@ mod tests {
                     if query == "SELECT 1 AS value"
             ));
             let serialized = serde_json::to_value(&registry).expect("serialize current registry");
-            assert_eq!(serialized["schema_version"], json!(7));
+            assert_eq!(serialized["schema_version"], json!(8));
             assert_eq!(serialized["sources"]["legacy"]["type"], json!("formula"));
         }
     }
@@ -2526,7 +2892,7 @@ mod tests {
         let registry = DataSourceRegistry::from_manifest_extras(&doc.manifest.extras)
             .expect("managed registry");
         let serialized = serde_json::to_value(registry).expect("serialize managed registry");
-        assert_eq!(serialized["schema_version"], json!(7));
+        assert_eq!(serialized["schema_version"], json!(8));
         assert_eq!(
             serialized["sources"]["managed"]["rows"][0]["cells"][0]["content"]["value"]["value"],
             json!("9007199254740993")
@@ -2868,6 +3234,16 @@ mod tests {
             }
         });
 
+        let legacy_registry = DataSourceRegistry::from_manifest_extras(&doc.manifest.extras)
+            .expect("legacy registry");
+        let serialized_legacy =
+            serde_json::to_value(&legacy_registry).expect("serialize legacy registry");
+        assert_eq!(serialized_legacy["schema_version"], json!(7));
+        DataSourceRegistry::from_manifest_extras(&json!({
+            DATA_SOURCES_EXTRAS_KEY: serialized_legacy
+        }))
+        .expect("serialized legacy registry remains readable");
+
         assert_eq!(
             evaluate_data_source(&doc, "contacts").expect("REF-backed contacts"),
             DataValue::Table(DataTable {
@@ -2902,6 +3278,87 @@ mod tests {
                 ],
             })
         );
+    }
+
+    #[test]
+    fn evaluates_visible_identity_direct_refs_and_reference_groups() {
+        let mut doc = TmdDoc::new(String::new()).expect("document");
+        doc.manifest.extras = json!({
+            DATA_SOURCES_EXTRAS_KEY: {
+                "schema_version": 8,
+                "sources": {
+                    "contacts-detail": {
+                        "type": "formula",
+                        "columns": [
+                            { "id": "name", "name": "name", "constraint": "text" },
+                            { "id": "city", "name": "city", "constraint": "text" },
+                            { "id": "id", "name": "ID", "constraint": "text", "identity": true }
+                        ],
+                        "rows": [
+                            { "id": "detail-1", "cells": [
+                                { "content": { "kind": "literal", "value": { "type": "string", "value": "Alice" } } },
+                                { "content": { "kind": "literal", "value": { "type": "string", "value": "Tokyo" } } },
+                                { "content": { "kind": "literal", "value": { "type": "string", "value": "contacts-detail-1" } } }
+                            ] },
+                            { "id": "detail-2", "cells": [
+                                { "content": { "kind": "literal", "value": { "type": "string", "value": "Bob" } } },
+                                { "content": { "kind": "literal", "value": { "type": "string", "value": "Osaka" } } },
+                                { "content": { "kind": "literal", "value": { "type": "string", "value": "contacts-detail-2" } } }
+                            ] }
+                        ]
+                    },
+                    "contacts": {
+                        "type": "formula",
+                        "columns": [
+                            { "id": "name", "name": "name", "constraint": "text" },
+                            { "id": "city", "name": "city", "constraint": "text" },
+                            { "id": "greeting", "name": "greeting", "constraint": "text" }
+                        ],
+                        "rows": [{ "id": "contact-1", "cells": [
+                            { "content": { "kind": "formula", "expression": "REF(\"contacts-detail\", \"contacts-detail-1\", \"name\")" } },
+                            { "content": { "kind": "formula", "expression": "REF(\"contacts-detail\", \"contacts-detail-1\", \"city\")" } },
+                            { "content": { "kind": "formula", "expression": "REF(\"contacts-detail\", \"contacts-detail-1\", \"name\") + \"さん\"" } }
+                        ] }],
+                        "reference_groups": [{
+                            "id": "ref1",
+                            "source": "contacts-detail",
+                            "rows": ["contact-1"],
+                            "columns": [
+                                { "column_id": "name", "target_column_id": "name" },
+                                { "column_id": "city", "target_column_id": "city" }
+                            ]
+                        }]
+                    }
+                }
+            }
+        });
+
+        assert_eq!(
+            evaluate_data_source(&doc, "contacts").expect("direct REF contacts"),
+            DataValue::Table(DataTable {
+                columns: vec!["name".to_owned(), "city".to_owned(), "greeting".to_owned()],
+                rows: vec![vec![
+                    DataScalar::String("Alice".to_owned()),
+                    DataScalar::String("Tokyo".to_owned()),
+                    DataScalar::String("Aliceさん".to_owned()),
+                ]],
+            })
+        );
+        let detail = evaluate_data_source(&doc, "contacts-detail").expect("visible identity");
+        let DataValue::Table(detail) = detail else {
+            panic!("managed source must be a table")
+        };
+        assert_eq!(detail.columns, vec!["name", "city", "ID"]);
+
+        doc.manifest.extras[DATA_SOURCES_EXTRAS_KEY]["sources"]["contacts"]["rows"][0]["cells"]
+            [0] = json!({
+            "content": { "kind": "literal", "value": { "type": "null" } }
+        });
+        let error = DataSourceRegistry::from_manifest_extras(&doc.manifest.extras)
+            .expect_err("mixed NULL/reference group row");
+        assert!(error
+            .to_string()
+            .contains("mixes target identities or NULL"));
     }
 
     #[test]

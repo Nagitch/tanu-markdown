@@ -162,6 +162,18 @@ li { margin: .35rem 0; }
 .cell-formula-bar input { height: 100%; }
 .cell-name { text-align: center; font-family: var(--vscode-editor-font-family); }
 .cell-input-field { position: relative; }
+.reference-target-field {
+  display: grid;
+  grid-template-columns: auto minmax(10rem, 1fr);
+  align-items: center;
+  gap: .5rem;
+  min-width: 0;
+}
+.reference-target-label {
+  color: var(--vscode-descriptionForeground);
+  white-space: nowrap;
+}
+.reference-target-field select { min-width: 0; height: 100%; }
 .cell-input-field input {
   padding-left: 2.5rem;
   font-family: var(--vscode-editor-font-family);

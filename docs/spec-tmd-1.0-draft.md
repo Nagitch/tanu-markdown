@@ -114,7 +114,7 @@ Source definitions are stored in a versioned registry inside
 ```json
 {
   "tmd_data_sources": {
-    "schema_version": 7,
+    "schema_version": 8,
     "sources": {
       "sheet": {
         "type": "formula",
@@ -137,7 +137,7 @@ Source definitions are stored in a versioned registry inside
 }
 ```
 
-Registry schema version 7 exposes only `type = "formula"` and `type = "rhai"`.
+Registry schema version 8 exposes only `type = "formula"` and `type = "rhai"`.
 A Formula definition containing `columns` and `rows` is a managed Formula table.
 Columns and rows MUST have unique stable identifiers using the source-name
 character set. Column names MUST be unique. Every row MUST contain exactly one
@@ -156,25 +156,34 @@ using the schema-version-3 language and A1 coordinates. The table and complete
 lowered Formula program are bounded. A Formula result is validated against its
 effective constraint after evaluation.
 
-A managed column MAY contain `"reference": { "source": "...", "column_id": "..." }`. The source
-MUST resolve to a managed Formula table and the stable column id MUST
-exist there. The metadata alone does not perform a join. A Formula MAY perform
-an explicit bounded lookup with `REF([@reference_column], "target_column")`.
-Its first argument MUST name a current-row column containing the lookup key and
-the column's relationship metadata determines the target source and stable key
-column. Its second argument names the target value column. A null key returns
-null; a non-null key MUST match exactly one target row. Missing or duplicate
-keys, missing relationship metadata, missing columns, and evaluation cycles
-produce Formula diagnostics.
+Schema version 8 adds the optional boolean `identity` field to managed columns.
+A table MUST contain at most one identity column. Its evaluated values MUST be
+non-null and unique. Identity columns are visible in the table value exposed to
+Markdown, Rhai, the CLI, and the editor. The editor assigns a new visible text
+identity when a row is inserted or duplicated in an identity-bearing table.
 
-Schema version 7 adds the optional boolean `hidden` field to managed columns.
-Hidden columns MUST form a trailing suffix and at least one column MUST remain
-visible. They participate in internal Formula evaluation and relationship
-lookup but are omitted from the table value exposed to Markdown, Rhai, and the
-editor. Schema version 6 managed tables remain readable but cannot contain
-hidden columns. Normalization uses version 7 to retain the original visible
-columns as generated `REF` formulas while storing foreign and identity keys in
-hidden columns.
+A Formula MAY perform an explicit bounded lookup with
+`REF("source", identity, "target_column")`. The first and third arguments MUST
+be text literals. The second argument is evaluated as a scalar identity. The
+source MUST resolve to a managed Formula table with exactly one identity
+column, and a non-null identity MUST match exactly one row. Missing or duplicate
+identities, missing columns, and evaluation cycles produce Formula diagnostics.
+Direct REF is an ordinary expression and MAY be combined with other operators
+and functions.
+
+Schema version 8 also adds optional `reference_groups`. A group declares a
+stable id, a managed target source, covered local row ids, and mappings from
+local column ids to target column ids. For each covered row, mapped cells MUST
+all be null or direct three-argument REF expressions with one shared source and
+identity and the mapped target column. A reference group is an editor
+constraint, not a separate Formula mode: releasing it leaves the formulas
+unchanged.
+
+Schema version 7 hidden columns, column `reference` metadata, and
+`REF([@reference_column], "target_column")` remain readable for compatibility.
+Current editors MUST NOT create them and emit schema version 8 after a supported
+migration. A lossless compatibility round trip MAY retain schema version 7 when
+legacy hidden-column metadata has not been migrated.
 
 A Formula definition containing `query` and optional `edit` is the legacy
 query Formula mode:
@@ -187,7 +196,7 @@ Authors MUST use `ORDER BY` when stable row order is required.
 Legacy registry schema version 1 used `type = "sqlite"` for the same query
 shape. Versions 1 through 4 remain readable; readers normalize those legacy
 definitions to query Formula sources in memory. Writers serialize current
-registries as schema version 7 and MUST NOT emit `type = "sqlite"`.
+registries as schema version 8 and MUST NOT emit `type = "sqlite"`.
 
 SQLite `NULL`, integer, finite real, and UTF-8 text values are supported.
 SQLite BLOB values, non-finite real values, invalid UTF-8 text, and incompatible
@@ -294,8 +303,12 @@ tools create managed Formula and Rhai definitions.
 
 Registry schema version 7 adds trailing hidden managed columns and explicit
 bounded cross-table `REF` evaluation. Current authoring tools use these fields
-to preserve visible values after normalization without exposing generated
-relationship keys as user data.
+only when reading legacy documents.
+
+Registry schema version 8 replaces newly authored hidden relationships with a
+visible target identity column, self-contained three-argument `REF`, and
+unlockable reference-group editing constraints. Normalization no longer adds a
+source-side key column.
 
 These references use ordinary Markdown text and fenced blocks, so unaware
 readers retain passive placeholders rather than executing a query. The source
@@ -392,3 +405,6 @@ progressive constraints, per-cell formulas, stable relationship metadata, and
 managed-Formula-to-Rhai inputs while retaining schema version 1 through 5 reads.
 Draft 9 adds registry schema version 7, trailing hidden relationship storage,
 and bounded `REF` evaluation while retaining schema version 1 through 6 reads.
+Draft 10 adds registry schema version 8, visible identities, direct REF,
+reference-group editing constraints, and string concatenation with `+` while
+retaining schema version 1 through 7 reads.

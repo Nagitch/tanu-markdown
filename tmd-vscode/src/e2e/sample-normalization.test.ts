@@ -9,8 +9,10 @@ import {
 } from "../data-sources.js";
 import { parseEditorDataSources } from "../editor-data-sources.js";
 import {
+  applyReferenceGroupSelection,
   findNormalizationCandidate,
   normalizeManagedColumns,
+  releaseManagedReferenceGroup,
 } from "../managed-table.js";
 
 test("sample contacts normalization crosses the editor boundary and preserves output", async () => {
@@ -46,7 +48,7 @@ test("sample contacts normalization crosses the editor boundary and preserves ou
 
   const editorPayload = JSON.parse(JSON.stringify(nextSources));
   const acceptedSources = parseEditorDataSources(editorPayload);
-  assert.ok(acceptedSources, "the extension host must accept normalized Schema v7 sources");
+  assert.ok(acceptedSources, "the extension host must accept normalized Schema v8 sources");
   const draftExtras = extrasWithDataSources(
     inspection.manifest.extras,
     acceptedSources,
@@ -55,6 +57,39 @@ test("sample contacts normalization crosses the editor boundary and preserves ou
 
   assert.deepEqual(after.columns, before.columns);
   assert.deepEqual(after.rows, before.rows);
-  assert.equal(normalized.source.columns.at(-1)?.hidden, true);
-  assert.equal(normalized.target.columns.at(-1)?.hidden, true);
+  assert.equal(normalized.source.columns.some((column) => column.hidden), false);
+  assert.equal(normalized.target.columns.at(-1)?.identity, true);
+  assert.equal(normalized.source.referenceGroups?.length, 1);
+
+  applyReferenceGroupSelection(
+    normalized.source,
+    normalized.target,
+    normalized.source.referenceGroups?.[0]?.id ?? "",
+    0,
+    1,
+  );
+  const selectedExtras = extrasWithDataSources(
+    inspection.manifest.extras,
+    nextSources,
+  );
+  const selected = await client.dataSource(samplePath, "contacts", selectedExtras);
+  assert.deepEqual(selected.rows[0]?.[1], { type: "string", value: "Osaka" });
+
+  assert.equal(
+    releaseManagedReferenceGroup(
+      normalized.source,
+      normalized.source.referenceGroups?.[0]?.id ?? "",
+    ),
+    true,
+  );
+  const city = normalized.source.rows[0]?.cells[1];
+  assert.equal(city?.content.kind, "formula");
+  if (city?.content.kind !== "formula") throw new Error("missing city REF");
+  city.content.expression += ' + "!"';
+  const unlockedExtras = extrasWithDataSources(
+    inspection.manifest.extras,
+    nextSources,
+  );
+  const unlocked = await client.dataSource(samplePath, "contacts", unlockedExtras);
+  assert.deepEqual(unlocked.rows[0]?.[1], { type: "string", value: "Osaka!" });
 });

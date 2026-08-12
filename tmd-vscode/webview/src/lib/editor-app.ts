@@ -29,8 +29,14 @@ import {
   managedLiteralConstraintIssue,
   managedVisibleColumnCount,
   normalizeManagedColumns,
+  applyReferenceGroupSelection,
+  managedReferenceGroupAt,
+  referenceGroupSelection,
+  releaseManagedReferenceGroup,
   renameManagedColumn,
   renameManagedReferencedColumn,
+  renameManagedReferenceIdentity,
+  renameManagedReferencedSource,
   setManagedCellText,
   type ManagedTableRange,
   type NormalizationCandidate,
@@ -115,7 +121,12 @@ const tableSourceStatus = requireElement<HTMLElement>("table-source-status");
 const tableGridHost = requireElement<HTMLElement>("table-grid-host");
 const cellFormulaBar = requireElement<HTMLFormElement>("cell-formula-bar");
 const cellName = requireElement<HTMLInputElement>("cell-name");
+const cellInputField = requireElement<HTMLElement>("cell-input-field");
 const cellInput = requireElement<HTMLInputElement>("cell-input");
+const referenceTargetField = requireElement<HTMLElement>("reference-target-field");
+const referenceTargetLabel = requireElement<HTMLElement>("reference-target-label");
+const referenceTarget = requireElement<HTMLSelectElement>("reference-target");
+const applyCellEdit = requireElement<HTMLButtonElement>("apply-cell-edit");
 const cancelCellEdit = requireElement<HTMLButtonElement>("cancel-cell-edit");
 const cellEditStatus = requireElement<HTMLElement>("cell-edit-status");
 const tableStructureActions = requireElement<HTMLElement>(
@@ -309,6 +320,7 @@ cellInput.addEventListener("input", () => {
   formulaBarEditing = true;
   insertedReference = undefined;
 });
+referenceTarget.addEventListener("change", applySelectedReferenceTarget);
 cancelCellEdit.addEventListener("click", () => {
   formulaBarEditing = false;
   editingCell = undefined;
@@ -805,6 +817,18 @@ function beginPreviewCellEdit(cell: HTMLTableCellElement): void {
     setCellEditStatus("This preview cell has no write-back mapping.", "invalid");
     return;
   }
+  selectedCell = { row, column };
+  selectedTableRange = { top: row, bottom: row, left: column, right: column };
+  const managed = selectedManagedFormulaSource();
+  if (managed && managedReferenceGroupAt(managed, row, column)) {
+    renderSelectedCell();
+    referenceTarget.focus();
+    setCellEditStatus(
+      "This protected reference is edited by choosing a linked row.",
+      "valid",
+    );
+    return;
+  }
   previewCellEdit = {
     cell,
     source: sourceName,
@@ -812,9 +836,6 @@ function beginPreviewCellEdit(cell: HTMLTableCellElement): void {
     column,
     originalText: cell.textContent ?? "",
   };
-  selectedCell = { row, column };
-  selectedTableRange = { top: row, bottom: row, left: column, right: column };
-  const managed = selectedManagedFormulaSource();
   const expression = formulaExpressionForCell(
     selectedComputedFormulaSource()?.program ?? "",
     row,
@@ -1376,6 +1397,17 @@ function handleTableEditStart(event: CustomEvent<BeforeSaveDataDetails>): void {
     return;
   }
   const managed = selectedManagedFormulaSource();
+  if (managed && managedReferenceGroupAt(managed, position.row, position.column)) {
+    event.preventDefault();
+    selectedCell = position;
+    renderSelectedCell();
+    referenceTarget.focus();
+    setCellEditStatus(
+      "This protected reference is edited by choosing a linked row.",
+      "valid",
+    );
+    return;
+  }
   const expression = formulaExpressionForCell(
     selectedComputedFormulaSource()?.program ?? "",
     position.row,
@@ -1435,6 +1467,11 @@ async function handleTableRangeEdit(
       for (const [prop, value] of Object.entries(values)) {
         const column = tableColumnIndex(prop);
         if (column === undefined) continue;
+        if (source.columns[column]?.identity) {
+          throw new Error(
+            "Identity cells must be edited one at a time so linked REF formulas can be updated safely.",
+          );
+        }
         const literal = setManagedCellText(
           updated,
           row,
@@ -2007,6 +2044,58 @@ async function applyCellText(
   const startedAt = performance.now();
   try {
     if (managedSource) {
+      if (managedSource.columns[position.column]?.identity) {
+        const previous = managedSource.rows[position.row]?.cells[position.column];
+        if (
+          previous?.content.kind !== "literal" ||
+          previous.content.value.type !== "string"
+        ) {
+          throw new Error("Identity cells require literal text values.");
+        }
+        const nextSources = tableSourceDefinitions.map(cloneDataSource);
+        const updated = nextSources.find(
+          (candidate): candidate is ManagedFormulaDataSource =>
+            isManagedFormulaDataSource(candidate) &&
+            candidate.name === managedSource.name,
+        );
+        if (!updated) throw new Error("The identity table changed before the edit was applied.");
+        setManagedCellText(updated, position.row, position.column, text);
+        const next = updated.rows[position.row]?.cells[position.column];
+        if (
+          next?.content.kind !== "literal" ||
+          next.content.value.type !== "string" ||
+          next.content.value.value === ""
+        ) {
+          throw new Error("Identity cells require non-empty literal text values.");
+        }
+        const nextIdentity = next.content.value.value;
+        if (
+          updated.rows.some((row, index) => {
+            const content = row.cells[position.column]?.content;
+            return (
+              index !== position.row &&
+              content?.kind === "literal" &&
+              content.value.type === "string" &&
+              content.value.value === nextIdentity
+            );
+          })
+        ) {
+          throw new Error("Identity values must be unique within their table.");
+        }
+        renameManagedReferenceIdentity(
+          nextSources.filter(isManagedFormulaDataSource),
+          updated.name,
+          previous.content.value.value,
+          nextIdentity,
+        );
+        selectedCell = { ...position };
+        setCellEditStatus("Updating identity and linked REF formulas…", "stale");
+        commitManagedSources(nextSources, updated.name, {
+          startedAt,
+          operation: "Cell edit",
+        });
+        return true;
+      }
       const updated = cloneManagedFormulaSource(managedSource);
       const literal = setManagedCellText(updated, position.row, position.column, text);
       setCellEditStatus("Applying cell edit…", "stale");
@@ -2201,6 +2290,23 @@ function applyManagedAutofill(
 ): void {
   const startedAt = performance.now();
   try {
+    for (const [destinationRowText, rowMapping] of Object.entries(detail.mapping)) {
+      const destinationRow = Number(destinationRowText);
+      for (const destinationProp of Object.keys(rowMapping)) {
+        const destinationColumn = tableColumnIndex(destinationProp);
+        if (
+          destinationColumn !== undefined &&
+          (managedReferenceGroupAt(source, destinationRow, destinationColumn) ||
+            source.columns[destinationColumn]?.identity)
+        ) {
+          throw new Error(
+            source.columns[destinationColumn]?.identity
+              ? "Identity cells must be edited one at a time so linked REF formulas can be updated safely."
+              : "Protected reference cells are changed with their linked-row picker. Release the reference group before filling them freely.",
+          );
+        }
+      }
+    }
     const updated = cloneManagedFormulaSource(source);
     for (const [destinationRowText, rowMapping] of Object.entries(detail.mapping)) {
       const destinationRow = Number(destinationRowText);
@@ -2262,18 +2368,29 @@ function renderSelectedCell(): void {
     : expression
       ? `=${expression.replace(/^=/u, "")}`
       : cellTextForEditing(currentTable.rows[position.row]?.[position.column]);
+  const referenceGroup = managedSource
+    ? managedReferenceGroupAt(managedSource, position.row, position.column)
+    : undefined;
   const disabled =
     !dataSourcesEditable ||
     dataSourceEditingLocked ||
     dataSourceDraftDirty ||
     (isQueryFormulaDataSource(source) && !isDirectCellEditable(position));
   cellInput.disabled = disabled;
+  cellInputField.hidden = referenceGroup !== undefined;
+  referenceTargetField.hidden = referenceGroup === undefined;
+  if (managedSource && referenceGroup) {
+    renderReferenceTargetPicker(managedSource, referenceGroup, position.row);
+    referenceTarget.disabled = disabled;
+  } else {
+    referenceTarget.replaceChildren();
+  }
   cellConstraint.hidden = !managedSource;
-  cellConstraint.disabled = disabled || !managedSource;
+  cellConstraint.disabled = disabled || !managedSource || referenceGroup !== undefined;
   columnConstraint.hidden = !managedSource;
-  columnConstraint.disabled = disabled || !managedSource;
+  columnConstraint.disabled = disabled || !managedSource || referenceGroup !== undefined;
   columnName.hidden = !managedSource;
-  columnName.disabled = disabled || !managedSource;
+  columnName.disabled = disabled || !managedSource || referenceGroup !== undefined;
   if (managedSource) {
     cellConstraint.value =
       managedSource.rows[position.row]?.cells[position.column]?.constraint ??
@@ -2283,9 +2400,13 @@ function renderSelectedCell(): void {
     columnName.value = managedSource.columns[position.column]?.name ?? "";
   }
   cancelCellEdit.disabled = disabled;
-  requireElement<HTMLButtonElement>("apply-cell-edit").disabled = disabled;
+  cancelCellEdit.hidden = referenceGroup !== undefined;
+  applyCellEdit.hidden = referenceGroup !== undefined;
+  applyCellEdit.disabled = disabled;
   const direct = isDirectCellEditable(position);
-  cellInput.title = managedSource
+  cellInput.title = referenceGroup
+    ? `Protected reference to ${referenceGroup.source}. Choose a referenced row from the list.`
+    : managedSource
     ? `Enter a literal or start with = for a Formula. Effective type: ${effectiveCellConstraint(managedSource, position.row, position.column)}.`
     : computedSource
     ? direct
@@ -2294,6 +2415,86 @@ function renderSelectedCell(): void {
     : direct
       ? "Enter a value to update the Formula query table."
       : "This Formula query cell is read-only because it has no write-back mapping.";
+}
+
+function renderReferenceTargetPicker(
+  source: ManagedFormulaDataSource,
+  group: NonNullable<ManagedFormulaDataSource["referenceGroups"]>[number],
+  row: number,
+): void {
+  referenceTarget.replaceChildren();
+  referenceTargetLabel.textContent = `🔒 ${group.source}`;
+  const target = tableSourceDefinitions.find(
+    (candidate): candidate is ManagedFormulaDataSource =>
+      isManagedFormulaDataSource(candidate) && candidate.name === group.source,
+  );
+  if (!target) {
+    referenceTarget.append(new Option("Referenced table is unavailable", ""));
+    referenceTarget.disabled = true;
+    return;
+  }
+  const currentIdentity = referenceGroupSelection(source, group, row);
+  referenceTarget.append(new Option("Choose a referenced row…", ""));
+  for (const [targetRow, definition] of target.rows.entries()) {
+    const identityColumn = target.columns.findIndex((column) => column.identity);
+    const identityCell = identityColumn >= 0
+      ? definition.cells[identityColumn]
+      : undefined;
+    const identity =
+      identityCell?.content.kind === "literal" &&
+      identityCell.content.value.type === "string"
+        ? identityCell.content.value.value
+        : undefined;
+    if (identity === undefined) continue;
+    const labels = group.columns
+      .map((mapping) =>
+        target.columns.findIndex(
+          (column) => column.id === mapping.targetColumnId,
+        ),
+      )
+      .filter((index) => index >= 0)
+      .slice(0, 2)
+      .map((index) => managedCellText(target, targetRow, index))
+      .filter((value) => value !== "");
+    const label = `${labels.join(" · ") || identity} · ${identity}`;
+    const option = new Option(label, String(targetRow));
+    option.selected = identity === currentIdentity;
+    referenceTarget.append(option);
+  }
+}
+
+function applySelectedReferenceTarget(): void {
+  const source = selectedManagedFormulaSource();
+  const position = selectedCell;
+  if (referenceTarget.value === "") return;
+  const targetRow = Number(referenceTarget.value);
+  if (!source || !position || !Number.isSafeInteger(targetRow)) return;
+  const group = managedReferenceGroupAt(source, position.row, position.column);
+  const target = group
+    ? tableSourceDefinitions.find(
+        (candidate): candidate is ManagedFormulaDataSource =>
+          isManagedFormulaDataSource(candidate) && candidate.name === group.source,
+      )
+    : undefined;
+  if (!group || !target) return;
+  try {
+    const updated = cloneManagedFormulaSource(source);
+    applyReferenceGroupSelection(
+      updated,
+      target,
+      group.id,
+      position.row,
+      targetRow,
+    );
+    setCellEditStatus(`Updating linked ${group.source} row…`, "stale");
+    commitManagedSource(updated, {
+      startedAt: performance.now(),
+      operation: "Cell edit",
+    });
+  } catch (error) {
+    setCellEditStatus(errorMessage(error), "invalid");
+    renderSelectedCell();
+  }
 }
 
 function resetCellEditor(): void {
@@ -2505,6 +2706,11 @@ function handleTableContextMenu(event: MouseEvent): void {
   event.preventDefault();
   const position = { ...selectedCell };
   const effective = effectiveCellConstraint(source, position.row, position.column);
+  const referenceGroup = managedReferenceGroupAt(
+    source,
+    position.row,
+    position.column,
+  );
   showTableContextMenu(
     event.clientX,
     event.clientY,
@@ -2513,6 +2719,20 @@ function handleTableContextMenu(event: MouseEvent): void {
         label: `${spreadsheetCellName(position.row, position.column)} · ${constraintLabel(effective)}`,
         disabled: true,
       },
+      ...(referenceGroup
+        ? [
+            {
+              label: `🔒 Linked to ${referenceGroup.source}`,
+              disabled: true as const,
+            },
+            { separator: true as const },
+            {
+              label: "Release reference group",
+              action: () => releaseSelectedReferenceGroup(referenceGroup.id),
+            },
+            { separator: true as const },
+          ]
+        : []),
       {
         label: "Inherit column type",
         action: () => setCellConstraintAt(position, undefined),
@@ -2525,6 +2745,21 @@ function handleTableContextMenu(event: MouseEvent): void {
       { label: "Copy selection to new table", action: extractSelectedManagedRange },
     ],
   );
+}
+
+function releaseSelectedReferenceGroup(groupId: string): void {
+  const source = selectedManagedFormulaSource();
+  if (!source) return;
+  const updated = cloneManagedFormulaSource(source);
+  if (!releaseManagedReferenceGroup(updated, groupId)) return;
+  setCellEditStatus(
+    "Releasing reference group; existing REF formulas remain unchanged…",
+    "stale",
+  );
+  commitManagedSource(updated, {
+    startedAt: performance.now(),
+    operation: "Structure edit",
+  });
 }
 
 function setCellConstraintAt(
@@ -2687,7 +2922,6 @@ function applyNormalization(): void {
     if (sourceIndex < 0) throw new Error("The source changed before normalization could be applied.");
     nextSources[sourceIndex] = normalized.source;
     nextSources.push(normalized.target);
-    rewriteNormalizedColumnReferences(nextSources, source, candidate, normalized.target);
     stageAuthoritativeSources(nextSources);
     const startedAt = performance.now();
     const clientRevision = sendDataSourceEdit(nextSources.map(cloneDataSource));
@@ -2704,30 +2938,6 @@ function applyNormalization(): void {
     renderTableStructureActions();
   } catch (error) {
     setCellEditStatus(errorMessage(error), "invalid");
-  }
-}
-
-function rewriteNormalizedColumnReferences(
-  sources: DataSource[],
-  original: ManagedFormulaDataSource,
-  candidate: NormalizationCandidate,
-  target: ManagedFormulaDataSource,
-): void {
-  const movedColumnIds = new Map(
-    original.columns
-      .slice(candidate.left, candidate.right + 1)
-      .map((column, index) => [column.id, target.columns[index]?.id]),
-  );
-  for (const source of sources) {
-    if (!isManagedFormulaDataSource(source)) continue;
-    for (const column of source.columns) {
-      const reference = column.reference;
-      if (!reference || reference.source !== original.name) continue;
-      const targetColumnId = movedColumnIds.get(reference.columnId);
-      if (!targetColumnId) continue;
-      reference.source = target.name;
-      reference.columnId = targetColumnId;
-    }
   }
 }
 
@@ -3019,9 +3229,11 @@ async function renderTableGrid(
         ? {
             cellProperties: (properties) => {
               const row = tableRowIndex(properties.model, properties.rowIndex);
-              const style = managedCandidate
-                ? normalizationCellOutline(managedCandidate, row, index)
-                : undefined;
+              const style =
+                referenceGroupCellOutline(formulaSource, row, index) ??
+                (managedCandidate
+                  ? normalizationCellOutline(managedCandidate, row, index)
+                  : undefined);
               return style ? { style: { boxShadow: style } } : undefined;
             },
             cellTemplate: (createElement, properties) => {
@@ -3081,8 +3293,15 @@ function managedColumnLabel(
   fallbackName: string,
 ): string {
   const column = source.columns[index];
-  const relationship = column?.reference ? "↗  " : "";
-  return `${relationship}${constraintIcon(column?.constraint ?? "any")}  ${column?.name ?? fallbackName}`;
+  const protectedReference = source.referenceGroups?.some((group) =>
+    group.columns.some((mapping) => mapping.columnId === column?.id),
+  );
+  const role = column?.identity
+    ? "🔑  "
+    : protectedReference
+      ? "🔒↗  "
+      : "";
+  return `${role}${constraintIcon(column?.constraint ?? "any")}  ${column?.name ?? fallbackName}`;
 }
 
 function managedCellMarker(
@@ -3093,6 +3312,13 @@ function managedCellMarker(
 ): { label: string; title: string } {
   const cell = source.rows[row]?.cells[column];
   const constraint = effectiveCellConstraint(source, row, column);
+  const referenceGroup = managedReferenceGroupAt(source, row, column);
+  if (referenceGroup) {
+    return {
+      label: "🔒",
+      title: `Protected reference to ${referenceGroup.source} · choose a linked row to edit`,
+    };
+  }
   if (cell?.content.kind === "formula") {
     const result = table.rows[row]?.[column]?.type ?? "unknown";
     return { label: "fx", title: `Formula · ${constraintLabel(constraint)} constraint · ${result} result` };
@@ -3110,6 +3336,35 @@ function managedCellMarker(
     label,
     title: `${constraintLabel(constraint)} constraint · ${result ?? "null"} value`,
   };
+}
+
+function referenceGroupCellOutline(
+  source: ManagedFormulaDataSource,
+  row: number,
+  column: number,
+): string | undefined {
+  const group = managedReferenceGroupAt(source, row, column);
+  if (!group) return undefined;
+  const columnId = source.columns[column]?.id;
+  const rowId = source.rows[row]?.id;
+  if (!columnId || !rowId) return undefined;
+  const columns = new Set(group.columns.map((mapping) => mapping.columnId));
+  const rows = new Set(group.rowIds);
+  const shadows: string[] = [];
+  const color = "var(--vscode-descriptionForeground)";
+  if (!columns.has(source.columns[column - 1]?.id ?? "")) {
+    shadows.push(`inset 2px 0 ${color}`);
+  }
+  if (!columns.has(source.columns[column + 1]?.id ?? "")) {
+    shadows.push(`inset -2px 0 ${color}`);
+  }
+  if (!rows.has(source.rows[row - 1]?.id ?? "")) {
+    shadows.push(`inset 0 2px ${color}`);
+  }
+  if (!rows.has(source.rows[row + 1]?.id ?? "")) {
+    shadows.push(`inset 0 -2px ${color}`);
+  }
+  return shadows.length > 0 ? shadows.join(",") : undefined;
 }
 
 function normalizationCellOutline(
@@ -3303,11 +3558,11 @@ function renderDataSourceDrafts(): void {
     if (isManagedFormulaDataSource(source)) {
       const summary = document.createElement("p");
       summary.className = "section-description";
-      const visibleColumns = managedVisibleColumnCount(source);
-      const storageColumns = source.columns.length - visibleColumns;
       summary.textContent =
-        `${source.rows.length} rows · ${visibleColumns} columns` +
-        (storageColumns > 0 ? ` · ${storageColumns} internal relationship column${storageColumns === 1 ? "" : "s"}` : "") +
+        `${source.rows.length} rows · ${source.columns.length} columns` +
+        (source.referenceGroups?.length
+          ? ` · ${source.referenceGroups.length} protected reference group${source.referenceGroups.length === 1 ? "" : "s"}`
+          : "") +
         " · edit cells and constraints in the Table tab";
       card.append(summary);
     } else if (isQueryFormulaDataSource(source)) {
@@ -3545,14 +3800,13 @@ function nextDataSourceName(prefix: string): string {
 }
 
 function rewriteDraftSourceReferences(previousName: string, nextName: string): void {
+  renameManagedReferencedSource(
+    dataSourceDrafts.filter(isManagedFormulaDataSource),
+    previousName,
+    nextName,
+  );
   for (const source of dataSourceDrafts) {
-    if (isManagedFormulaDataSource(source)) {
-      for (const column of source.columns) {
-        if (column.reference?.source === previousName) {
-          column.reference.source = nextName;
-        }
-      }
-    } else if (source.type === "rhai") {
+    if (source.type === "rhai") {
       for (const input of source.inputs) {
         if (input.source === previousName) input.source = nextName;
       }

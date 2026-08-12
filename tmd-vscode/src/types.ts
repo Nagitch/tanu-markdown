@@ -52,12 +52,28 @@ export interface ManagedFormulaColumn {
   id: string;
   name: string;
   constraint: ManagedCellConstraint;
-  /** Storage-only column omitted from evaluated table output. Hidden columns form a trailing suffix. */
+  /** Visible stable key used by three-argument REF expressions. */
+  identity?: boolean;
+  /** Schema v7 compatibility only. New definitions must not serialize hidden columns. */
   hidden?: boolean;
+  /** Schema v7 compatibility only. New references are stored directly in REF expressions. */
   reference?: {
     source: string;
     columnId: string;
   };
+}
+
+export interface ManagedFormulaReferenceGroup {
+  id: string;
+  /** Managed Formula table selected by the group's reference picker. */
+  source: string;
+  /** Stable source-row identities covered by this editing constraint. */
+  rowIds: string[];
+  /** Stable current/target column mappings updated together for one selected row. */
+  columns: Array<{
+    columnId: string;
+    targetColumnId: string;
+  }>;
 }
 
 export type ManagedFormulaCellContent =
@@ -80,6 +96,7 @@ export interface ManagedFormulaDataSource {
   type: "formula";
   columns: ManagedFormulaColumn[];
   rows: ManagedFormulaRow[];
+  referenceGroups?: ManagedFormulaReferenceGroup[];
 }
 
 export type FormulaDataSource =
@@ -131,7 +148,7 @@ export interface TextAttachmentView extends TextAttachmentEdit {}
 
 export interface DataSourceRegistryView {
   editable: boolean;
-  schemaVersion?: 1 | 2 | 3 | 4 | 5 | 6 | 7;
+  schemaVersion?: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
   sources: DataSource[];
   issue?: string;
   rawRegistry?: string;

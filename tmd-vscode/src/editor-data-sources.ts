@@ -4,6 +4,7 @@ import type {
   ManagedCellConstraint,
   ManagedFormulaCell,
   ManagedFormulaColumn,
+  ManagedFormulaReferenceGroup,
   ManagedFormulaRow,
   SqliteEditDefinition,
 } from "./types.js";
@@ -24,7 +25,7 @@ export function parseEditorDataSources(value: unknown): DataSource[] | undefined
     }
     if (
       source.type === "formula" &&
-      hasOnlyKeys(source, ["name", "type", "columns", "rows"]) &&
+      hasOnlyKeys(source, ["name", "type", "columns", "rows", "referenceGroups"]) &&
       "columns" in source &&
       Array.isArray(source.columns) &&
       "rows" in source &&
@@ -42,7 +43,22 @@ export function parseEditorDataSources(value: unknown): DataSource[] | undefined
         if (!parsed) return undefined;
         rows.push(parsed);
       }
-      sources.push({ name: source.name, type: "formula", columns, rows });
+      const referenceGroups: ManagedFormulaReferenceGroup[] = [];
+      if ("referenceGroups" in source) {
+        if (!Array.isArray(source.referenceGroups)) return undefined;
+        for (const group of source.referenceGroups) {
+          const parsed = parseManagedFormulaReferenceGroup(group);
+          if (!parsed) return undefined;
+          referenceGroups.push(parsed);
+        }
+      }
+      sources.push({
+        name: source.name,
+        type: "formula",
+        columns,
+        rows,
+        ...(referenceGroups.length > 0 ? { referenceGroups } : {}),
+      });
       continue;
     }
     if (
@@ -125,7 +141,7 @@ function parseManagedFormulaColumn(value: unknown): ManagedFormulaColumn | undef
   if (
     typeof value !== "object" ||
     value === null ||
-    !hasOnlyKeys(value, ["id", "name", "constraint", "hidden", "reference"]) ||
+    !hasOnlyKeys(value, ["id", "name", "constraint", "identity"]) ||
     !("id" in value) ||
     typeof value.id !== "string" ||
     !("name" in value) ||
@@ -135,31 +151,54 @@ function parseManagedFormulaColumn(value: unknown): ManagedFormulaColumn | undef
   ) {
     return undefined;
   }
-  const hidden = "hidden" in value ? value.hidden : undefined;
-  if (hidden !== undefined && typeof hidden !== "boolean") return undefined;
-  let reference: ManagedFormulaColumn["reference"];
-  if ("reference" in value) {
-    const candidate = value.reference;
-    if (
-      typeof candidate !== "object" ||
-      candidate === null ||
-      !hasOnlyKeys(candidate, ["source", "columnId"]) ||
-      !("source" in candidate) ||
-      typeof candidate.source !== "string" ||
-      !("columnId" in candidate) ||
-      typeof candidate.columnId !== "string"
-    ) {
-      return undefined;
-    }
-    reference = { source: candidate.source, columnId: candidate.columnId };
-  }
+  const identity = "identity" in value ? value.identity : undefined;
+  if (identity !== undefined && typeof identity !== "boolean") return undefined;
   return {
     id: value.id,
     name: value.name,
     constraint: value.constraint,
-    ...(hidden === true ? { hidden: true } : {}),
-    ...(reference ? { reference } : {}),
+    ...(identity === true ? { identity: true } : {}),
   };
+}
+
+function parseManagedFormulaReferenceGroup(
+  value: unknown,
+): ManagedFormulaReferenceGroup | undefined {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !hasOnlyKeys(value, ["id", "source", "rowIds", "columns"]) ||
+    !("id" in value) ||
+    typeof value.id !== "string" ||
+    !("source" in value) ||
+    typeof value.source !== "string" ||
+    !("rowIds" in value) ||
+    !Array.isArray(value.rowIds) ||
+    !value.rowIds.every((row) => typeof row === "string") ||
+    !("columns" in value) ||
+    !Array.isArray(value.columns)
+  ) {
+    return undefined;
+  }
+  const columns: ManagedFormulaReferenceGroup["columns"] = [];
+  for (const mapping of value.columns) {
+    if (
+      typeof mapping !== "object" ||
+      mapping === null ||
+      !hasOnlyKeys(mapping, ["columnId", "targetColumnId"]) ||
+      !("columnId" in mapping) ||
+      typeof mapping.columnId !== "string" ||
+      !("targetColumnId" in mapping) ||
+      typeof mapping.targetColumnId !== "string"
+    ) {
+      return undefined;
+    }
+    columns.push({
+      columnId: mapping.columnId,
+      targetColumnId: mapping.targetColumnId,
+    });
+  }
+  return { id: value.id, source: value.source, rowIds: [...value.rowIds], columns };
 }
 
 function parseManagedFormulaRow(value: unknown): ManagedFormulaRow | undefined {

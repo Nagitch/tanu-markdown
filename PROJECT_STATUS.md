@@ -15,10 +15,10 @@ a functional custom editor backed exclusively by that bridge.
 | --- | --- |
 | `tmd-data` | Defines transport-neutral, serde-compatible scalar and ordered-table values shared by data-source adapters and computation engines |
 | `tmd-formula` | Implements the bounded Formula parser, opaque program representation, dependency-aware evaluator, built-in functions, caller-supplied table limits and reference resolution, and structured diagnostics without depending on TMD or SQLite |
-| `tmd-core` | Implements the document model, structured validation, safe attachment handling, atomic writes, SQLite import/export/migration, managed Formula table evaluation, constraints, hidden relationship storage and cross-table `REF`, legacy query/computed Formula evaluation, explicit transactional keyed table edits, sandboxed Rhai-to-table transformations, legacy SQLite-source compatibility, ZIP I/O, and optional C ABI functions |
+| `tmd-core` | Implements the document model, structured validation, safe attachment handling, atomic writes, SQLite import/export/migration, managed Formula table evaluation, constraints, visible identities, direct cross-table `REF`, reference-group validation, legacy hidden relationships and query/computed Formula evaluation, explicit transactional keyed table edits, sandboxed Rhai-to-table transformations, legacy SQLite-source compatibility, ZIP I/O, and optional C ABI functions |
 | `tmd-cli` | Installs `tmd`; implements document create/inspect/update/publish/validate, attachment lifecycle including bounded UTF-8 reads and draft overrides, staged SQLite cell edits, shared safe preview/HTML rendering, typed table-source evaluation with edit metadata, dynamic `scalar`/`table` views, and embedded database lifecycle/query commands |
 | `tmd-core-ffi` | Builds a `cdylib` wrapper and retains the exported `tmd-core` FFI symbols |
-| `tmd-vscode` | Implements a CSP-restricted static SvelteKit Web UI with a RevoGrid managed Formula editor, 3-by-3 Any table creation, progressive column/cell constraints, per-cell formulas and type presence, arbitrary row/column insertion and duplication, range extraction, value-preserving normalization with generated `REF` formulas, double-click column auto-sizing, editable Formula tables in safe preview, read-only Rhai output, a sticky operation status bar, and a shared local document session whose edits participate in undo, preview, save, revert, and backup |
+| `tmd-vscode` | Implements a CSP-restricted static SvelteKit Web UI with a RevoGrid managed Formula editor, 3-by-3 Any table creation, progressive column/cell constraints, per-cell formulas and type presence, arbitrary row/column insertion and duplication, range extraction, value-preserving normalization with visible target IDs, direct `REF`, protected row pickers and releasable reference groups, double-click column auto-sizing, editable Formula tables in safe preview, read-only Rhai output, a sticky operation status bar, and a shared local document session whose edits participate in undo, preview, save, revert, and backup |
 | `tmd-sample` | Contains a `.tmd` sample demonstrating managed Any/typed tables, per-cell Formula results, literal normalization presence, and a read-only Rhai view |
 
 ## Verified behavior
@@ -37,7 +37,8 @@ The `tmd-core` test suite covers:
 - `.tmd` round trips;
 - embedded SQLite export, import, reset, and migration;
 - managed Formula literal and dependency evaluation, progressive constraints,
-  stable relationships, hidden relationship storage, cross-table `REF`,
+  visible identities, legacy hidden relationship storage, direct cross-table
+  `REF`, reference-group validation,
   managed-Formula-to-Rhai input, legacy query/computed
   Formula behavior, transactional keyed SQLite cell edits, strict table-output
   validation, and dynamic-view validation;
@@ -46,11 +47,12 @@ The `tmd-core` test suite covers:
 
 CLI integration tests exercise the full `.tmd` lifecycle, including draft Rhai
 attachment and Formula program evaluation. Extension tests cover its process
-boundary, Schema v7 message validation, edit metadata, Formula copy translation,
+boundary, Schema v8 message validation, edit metadata, Formula copy translation,
 script diagnostics, document-state integration, and safe preview. A cross-stack
 E2E loads the reference sample, normalizes `contacts`, passes the generated
-definitions through the editor-host boundary, and verifies the real CLI returns
-the same displayed values.
+definitions through the editor-host boundary, verifies the real CLI returns the
+same displayed values, changes a protected selection, and releases it for a
+free-form Formula edit.
 Repository CI additionally checks formatting, Clippy, rustdoc, samples,
 extension tests, generic VSIX
 packaging, static Linux CLI verification, and native CLI staging for
@@ -73,7 +75,8 @@ platform-specific VSIX artifacts.
 - Managed Formula editing supports arbitrary row and column insertion,
   duplication, per-cell formulas, progressive types, safe-preview editing,
   range extraction, and conservative literal normalization that preserves
-  displayed values through generated references. Legacy
+  displayed values through generated direct references and releasable protected
+  groups. Legacy
   query-backed modes retain their previous write-back limitations. Multi-sheet
   formulas, automatic relational joins beyond explicit `REF`, database row insertion, richer display
   formatting, and collaborative conflict handling remain outside this slice.

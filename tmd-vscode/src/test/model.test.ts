@@ -127,7 +127,7 @@ test("undoing the first edit restores the initially persisted state", () => {
   assert.equal(model.isCurrentRevisionPersisted, true);
 });
 
-test("legacy SQLite source edits migrate to Formula schema 7 and support undo", () => {
+test("legacy SQLite source edits migrate to Formula schema 8 and support undo", () => {
   const document = inspection("initial", "Initial", 0);
   document.manifest.extras = {
     application: { retained: true },
@@ -150,7 +150,7 @@ test("legacy SQLite source edits migrate to Formula schema 7 and support undo", 
   assert.deepEqual(model.inspection.manifest.extras, {
     application: { retained: true },
     tmd_data_sources: {
-      schema_version: 7,
+      schema_version: 8,
       sources: {
         renamed: { type: "formula", query: "SELECT 2" },
       },
@@ -191,7 +191,7 @@ test("staged database cell edits participate in dirty state and clear on save", 
   assert.equal(model.isCurrentRevisionPersisted, true);
 });
 
-test("Rhai source edits migrate to schema 7 and preserve ordered output columns", () => {
+test("Rhai source edits migrate to schema 8 and preserve ordered output columns", () => {
   const document = inspection("{{tmd-table:summary}}", "Summary", 0);
   document.manifest.extras = {
     tmd_data_sources: {
@@ -219,7 +219,7 @@ test("Rhai source edits migrate to schema 7 and preserve ordered output columns"
   assert.equal(model.isCurrentRevisionPersisted, false);
   assert.deepEqual(model.inspection.manifest.extras, {
     tmd_data_sources: {
-      schema_version: 7,
+      schema_version: 8,
       sources: {
         sales: { type: "formula", query: "SELECT category, amount FROM sales" },
         summary: {

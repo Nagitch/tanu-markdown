@@ -7,6 +7,7 @@ import type {
   ManagedCellConstraint,
   ManagedFormulaCell,
   ManagedFormulaDataSource,
+  ManagedFormulaReferenceGroup,
   QueryFormulaDataSource,
   RhaiDataSource,
   RhaiDataSourceInput,
@@ -20,7 +21,8 @@ const FORMULA_REGISTRY_SCHEMA_VERSION = 3;
 const EDITABLE_REGISTRY_SCHEMA_VERSION = 4;
 const QUERY_REGISTRY_SCHEMA_VERSION = 5;
 const MANAGED_FORMULA_REGISTRY_SCHEMA_VERSION = 6;
-const CURRENT_REGISTRY_SCHEMA_VERSION = 7;
+const LEGACY_REFERENCE_REGISTRY_SCHEMA_VERSION = 7;
+const CURRENT_REGISTRY_SCHEMA_VERSION = 8;
 const MAX_SOURCE_NAME_BYTES = 128;
 const MAX_QUERY_BYTES = 64 * 1024;
 const MAX_FORMULA_PROGRAM_BYTES = 256 * 1024;
@@ -81,10 +83,11 @@ export function inspectDataSourceRegistry(extras: JsonValue): DataSourceRegistry
     schemaVersion !== EDITABLE_REGISTRY_SCHEMA_VERSION &&
     schemaVersion !== QUERY_REGISTRY_SCHEMA_VERSION &&
     schemaVersion !== MANAGED_FORMULA_REGISTRY_SCHEMA_VERSION &&
+    schemaVersion !== LEGACY_REFERENCE_REGISTRY_SCHEMA_VERSION &&
     schemaVersion !== CURRENT_REGISTRY_SCHEMA_VERSION
   ) {
     return invalidRegistry(
-      `Data-source schema_version ${String(schemaVersion)} is not editable; expected 1 through 7.`,
+      `Data-source schema_version ${String(schemaVersion)} is not editable; expected 1 through 8.`,
       rawRegistry,
     );
   }
@@ -101,6 +104,7 @@ export function inspectDataSourceRegistry(extras: JsonValue): DataSourceRegistry
       if (
         schemaVersion === QUERY_REGISTRY_SCHEMA_VERSION ||
         schemaVersion === MANAGED_FORMULA_REGISTRY_SCHEMA_VERSION ||
+        schemaVersion === LEGACY_REFERENCE_REGISTRY_SCHEMA_VERSION ||
         schemaVersion === CURRENT_REGISTRY_SCHEMA_VERSION
       ) {
         return invalidRegistry(
@@ -131,10 +135,11 @@ export function inspectDataSourceRegistry(extras: JsonValue): DataSourceRegistry
         schemaVersion !== EDITABLE_REGISTRY_SCHEMA_VERSION &&
         schemaVersion !== QUERY_REGISTRY_SCHEMA_VERSION &&
         schemaVersion !== MANAGED_FORMULA_REGISTRY_SCHEMA_VERSION &&
+        schemaVersion !== LEGACY_REFERENCE_REGISTRY_SCHEMA_VERSION &&
         schemaVersion !== CURRENT_REGISTRY_SCHEMA_VERSION
       ) {
         return invalidRegistry(
-          `Rhai data source \`${name}\` requires schema_version 2 through 7.`,
+          `Rhai data source \`${name}\` requires schema_version 2 through 8.`,
           rawRegistry,
         );
       }
@@ -152,17 +157,21 @@ export function inspectDataSourceRegistry(extras: JsonValue): DataSourceRegistry
       if ("columns" in definition || "rows" in definition) {
         if (
           schemaVersion !== MANAGED_FORMULA_REGISTRY_SCHEMA_VERSION &&
+          schemaVersion !== LEGACY_REFERENCE_REGISTRY_SCHEMA_VERSION &&
           schemaVersion !== CURRENT_REGISTRY_SCHEMA_VERSION
         ) {
           return invalidRegistry(
-            `Managed Formula source \`${name}\` requires schema_version 6 or 7.`,
+            `Managed Formula source \`${name}\` requires schema_version 6 through 8.`,
             rawRegistry,
           );
         }
         const source = parseManagedFormulaDataSource(
           name,
           definition,
-          schemaVersion >= CURRENT_REGISTRY_SCHEMA_VERSION,
+          schemaVersion === LEGACY_REFERENCE_REGISTRY_SCHEMA_VERSION,
+          schemaVersion === MANAGED_FORMULA_REGISTRY_SCHEMA_VERSION ||
+            schemaVersion === LEGACY_REFERENCE_REGISTRY_SCHEMA_VERSION,
+          schemaVersion === CURRENT_REGISTRY_SCHEMA_VERSION,
         );
         if (!source) {
           return invalidRegistry(
@@ -177,10 +186,11 @@ export function inspectDataSourceRegistry(extras: JsonValue): DataSourceRegistry
         if (
           schemaVersion !== QUERY_REGISTRY_SCHEMA_VERSION &&
           schemaVersion !== MANAGED_FORMULA_REGISTRY_SCHEMA_VERSION &&
+          schemaVersion !== LEGACY_REFERENCE_REGISTRY_SCHEMA_VERSION &&
           schemaVersion !== CURRENT_REGISTRY_SCHEMA_VERSION
         ) {
           return invalidRegistry(
-            `Formula query source \`${name}\` requires schema_version 5, 6 or 7.`,
+            `Formula query source \`${name}\` requires schema_version 5 through 8.`,
             rawRegistry,
           );
         }
@@ -199,10 +209,11 @@ export function inspectDataSourceRegistry(extras: JsonValue): DataSourceRegistry
         schemaVersion !== EDITABLE_REGISTRY_SCHEMA_VERSION &&
         schemaVersion !== QUERY_REGISTRY_SCHEMA_VERSION &&
         schemaVersion !== MANAGED_FORMULA_REGISTRY_SCHEMA_VERSION &&
+        schemaVersion !== LEGACY_REFERENCE_REGISTRY_SCHEMA_VERSION &&
         schemaVersion !== CURRENT_REGISTRY_SCHEMA_VERSION
       ) {
         return invalidRegistry(
-          `Computed Formula data source \`${name}\` requires schema_version 3 through 7.`,
+          `Computed Formula data source \`${name}\` requires schema_version 3 through 8.`,
           rawRegistry,
         );
       }
@@ -222,12 +233,427 @@ export function inspectDataSourceRegistry(extras: JsonValue): DataSourceRegistry
     );
   }
   sources.sort((left, right) => left.name.localeCompare(right.name));
+  if (
+    schemaVersion === MANAGED_FORMULA_REGISTRY_SCHEMA_VERSION ||
+    schemaVersion === LEGACY_REFERENCE_REGISTRY_SCHEMA_VERSION
+  ) {
+    try {
+      migrateLegacyManagedReferences(sources);
+    } catch (error) {
+      return invalidRegistry(
+        error instanceof Error ? error.message : String(error),
+        rawRegistry,
+      );
+    }
+  }
   try {
     validateDataSources(sources);
   } catch (error) {
     return invalidRegistry(error instanceof Error ? error.message : String(error), rawRegistry);
   }
   return { editable: true, schemaVersion, sources };
+}
+
+function migrateLegacyManagedReferences(sources: DataSource[]): void {
+  const managed = sources.filter(isManagedFormulaDataSource);
+  const definitions = new Map(managed.map((source) => [source.name, source]));
+  const migratedIdentities = new Map<string, ReadonlyMap<string, string>>();
+  for (const source of managed) {
+    for (const column of source.columns) {
+      if (!column.reference) continue;
+      const target = definitions.get(column.reference.source);
+      const identity = target?.columns.find(
+        (candidate) => candidate.id === column.reference?.columnId,
+      );
+      if (!target || !identity) {
+        throw new Error(`Legacy reference in \`${source.name}\` has no valid target identity column.`);
+      }
+      identity.identity = true;
+      delete identity.hidden;
+      const migrationKey = `${target.name}\u0000${identity.id}`;
+      if (!migratedIdentities.has(migrationKey)) {
+        migratedIdentities.set(
+          migrationKey,
+          migrateLegacyIdentityColumn(target, identity.id),
+        );
+      }
+    }
+  }
+
+  for (const source of managed) {
+    const legacy = source.columns
+      .map((column, index) => ({ column, index }))
+      .filter(({ column }) => column.reference !== undefined)
+      .reverse();
+    for (const { column: keyColumn, index: keyIndex } of legacy) {
+      const reference = keyColumn.reference;
+      const target = reference ? definitions.get(reference.source) : undefined;
+      if (!reference || !target) continue;
+      const identities = migratedIdentities.get(
+        `${target.name}\u0000${reference.columnId}`,
+      );
+      if (!identities) {
+        throw new Error(
+          `Legacy reference column \`${keyColumn.name}\` in \`${source.name}\` has no migrated target identities.`,
+        );
+      }
+      const rowIdentities = new Map<string, string | null>();
+      for (const row of source.rows) {
+        const cell = row.cells[keyIndex];
+        if (cell?.content.kind !== "literal") {
+          throw new Error(
+            `Legacy reference column \`${keyColumn.name}\` in \`${source.name}\` requires literal identities for automatic migration.`,
+          );
+        }
+        const identity = cell.content.value.type === "null"
+          ? null
+          : identities.get(legacyIdentityKey(cell.content.value));
+        if (identity === undefined) {
+          throw new Error(
+            `Legacy reference column \`${keyColumn.name}\` in \`${source.name}\` contains an identity that is missing from \`${target.name}\`.`,
+          );
+        }
+        rowIdentities.set(row.id, identity);
+        for (const candidate of row.cells) {
+          if (candidate.content.kind !== "formula") continue;
+          const directTarget = identity === null
+            ? parseLegacyDirectRefTarget(
+                candidate.content.expression,
+                keyColumn.name,
+              )
+            : undefined;
+          candidate.content.expression = rewriteLegacyRefExpression(
+            candidate.content.expression,
+            keyColumn.name,
+            reference.source,
+            identity === null ? "NULL" : JSON.stringify(identity),
+          );
+          if (directTarget !== undefined) {
+            candidate.content = {
+              kind: "literal",
+              value: { type: "null" },
+            };
+          }
+        }
+      }
+      const mappings: ManagedFormulaReferenceGroup["columns"] = [];
+      for (const sourceColumn of source.columns) {
+        if (sourceColumn.id === keyColumn.id) continue;
+        const sourceIndex = source.columns.findIndex(
+          (candidate) => candidate.id === sourceColumn.id,
+        );
+        let targetColumnId: string | undefined;
+        let direct = true;
+        for (const row of source.rows) {
+          const content = row.cells[sourceIndex]?.content;
+          if (
+            rowIdentities.get(row.id) === null &&
+            content?.kind === "literal" &&
+            content.value.type === "null"
+          ) {
+            continue;
+          }
+          const parsed = content?.kind === "formula"
+            ? parseDirectRefLiteral(content.expression)
+            : undefined;
+          if (
+            !parsed ||
+            parsed.source !== reference.source ||
+            parsed.identity !== rowIdentities.get(row.id)
+          ) {
+            direct = false;
+            break;
+          }
+          const targetColumn = target.columns.find(
+            (candidate) => candidate.name === parsed.targetColumn,
+          );
+          if (!targetColumn || (targetColumnId && targetColumnId !== targetColumn.id)) {
+            direct = false;
+            break;
+          }
+          targetColumnId = targetColumn.id;
+        }
+        if (direct && targetColumnId) {
+          mappings.push({ columnId: sourceColumn.id, targetColumnId });
+        }
+      }
+      if (mappings.length > 0) {
+        const groups = source.referenceGroups ?? [];
+        groups.push({
+          id: nextReferenceGroupId(groups),
+          source: reference.source,
+          rowIds: source.rows.map((row) => row.id),
+          columns: mappings,
+        });
+        source.referenceGroups = groups;
+      }
+      const preserveKeyColumn = keyColumn.hidden && source.rows.some((row) =>
+        row.cells.some(
+          (cell) =>
+            cell.content.kind === "formula" &&
+            formulaRequiresLegacyColumn(
+              cell.content.expression,
+              keyColumn.name,
+              keyIndex,
+            ),
+        ),
+      );
+      if (keyColumn.hidden && !preserveKeyColumn) {
+        source.columns.splice(keyIndex, 1);
+        for (const row of source.rows) row.cells.splice(keyIndex, 1);
+      }
+    }
+    for (const column of source.columns) {
+      delete column.hidden;
+      delete column.reference;
+    }
+  }
+}
+
+function rewriteLegacyRefExpression(
+  expression: string,
+  referenceColumn: string,
+  targetSource: string,
+  identityExpression: string,
+): string {
+  const escaped = referenceColumn.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  const pattern = new RegExp(
+    `^REF\\s*\\(\\s*\\[@${escaped}\\]\\s*,\\s*(\"(?:\\\\.|[^\"\\\\])*\")\\s*\\)`,
+    "iu",
+  );
+  let result = "";
+  let index = 0;
+  let inString = false;
+  let escapedString = false;
+  while (index < expression.length) {
+    const character = expression[index] ?? "";
+    if (inString) {
+      result += character;
+      if (character === '"' && !escapedString) inString = false;
+      if (character === "\\" && !escapedString) escapedString = true;
+      else escapedString = false;
+      index += 1;
+      continue;
+    }
+    if (character === '"') {
+      inString = true;
+      result += character;
+      index += 1;
+      continue;
+    }
+    if (character === "/" && expression[index + 1] === "/") {
+      result += expression.slice(index);
+      break;
+    }
+    const match = pattern.exec(expression.slice(index));
+    if (match && !/[A-Za-z0-9_]/u.test(expression[index - 1] ?? "")) {
+      result += `REF(${JSON.stringify(targetSource)}, ${identityExpression}, ${match[1]})`;
+      index += match[0].length;
+      continue;
+    }
+    result += character;
+    index += 1;
+  }
+  return result;
+}
+
+function parseLegacyDirectRefTarget(
+  expression: string,
+  referenceColumn: string,
+): string | undefined {
+  const escaped = referenceColumn.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  const string = String.raw`"(?:\\.|[^"\\])*"`;
+  const match = new RegExp(
+    `^\\s*REF\\s*\\(\\s*\\[@${escaped}\\]\\s*,\\s*(${string})\\s*\\)\\s*$`,
+    "iu",
+  ).exec(expression);
+  if (!match) return undefined;
+  try {
+    const target: unknown = JSON.parse(match[1] ?? "");
+    return typeof target === "string" ? target : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function migrateLegacyIdentityColumn(
+  source: ManagedFormulaDataSource,
+  columnId: string,
+): ReadonlyMap<string, string> {
+  const columnIndex = source.columns.findIndex((column) => column.id === columnId);
+  const column = source.columns[columnIndex];
+  if (!column) return new Map();
+  const literals: DataTableCell[] = [];
+  const identities = new Map<string, string>();
+  const used = new Set<string>();
+  const seenKeys = new Set<string>();
+  for (const row of source.rows) {
+    const cell = row.cells[columnIndex];
+    if (!cell || cell.content.kind !== "literal") {
+      throw new Error(
+        `Legacy identity column \`${column.name}\` in \`${source.name}\` requires literal values for automatic migration.`,
+      );
+    }
+    literals.push(cell.content.value);
+    if (cell.content.value.type === "null") continue;
+    const key = legacyIdentityKey(cell.content.value);
+    if (seenKeys.has(key)) {
+      throw new Error(
+        `Legacy identity column \`${column.name}\` in \`${source.name}\` contains duplicate identities.`,
+      );
+    }
+    seenKeys.add(key);
+    if (cell.content.value.type !== "string") continue;
+    const identity = cell.content.value.value;
+    identities.set(key, identity);
+    used.add(identity);
+  }
+  let generated = 1;
+  for (const [rowIndex, row] of source.rows.entries()) {
+    const cell = row.cells[columnIndex];
+    const literal = literals[rowIndex];
+    if (!cell || cell.content.kind !== "literal" || !literal) continue;
+    let identity: string;
+    if (literal.type === "null") {
+      while (used.has(`${source.name}-${generated}`)) generated += 1;
+      identity = `${source.name}-${generated}`;
+      generated += 1;
+    } else {
+      const key = legacyIdentityKey(literal);
+      const existing = identities.get(key);
+      if (existing !== undefined) {
+        identity = existing;
+      } else {
+        const base = `${literal.type}:${legacyIdentityText(literal)}`;
+        identity = base;
+        let suffix = 2;
+        while (used.has(identity)) {
+          identity = `${base}-${suffix}`;
+          suffix += 1;
+        }
+        identities.set(key, identity);
+      }
+    }
+    used.add(identity);
+    cell.content = {
+      kind: "literal",
+      value: { type: "string", value: identity },
+    };
+    delete cell.constraint;
+  }
+  column.constraint = "text";
+  return identities;
+}
+
+function legacyIdentityText(value: Exclude<DataTableCell, { type: "null" }>): string {
+  switch (value.type) {
+    case "string":
+    case "integer":
+      return value.value;
+    case "real":
+    case "boolean":
+      return String(value.value);
+  }
+}
+
+function legacyIdentityKey(value: Exclude<DataTableCell, { type: "null" }>): string {
+  return JSON.stringify(value);
+}
+
+function formulaRequiresLegacyColumn(
+  expression: string,
+  columnName: string,
+  removedColumn: number,
+): boolean {
+  let index = 0;
+  let inString = false;
+  let escaped = false;
+  while (index < expression.length) {
+    const character = expression[index] ?? "";
+    if (inString) {
+      if (character === '"' && !escaped) inString = false;
+      if (character === "\\" && !escaped) escaped = true;
+      else escaped = false;
+      index += 1;
+      continue;
+    }
+    if (character === '"') {
+      inString = true;
+      index += 1;
+      continue;
+    }
+    if (character === "/" && expression[index + 1] === "/") return false;
+    if (character === "[") {
+      const end = expression.indexOf("]", index + 1);
+      if (end < 0) return false;
+      const referencedName = expression
+        .slice(index + 1, end)
+        .replace(/^@/u, "");
+      if (referencedName === columnName) return true;
+      index = end + 1;
+      continue;
+    }
+    const header = /^HEADER\s*\(\s*([A-Za-z]+)\s*\)/iu.exec(
+      expression.slice(index),
+    );
+    if (
+      header &&
+      !/[A-Za-z0-9_]/u.test(expression[index - 1] ?? "") &&
+      spreadsheetColumnIndex(header[1] ?? "") >= removedColumn
+    ) {
+      return true;
+    }
+    const cell = /^(?:\$?)([A-Za-z]+)(?:\$?)([1-9][0-9]*)/u.exec(
+      expression.slice(index),
+    );
+    if (
+      cell &&
+      !/[A-Za-z0-9_]/u.test(expression[index - 1] ?? "") &&
+      !/[A-Za-z0-9_]/u.test(expression[index + cell[0].length] ?? "") &&
+      spreadsheetColumnIndex(cell[1] ?? "") >= removedColumn
+    ) {
+      return true;
+    }
+    index += 1;
+  }
+  return false;
+}
+
+function spreadsheetColumnIndex(label: string): number {
+  let value = 0;
+  for (const character of label.toUpperCase()) {
+    value = value * 26 + character.charCodeAt(0) - 64;
+  }
+  return value - 1;
+}
+
+function parseDirectRefLiteral(expression: string):
+  | { source: string; identity: string; targetColumn: string }
+  | undefined {
+  const string = String.raw`"(?:\\.|[^"\\])*"`;
+  const match = new RegExp(
+    `^\\s*REF\\s*\\(\\s*(${string})\\s*,\\s*(${string})\\s*,\\s*(${string})\\s*\\)\\s*$`,
+    "iu",
+  ).exec(expression);
+  if (!match) return undefined;
+  try {
+    return {
+      source: JSON.parse(match[1] ?? ""),
+      identity: JSON.parse(match[2] ?? ""),
+      targetColumn: JSON.parse(match[3] ?? ""),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function nextReferenceGroupId(
+  groups: readonly ManagedFormulaReferenceGroup[],
+): string {
+  const used = new Set(groups.map((group) => group.id));
+  let number = 1;
+  while (used.has(`ref${number}`)) number += 1;
+  return `ref${number}`;
 }
 
 export function extrasWithDataSources(
@@ -442,11 +868,18 @@ function parseManagedFormulaDataSource(
   name: string,
   definition: { [key: string]: JsonValue },
   allowHiddenColumns: boolean,
+  allowLegacyReferences: boolean,
+  allowReferenceGroups: boolean,
 ): ManagedFormulaDataSource | undefined {
   if (
-    hasUnknownKeys(definition, new Set(["type", "columns", "rows"])) ||
+    hasUnknownKeys(
+      definition,
+      new Set(["type", "columns", "rows", "reference_groups"]),
+    ) ||
     !Array.isArray(definition.columns) ||
-    !Array.isArray(definition.rows)
+    !Array.isArray(definition.rows) ||
+    (definition.reference_groups !== undefined &&
+      (!allowReferenceGroups || !Array.isArray(definition.reference_groups)))
   ) {
     return undefined;
   }
@@ -456,10 +889,19 @@ function parseManagedFormulaDataSource(
       !isObject(value) ||
       hasUnknownKeys(
         value,
-        new Set(["id", "name", "constraint", "hidden", "reference"]),
+        new Set([
+          "id",
+          "name",
+          "constraint",
+          "identity",
+          "hidden",
+          "reference",
+        ]),
       ) ||
       typeof value.id !== "string" ||
       typeof value.name !== "string" ||
+      (value.identity !== undefined &&
+        (!allowReferenceGroups || typeof value.identity !== "boolean")) ||
       (value.hidden !== undefined &&
         (!allowHiddenColumns || typeof value.hidden !== "boolean")) ||
       !isManagedCellConstraint(value.constraint)
@@ -468,6 +910,7 @@ function parseManagedFormulaDataSource(
     }
     let reference: ManagedFormulaDataSource["columns"][number]["reference"];
     if (value.reference !== undefined) {
+      if (!allowLegacyReferences) return undefined;
       if (
         !isObject(value.reference) ||
         hasUnknownKeys(value.reference, new Set(["source", "column_id"])) ||
@@ -485,6 +928,7 @@ function parseManagedFormulaDataSource(
       id: value.id,
       name: value.name,
       constraint: value.constraint,
+      ...(value.identity === true ? { identity: true } : {}),
       ...(value.hidden === true ? { hidden: true } : {}),
       ...(reference ? { reference } : {}),
     });
@@ -507,7 +951,56 @@ function parseManagedFormulaDataSource(
     }
     rows.push({ id: value.id, cells });
   }
-  return { name, type: "formula", columns, rows };
+  const referenceGroups: ManagedFormulaReferenceGroup[] = [];
+  for (const value of definition.reference_groups ?? []) {
+    const group = parseManagedFormulaReferenceGroup(value);
+    if (!group) return undefined;
+    referenceGroups.push(group);
+  }
+  return {
+    name,
+    type: "formula",
+    columns,
+    rows,
+    ...(referenceGroups.length > 0 ? { referenceGroups } : {}),
+  };
+}
+
+function parseManagedFormulaReferenceGroup(
+  value: JsonValue,
+): ManagedFormulaReferenceGroup | undefined {
+  if (
+    !isObject(value) ||
+    hasUnknownKeys(value, new Set(["id", "source", "rows", "columns"])) ||
+    typeof value.id !== "string" ||
+    typeof value.source !== "string" ||
+    !Array.isArray(value.rows) ||
+    !value.rows.every((row) => typeof row === "string") ||
+    !Array.isArray(value.columns)
+  ) {
+    return undefined;
+  }
+  const columns: ManagedFormulaReferenceGroup["columns"] = [];
+  for (const mapping of value.columns) {
+    if (
+      !isObject(mapping) ||
+      hasUnknownKeys(mapping, new Set(["column_id", "target_column_id"])) ||
+      typeof mapping.column_id !== "string" ||
+      typeof mapping.target_column_id !== "string"
+    ) {
+      return undefined;
+    }
+    columns.push({
+      columnId: mapping.column_id,
+      targetColumnId: mapping.target_column_id,
+    });
+  }
+  return {
+    id: value.id,
+    source: value.source,
+    rowIds: [...value.rows],
+    columns,
+  };
 }
 
 function parseManagedFormulaCell(value: JsonValue): ManagedFormulaCell | undefined {
@@ -612,20 +1105,25 @@ function serializeDataSource(source: DataSource): JsonValue {
         id: column.id,
         name: column.name,
         constraint: column.constraint,
-        ...(column.hidden ? { hidden: true } : {}),
-        ...(column.reference
-          ? {
-              reference: {
-                source: column.reference.source,
-                column_id: column.reference.columnId,
-              },
-            }
-          : {}),
+        ...(column.identity ? { identity: true } : {}),
       })),
       rows: source.rows.map((row) => ({
         id: row.id,
         cells: row.cells.map(serializeManagedFormulaCell),
       })),
+      ...(source.referenceGroups?.length
+        ? {
+            reference_groups: source.referenceGroups.map((group) => ({
+              id: group.id,
+              source: group.source,
+              rows: [...group.rowIds],
+              columns: group.columns.map((mapping) => ({
+                column_id: mapping.columnId,
+                target_column_id: mapping.targetColumnId,
+              })),
+            })),
+          }
+        : {}),
     };
   }
   if (isComputedFormulaDataSource(source)) {
@@ -681,19 +1179,14 @@ function validateManagedFormulaDataSource(
   }
   const columnIds = new Set<string>();
   const columnNames = new Set<string>();
-  let hiddenColumnsStarted = false;
-  let visibleColumns = 0;
+  let identityColumns = 0;
   for (const column of source.columns) {
-    if (column.hidden) {
-      hiddenColumnsStarted = true;
-    } else {
-      if (hiddenColumnsStarted) {
-        throw new Error(
-          `Managed Formula source \`${source.name}\` hidden columns must form a trailing suffix.`,
-        );
-      }
-      visibleColumns += 1;
+    if (column.hidden || column.reference) {
+      throw new Error(
+        `Managed Formula source \`${source.name}\` uses a removed hidden-column reference definition.`,
+      );
     }
+    if (column.identity) identityColumns += 1;
     validateStableId(column.id, `Managed Formula source \`${source.name}\` column`);
     validateColumnName(column.name, source.name);
     if (columnIds.has(column.id) || columnNames.has(column.name)) {
@@ -701,16 +1194,10 @@ function validateManagedFormulaDataSource(
     }
     columnIds.add(column.id);
     columnNames.add(column.name);
-    if (column.reference) {
-      const target = definitions.get(column.reference.source);
-      if (!isManagedFormulaDataSource(target) || !target.columns.some((candidate) => candidate.id === column.reference?.columnId)) {
-        throw new Error(`Managed Formula source \`${source.name}\` has an invalid column reference.`);
-      }
-    }
   }
-  if (visibleColumns === 0) {
+  if (identityColumns > 1) {
     throw new Error(
-      `Managed Formula source \`${source.name}\` requires at least one visible column.`,
+      `Managed Formula source \`${source.name}\` supports at most one identity column.`,
     );
   }
   const rowIds = new Set<string>();
@@ -739,6 +1226,126 @@ function validateManagedFormulaDataSource(
   }
   if (formulaProgramBytes > MAX_FORMULA_PROGRAM_BYTES) {
     throw new Error(`Managed Formula source \`${source.name}\` program exceeds ${MAX_FORMULA_PROGRAM_BYTES} bytes.`);
+  }
+  validateManagedReferenceGroups(source, definitions);
+}
+
+function validateManagedReferenceGroups(
+  source: ManagedFormulaDataSource,
+  definitions: ReadonlyMap<string, DataSource>,
+): void {
+  const groupIds = new Set<string>();
+  const occupied = new Set<string>();
+  for (const group of source.referenceGroups ?? []) {
+    validateStableId(
+      group.id,
+      `Managed Formula source \`${source.name}\` reference group`,
+    );
+    if (groupIds.has(group.id)) {
+      throw new Error(
+        `Managed Formula source \`${source.name}\` repeats reference group id \`${group.id}\`.`,
+      );
+    }
+    groupIds.add(group.id);
+    const target = definitions.get(group.source);
+    if (
+      !isManagedFormulaDataSource(target) ||
+      target.columns.filter((column) => column.identity).length !== 1
+    ) {
+      throw new Error(
+        `Reference group \`${group.id}\` in \`${source.name}\` requires a managed Formula target with exactly one identity column.`,
+      );
+    }
+    if (group.rowIds.length === 0 || group.columns.length === 0) {
+      throw new Error(
+        `Reference group \`${group.id}\` in \`${source.name}\` cannot be empty.`,
+      );
+    }
+    const rowIds = new Set(group.rowIds);
+    if (
+      rowIds.size !== group.rowIds.length ||
+      group.rowIds.some(
+        (id) => !source.rows.some((candidate) => candidate.id === id),
+      )
+    ) {
+      throw new Error(
+        `Reference group \`${group.id}\` in \`${source.name}\` has invalid rows.`,
+      );
+    }
+    const mapped = new Set<string>();
+    const resolvedMappings: Array<{
+      columnIndex: number;
+      columnId: string;
+      targetColumnName: string;
+    }> = [];
+    for (const mapping of group.columns) {
+      const columnIndex = source.columns.findIndex(
+        (column) => column.id === mapping.columnId,
+      );
+      const targetColumn = target.columns.find(
+        (column) => column.id === mapping.targetColumnId,
+      );
+      if (
+        mapped.has(mapping.columnId) ||
+        columnIndex < 0 ||
+        !targetColumn
+      ) {
+        throw new Error(
+          `Reference group \`${group.id}\` in \`${source.name}\` has invalid column mappings.`,
+        );
+      }
+      mapped.add(mapping.columnId);
+      resolvedMappings.push({
+        columnIndex,
+        columnId: mapping.columnId,
+        targetColumnName: targetColumn.name,
+      });
+      for (const rowId of group.rowIds) {
+        const key = `${rowId}\u0000${mapping.columnId}`;
+        if (occupied.has(key)) {
+          throw new Error(
+            `Managed Formula source \`${source.name}\` has overlapping reference groups.`,
+          );
+        }
+        occupied.add(key);
+      }
+    }
+    for (const rowId of group.rowIds) {
+      const row = source.rows.find((candidate) => candidate.id === rowId);
+      if (!row) continue;
+      let selectedIdentity: string | null | undefined;
+      let hasSelection = false;
+      for (const mapping of resolvedMappings) {
+        const content = row.cells[mapping.columnIndex]?.content;
+        let identity: string | null;
+        if (content?.kind === "literal" && content.value.type === "null") {
+          identity = null;
+        } else if (content?.kind === "formula") {
+          const reference = parseDirectRefLiteral(content.expression);
+          if (
+            !reference ||
+            reference.source !== group.source ||
+            reference.targetColumn !== mapping.targetColumnName
+          ) {
+            throw new Error(
+              `Reference group \`${group.id}\` in \`${source.name}\` row \`${rowId}\` column \`${mapping.columnId}\` requires its mapped direct three-argument REF or NULL.`,
+            );
+          }
+          identity = reference.identity;
+        } else {
+          throw new Error(
+            `Reference group \`${group.id}\` in \`${source.name}\` row \`${rowId}\` column \`${mapping.columnId}\` requires a direct three-argument REF or NULL.`,
+          );
+        }
+        if (hasSelection && selectedIdentity !== identity) {
+          throw new Error(
+            `Reference group \`${group.id}\` in \`${source.name}\` row \`${rowId}\` mixes target identities or NULL cells.`,
+          );
+        }
+        selectedIdentity = identity;
+        hasSelection = true;
+      }
+    }
   }
 }
 

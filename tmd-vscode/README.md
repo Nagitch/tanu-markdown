@@ -51,10 +51,13 @@ document dirty state, save, backup, undo, and redo lifecycle as Markdown and
 source-definition edits. Table and preview evaluation receive the draft as a
 bounded attachment override, so sandbox errors are reported without first
 writing the document. Managed Formula cells are inline source definitions;
-current schema version 7 also stores normalization keys in trailing hidden
-columns and resolves generated cross-table `REF` formulas. These edits use the
+current schema version 8 stores visible target identities, direct cross-table
+`REF` formulas, and unlockable protected reference groups. Linked cells use a
+row picker and subdued lock outline; releasing a group preserves its formulas
+for free-form editing. Schema version 7 hidden relationships remain readable.
+These edits use the
 same dirty, save, backup, undo, and redo lifecycle. The Sources tab creates only
-Formula and Rhai source types; schema versions 1-6 and
+Formula and Rhai source types; schema versions 1-7 and
 legacy SQLite/query/computed modes remain readable for compatibility. Rhai
 table output is always read-only. An older configured external CLI falls back
 to the local safe Markdown renderer.
@@ -126,9 +129,10 @@ npm run pack --prefix tmd-vscode
 ```
 
 The sample E2E test loads `tmd-sample/sample.tmd`, normalizes `contacts`, sends
-the resulting Schema v7 definitions through the extension-host message parser,
+the resulting Schema v8 definitions through the extension-host message parser,
 and evaluates the draft with the real CLI to ensure every displayed value is
-preserved.
+preserved. It also selects a different protected reference and releases the
+group for a free-form Formula edit.
 
 The generic development VSIX does not contain a native CLI. CI builds the CLI
 on matching Linux, macOS, and Windows x64/arm64 runners, stages it under

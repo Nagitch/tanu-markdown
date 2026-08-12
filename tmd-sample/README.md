@@ -11,7 +11,9 @@ tab to try the following sources:
   values produce a normalization candidate. The editor outlines that range in
   blue and can split it into a related managed table. After applying the
   suggestion, `city` and `country` keep displaying their original values
-  through generated `REF` formulas; generated relationship keys stay internal.
+  through generated direct `REF` formulas. The extracted table exposes its
+  stable `ID`; the linked range shows a lock outline and uses a referenced-row
+  picker. Releasing the group keeps the REF formulas for free-form editing.
 - `order-report` is a read-only Rhai result over `orders`. The editable script is
   [`views/category-summary.rhai`](views/category-summary.rhai), and identical
   bytes are stored as an attachment in `sample.tmd`.
