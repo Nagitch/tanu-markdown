@@ -40,6 +40,12 @@ export type EditorRequest =
       source: string;
     }
   | {
+      type: "referenceTargetTable";
+      clientRevision: number;
+      requestId: number;
+      source: string;
+    }
+  | {
       type: "rhaiScript";
       clientRevision: number;
       requestId: number;
@@ -103,6 +109,16 @@ export interface EditorDataSourceTableMessage {
   issue?: string;
 }
 
+export interface EditorReferenceTargetTableMessage {
+  type: "referenceTargetTable";
+  clientRevision: number;
+  contentRevision: number;
+  requestId: number;
+  source: string;
+  table?: DataSourceTable;
+  issue?: string;
+}
+
 export interface EditorRhaiScriptMessage {
   type: "rhaiScript";
   clientRevision: number;
@@ -120,6 +136,7 @@ export type EditorHostMessage =
   | EditorRejectionMessage
   | EditorPreviewMessage
   | EditorDataSourceTableMessage
+  | EditorReferenceTargetTableMessage
   | EditorRhaiScriptMessage;
 
 export function isEditorRequest(value: unknown): value is EditorRequest {
@@ -138,6 +155,7 @@ export function isEditorRequest(value: unknown): value is EditorRequest {
     "editSpreadsheet",
     "preview",
     "dataSourceTable",
+    "referenceTargetTable",
     "rhaiScript",
     "editRhaiScript",
     "validate",

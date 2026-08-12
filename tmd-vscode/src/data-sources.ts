@@ -359,7 +359,8 @@ function migrateLegacyManagedReferences(sources: DataSource[]): void {
           if (
             !parsed ||
             parsed.source !== reference.source ||
-            parsed.identity !== rowIdentities.get(row.id)
+            parsed.identity.type !== "string" ||
+            parsed.identity.value !== rowIdentities.get(row.id)
           ) {
             direct = false;
             break;
@@ -628,23 +629,42 @@ function spreadsheetColumnIndex(label: string): number {
 }
 
 function parseDirectRefLiteral(expression: string):
-  | { source: string; identity: string; targetColumn: string }
+  | { source: string; identity: DataTableCell; targetColumn: string }
   | undefined {
   const string = String.raw`"(?:\\.|[^"\\])*"`;
+  const scalar = String.raw`(?:${string}|true|false|null|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:e[+-]?\d+)?)`;
   const match = new RegExp(
-    `^\\s*REF\\s*\\(\\s*(${string})\\s*,\\s*(${string})\\s*,\\s*(${string})\\s*\\)\\s*$`,
+    `^\\s*REF\\s*\\(\\s*(${string})\\s*,\\s*(${scalar})\\s*,\\s*(${string})\\s*\\)\\s*$`,
     "iu",
   ).exec(expression);
   if (!match) return undefined;
   try {
+    const identity = parseDirectRefIdentityLiteral(match[2] ?? "");
+    if (!identity) return undefined;
     return {
       source: JSON.parse(match[1] ?? ""),
-      identity: JSON.parse(match[2] ?? ""),
+      identity,
       targetColumn: JSON.parse(match[3] ?? ""),
     };
   } catch {
     return undefined;
   }
+}
+
+function parseDirectRefIdentityLiteral(expression: string): DataTableCell | undefined {
+  if (expression.startsWith('"')) {
+    const value: unknown = JSON.parse(expression);
+    return typeof value === "string" ? { type: "string", value } : undefined;
+  }
+  if (/^null$/iu.test(expression)) return { type: "null" };
+  if (/^(?:true|false)$/iu.test(expression)) {
+    return { type: "boolean", value: /^true$/iu.test(expression) };
+  }
+  if (/^-?(?:0|[1-9]\d*)$/u.test(expression)) {
+    return { type: "integer", value: expression };
+  }
+  const value = Number(expression);
+  return Number.isFinite(value) ? { type: "real", value } : undefined;
 }
 
 function nextReferenceGroupId(
@@ -1331,7 +1351,7 @@ function validateManagedReferenceGroups(
               `Reference group \`${group.id}\` in \`${source.name}\` row \`${rowId}\` column \`${mapping.columnId}\` requires its mapped direct three-argument REF or NULL.`,
             );
           }
-          identity = reference.identity;
+          identity = JSON.stringify(reference.identity);
         } else {
           throw new Error(
             `Reference group \`${group.id}\` in \`${source.name}\` row \`${rowId}\` column \`${mapping.columnId}\` requires a direct three-argument REF or NULL.`,

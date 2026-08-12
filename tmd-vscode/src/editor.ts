@@ -5,6 +5,7 @@ import { TmdCliClient } from "./cli.js";
 import {
   inspectDataSourceRegistry,
   isComputedFormulaDataSource,
+  isManagedFormulaDataSource,
   isQueryFormulaDataSource,
   validateDataSources,
 } from "./data-sources.js";
@@ -487,6 +488,50 @@ export class TanuMarkdownEditorProvider
         } catch (error) {
           await panel.webview.postMessage({
             type: "dataSourceTable",
+            clientRevision: message.clientRevision,
+            contentRevision,
+            requestId: message.requestId,
+            source: message.source,
+            issue: boundedMessage(error),
+          });
+        }
+        break;
+      }
+      case "referenceTargetTable": {
+        if (
+          typeof message.source !== "string" ||
+          typeof message.requestId !== "number" ||
+          !Number.isSafeInteger(message.requestId) ||
+          message.requestId <= 0 ||
+          typeof message.clientRevision !== "number" ||
+          !Number.isSafeInteger(message.clientRevision) ||
+          message.clientRevision < 0 ||
+          message.clientRevision !== this.panelClientRevisions.latest(panel)
+        ) {
+          return;
+        }
+        const state = document.snapshot();
+        const definition = state.dataSources.find(
+          (source) => source.name === message.source,
+        );
+        if (!isManagedFormulaDataSource(definition)) return;
+        const contentRevision = document.contentRevision;
+        try {
+          const table = await document.session.dataSourceTable(
+            message.source,
+            state,
+          );
+          await panel.webview.postMessage({
+            type: "referenceTargetTable",
+            clientRevision: message.clientRevision,
+            contentRevision,
+            requestId: message.requestId,
+            source: message.source,
+            table,
+          });
+        } catch (error) {
+          await panel.webview.postMessage({
+            type: "referenceTargetTable",
             clientRevision: message.clientRevision,
             contentRevision,
             requestId: message.requestId,

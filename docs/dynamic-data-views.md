@@ -215,9 +215,10 @@ Normalization also adds a `reference_groups` editing constraint to the source.
 It maps a stable set of source rows and columns to target columns. Every cell in
 one protected row is a direct REF to the same target identity. The editor shows
 the range with a lock and subdued outline, and changes it through a referenced
-row picker so all mapped cells remain aligned. Releasing the group removes only
-the editing constraint: existing REF expressions remain and become ordinary,
-freely editable Formula cells. No source-side key column is added. The target's
+row picker populated from the target table's evaluated values, including
+Formula-derived identities, so all mapped cells remain aligned. Releasing the
+group removes only the editing constraint: existing REF expressions remain and
+become ordinary, freely editable Formula cells. No source-side key column is added. The target's
 visible identity column is included in Markdown, CLI, and Rhai table output.
 Adding, inserting, or duplicating a row in that target assigns a fresh visible
 text identity automatically, so the table remains immediately evaluable.

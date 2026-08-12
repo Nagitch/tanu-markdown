@@ -214,6 +214,10 @@ let tableRenderMeasurement: TableRenderMeasurement | undefined;
 let selectedTableSource = host.getState()?.selectedTableSource;
 let previewVisible = host.getState()?.previewVisible ?? true;
 let tableRequestId = 0;
+let referenceTargetRequestId = 0;
+const referenceTargetRequests = new Map<string, number>();
+const referenceTargetTables = new Map<string, DataSourceTable>();
+const referenceTargetIssues = new Map<string, string>();
 let rhaiScriptRequestId = 0;
 let currentTable: DataSourceTable | undefined;
 let currentTableSource: string | undefined;
@@ -505,6 +509,10 @@ window.addEventListener("message", (event: MessageEvent<unknown>) => {
     void renderTableSourceResult(message);
     return;
   }
+  if (message.type === "referenceTargetTable") {
+    renderReferenceTargetTableResult(message);
+    return;
+  }
   if (message.type === "rhaiScript") {
     renderRhaiScriptResult(message);
     return;
@@ -529,6 +537,7 @@ function sendDocumentEdit(): void {
 function sendDataSourceEdit(sources: DataSource[]): number | undefined {
   const clientRevision = revision.nextEditRevision();
   if (clientRevision === undefined) return undefined;
+  invalidateReferenceTargetTables();
   host.postMessage({
     type: "editDataSources",
     clientRevision,
@@ -960,6 +969,7 @@ function renderTableSourceOptions(
   sources: readonly DataSource[],
   measurement?: SpreadsheetEditMeasurement,
 ): void {
+  invalidateReferenceTargetTables();
   const tabularSources = sources.filter(isTabularSource);
   tableSourceDefinitions = tabularSources.map(cloneDataSource);
   const names = new Set(tabularSources.map((source) => source.name));
@@ -2204,6 +2214,7 @@ function sendSpreadsheetEdit(
   if (!source) return;
   const clientRevision = revision.nextEditRevision();
   if (clientRevision === undefined) return;
+  invalidateReferenceTargetTables();
   if (program !== undefined) updateLocalFormulaProgram(source.name, program);
   clearTimeout(formulaEvaluationTimer);
   tableRequestId += 1;
@@ -2381,7 +2392,8 @@ function renderSelectedCell(): void {
   referenceTargetField.hidden = referenceGroup === undefined;
   if (managedSource && referenceGroup) {
     renderReferenceTargetPicker(managedSource, referenceGroup, position.row);
-    referenceTarget.disabled = disabled;
+    referenceTarget.disabled =
+      disabled || !referenceTargetTables.has(referenceGroup.source);
   } else {
     referenceTarget.replaceChildren();
   }
@@ -2433,19 +2445,24 @@ function renderReferenceTargetPicker(
     referenceTarget.disabled = true;
     return;
   }
+  const evaluatedTarget = referenceTargetTables.get(group.source);
+  if (!evaluatedTarget) {
+    const issue = referenceTargetIssues.get(group.source);
+    referenceTarget.append(
+      new Option(issue ? `Referenced table unavailable: ${issue}` : "Loading referenced rows…", ""),
+    );
+    referenceTarget.disabled = true;
+    if (!issue) requestReferenceTargetTable(group.source);
+    return;
+  }
   const currentIdentity = referenceGroupSelection(source, group, row);
   referenceTarget.append(new Option("Choose a referenced row…", ""));
-  for (const [targetRow, definition] of target.rows.entries()) {
+  for (const [targetRow, evaluatedRow] of evaluatedTarget.rows.entries()) {
     const identityColumn = target.columns.findIndex((column) => column.identity);
     const identityCell = identityColumn >= 0
-      ? definition.cells[identityColumn]
+      ? evaluatedRow[identityColumn]
       : undefined;
-    const identity =
-      identityCell?.content.kind === "literal" &&
-      identityCell.content.value.type === "string"
-        ? identityCell.content.value.value
-        : undefined;
-    if (identity === undefined) continue;
+    if (!identityCell || identityCell.type === "null") continue;
     const labels = group.columns
       .map((mapping) =>
         target.columns.findIndex(
@@ -2454,13 +2471,69 @@ function renderReferenceTargetPicker(
       )
       .filter((index) => index >= 0)
       .slice(0, 2)
-      .map((index) => managedCellText(target, targetRow, index))
+      .map((index) => cellTextForEditing(evaluatedRow[index]))
       .filter((value) => value !== "");
-    const label = `${labels.join(" · ") || identity} · ${identity}`;
+    const identityLabel = cellTextForEditing(identityCell);
+    const label = `${labels.join(" · ") || identityLabel} · ${identityLabel}`;
     const option = new Option(label, String(targetRow));
-    option.selected = identity === currentIdentity;
+    option.selected = dataTableCellsEqual(identityCell, currentIdentity);
     referenceTarget.append(option);
   }
+}
+
+function requestReferenceTargetTable(source: string): void {
+  if (
+    !revision.initialized ||
+    referenceTargetTables.has(source) ||
+    referenceTargetRequests.has(source)
+  ) {
+    return;
+  }
+  referenceTargetRequestId += 1;
+  referenceTargetRequests.set(source, referenceTargetRequestId);
+  host.postMessage({
+    type: "referenceTargetTable",
+    clientRevision: revision.clientRevision,
+    requestId: referenceTargetRequestId,
+    source,
+  });
+}
+
+function renderReferenceTargetTableResult(
+  message: Extract<EditorHostMessage, { type: "referenceTargetTable" }>,
+): void {
+  if (referenceTargetRequests.get(message.source) !== message.requestId) return;
+  referenceTargetRequests.delete(message.source);
+  if (message.table) {
+    referenceTargetTables.set(message.source, message.table);
+    referenceTargetIssues.delete(message.source);
+  } else {
+    referenceTargetTables.delete(message.source);
+    referenceTargetIssues.set(
+      message.source,
+      message.issue ?? "the table could not be evaluated",
+    );
+  }
+  const managed = selectedManagedFormulaSource();
+  const position = selectedCell;
+  const group = managed && position
+    ? managedReferenceGroupAt(managed, position.row, position.column)
+    : undefined;
+  if (group?.source === message.source) renderSelectedCell();
+}
+
+function invalidateReferenceTargetTables(): void {
+  referenceTargetTables.clear();
+  referenceTargetRequests.clear();
+  referenceTargetIssues.clear();
+}
+
+function dataTableCellsEqual(
+  left: DataTableCell | undefined,
+  right: DataTableCell | undefined,
+): boolean {
+  return left !== undefined && right !== undefined &&
+    JSON.stringify(left) === JSON.stringify(right);
 }
 
 function applySelectedReferenceTarget(): void {
@@ -2485,6 +2558,7 @@ function applySelectedReferenceTarget(): void {
       group.id,
       position.row,
       targetRow,
+      referenceTargetTables.get(target.name),
     );
     setCellEditStatus(`Updating linked ${group.source} row…`, "stale");
     commitManagedSource(updated, {
@@ -4017,6 +4091,7 @@ function isEditorHostMessage(value: unknown): value is EditorHostMessage {
       value.type === "editRejected" ||
       value.type === "preview" ||
       value.type === "dataSourceTable" ||
+      value.type === "referenceTargetTable" ||
       value.type === "rhaiScript")
   );
 }

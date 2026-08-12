@@ -9,6 +9,7 @@ import {
 } from "./formula-program.js";
 import type {
   DataTableCell,
+  DataSourceTable,
   ManagedCellConstraint,
   ManagedFormulaCell,
   ManagedFormulaDataSource,
@@ -613,28 +614,67 @@ export function cloneManagedFormulaSource(
 
 export function directRefExpression(
   source: string,
-  identity: string,
+  identity: string | DataTableCell,
   targetColumn: string,
 ): string {
-  return `REF(${JSON.stringify(source)}, ${JSON.stringify(identity)}, ${JSON.stringify(targetColumn)})`;
+  return `REF(${JSON.stringify(source)}, ${directRefIdentityExpression(identity)}, ${JSON.stringify(targetColumn)})`;
 }
 
 export function parseDirectRefExpression(expression: string):
-  | { source: string; identity: string; targetColumn: string }
+  | { source: string; identity: DataTableCell; targetColumn: string }
   | undefined {
   const string = String.raw`"(?:\\.|[^"\\])*"`;
-  const match = new RegExp(`^\\s*REF\\s*\\(\\s*(${string})\\s*,\\s*(${string})\\s*,\\s*(${string})\\s*\\)\\s*$`, "iu")
+  const scalar = String.raw`(?:${string}|true|false|null|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:e[+-]?\d+)?)`;
+  const match = new RegExp(`^\\s*REF\\s*\\(\\s*(${string})\\s*,\\s*(${scalar})\\s*,\\s*(${string})\\s*\\)\\s*$`, "iu")
     .exec(expression);
   if (!match) return undefined;
   try {
+    const identity = parseDirectRefIdentityExpression(match[2] ?? "");
+    if (!identity) return undefined;
     return {
       source: JSON.parse(match[1] ?? ""),
-      identity: JSON.parse(match[2] ?? ""),
+      identity,
       targetColumn: JSON.parse(match[3] ?? ""),
     };
   } catch {
     return undefined;
   }
+}
+
+function directRefIdentityExpression(identity: string | DataTableCell): string {
+  const value = typeof identity === "string"
+    ? { type: "string" as const, value: identity }
+    : identity;
+  switch (value.type) {
+    case "null":
+      return "null";
+    case "boolean":
+      return String(value.value);
+    case "integer":
+      return String(value.value);
+    case "real":
+      return Number.isInteger(value.value)
+        ? `${Object.is(value.value, -0) ? "-0" : String(value.value)}.0`
+        : String(value.value);
+    case "string":
+      return JSON.stringify(value.value);
+  }
+}
+
+function parseDirectRefIdentityExpression(expression: string): DataTableCell | undefined {
+  if (expression.startsWith('"')) {
+    const value: unknown = JSON.parse(expression);
+    return typeof value === "string" ? { type: "string", value } : undefined;
+  }
+  if (/^null$/iu.test(expression)) return { type: "null" };
+  if (/^(?:true|false)$/iu.test(expression)) {
+    return { type: "boolean", value: /^true$/iu.test(expression) };
+  }
+  if (/^-?(?:0|[1-9]\d*)$/u.test(expression)) {
+    return { type: "integer", value: expression };
+  }
+  const value = Number(expression);
+  return Number.isFinite(value) ? { type: "real", value } : undefined;
 }
 
 function rewriteDirectRefCalls(
@@ -787,7 +827,7 @@ export function referenceGroupSelection(
   source: ManagedFormulaDataSource,
   group: ManagedFormulaReferenceGroup,
   row: number,
-): string | undefined {
+): DataTableCell | undefined {
   const mapping = group.columns[0];
   const column = mapping
     ? source.columns.findIndex((candidate) => candidate.id === mapping.columnId)
@@ -804,17 +844,23 @@ export function applyReferenceGroupSelection(
   groupId: string,
   row: number,
   targetRow: number,
+  evaluatedTarget?: DataSourceTable,
 ): void {
   const group = source.referenceGroups?.find((candidate) => candidate.id === groupId);
   if (!group || group.source !== target.name) {
     throw new Error("The selected reference group no longer exists.");
   }
   const identityColumn = target.columns.findIndex((column) => column.identity === true);
-  const identityCell = identityColumn >= 0
-    ? target.rows[targetRow]?.cells[identityColumn]
+  const evaluatedIdentity = identityColumn >= 0
+    ? evaluatedTarget?.rows[targetRow]?.[identityColumn]
     : undefined;
-  if (identityCell?.content.kind !== "literal" || identityCell.content.value.type !== "string") {
-    throw new Error(`Reference target ${target.name} requires a text identity value.`);
+  const storedIdentity = identityColumn >= 0
+    ? target.rows[targetRow]?.cells[identityColumn]?.content
+    : undefined;
+  const identity = evaluatedIdentity ??
+    (storedIdentity?.kind === "literal" ? storedIdentity.value : undefined);
+  if (!identity || identity.type === "null") {
+    throw new Error(`Reference target ${target.name} requires an evaluated identity value.`);
   }
   for (const mapping of group.columns) {
     const sourceColumn = source.columns.findIndex(
@@ -831,7 +877,7 @@ export function applyReferenceGroupSelection(
       kind: "formula",
       expression: directRefExpression(
         target.name,
-        identityCell.content.value.value,
+        identity,
         targetColumn.name,
       ),
     };

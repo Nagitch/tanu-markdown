@@ -404,12 +404,18 @@ fn parse_direct_ref_expression(expression: &str) -> Option<(String, String, Stri
         return None;
     }
     let arguments = expression[open + 1..].strip_suffix(')')?;
-    let values = serde_json::from_str::<Vec<String>>(&format!("[{arguments}]")).ok()?;
+    let values = serde_json::from_str::<Vec<serde_json::Value>>(&format!("[{arguments}]")).ok()?;
     if values.len() != 3 {
         return None;
     }
     let mut values = values.into_iter();
-    Some((values.next()?, values.next()?, values.next()?))
+    let source = values.next()?.as_str()?.to_owned();
+    let identity = values.next()?;
+    if identity.is_array() || identity.is_object() {
+        return None;
+    }
+    let target = values.next()?.as_str()?.to_owned();
+    Some((source, serde_json::to_string(&identity).ok()?, target))
 }
 
 impl RawDataSourceDefinition {

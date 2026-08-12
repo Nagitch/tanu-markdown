@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   createManagedFormulaDataSource,
   applyReferenceGroupSelection,
+  directRefExpression,
   duplicateManagedColumn,
   duplicateManagedRow,
   extractManagedRange,
@@ -306,4 +307,58 @@ test("normalization keeps the generated identity column name unique", () => {
   assert.ok(candidate);
   const result = normalizeManagedColumns(source, candidate, "groups");
   assert.equal(result.target.columns[2].name, "ID 2");
+});
+
+test("reference selection uses evaluated Formula identity values", () => {
+  assert.equal(
+    directRefExpression("places", { type: "real", value: 1 }, "City"),
+    'REF("places", 1.0, "City")',
+  );
+  const source = createManagedFormulaDataSource("contacts");
+  source.columns = [
+    { id: "c1", name: "Name", constraint: "text" },
+    { id: "c2", name: "City", constraint: "text" },
+    { id: "c3", name: "Country", constraint: "text" },
+  ];
+  source.rows = ["Tokyo", "Osaka", "Tokyo"].map((city, index) => ({
+    id: `r${index + 1}`,
+    cells: [
+      { content: { kind: "literal" as const, value: { type: "string" as const, value: `Person ${index + 1}` } } },
+      { content: { kind: "literal" as const, value: { type: "string" as const, value: city } } },
+      { content: { kind: "literal" as const, value: { type: "string" as const, value: "JP" } } },
+    ],
+  }));
+  const candidate = findNormalizationCandidate(source);
+  assert.ok(candidate);
+  const result = normalizeManagedColumns(source, candidate, "places");
+  const identityColumn = result.target.columns.findIndex((column) => column.identity);
+  result.target.rows[1].cells[identityColumn].content = {
+    kind: "formula",
+    expression: '"computed-place"',
+  };
+  const evaluatedTarget = {
+    source: "places",
+    kind: "table" as const,
+    columns: result.target.columns.map((column) => column.name),
+    rows: result.target.rows.map((row, index) => row.cells.map((cell, column) =>
+      column === identityColumn && index === 1
+        ? { type: "string" as const, value: "computed-place" }
+        : cell.content.kind === "literal"
+          ? { ...cell.content.value }
+          : { type: "null" as const },
+    )),
+  };
+
+  applyReferenceGroupSelection(
+    result.source,
+    result.target,
+    result.source.referenceGroups?.[0]?.id ?? "",
+    0,
+    1,
+    evaluatedTarget,
+  );
+  assert.equal(
+    managedCellText(result.source, 0, 1),
+    '=REF("places", "computed-place", "City")',
+  );
 });
