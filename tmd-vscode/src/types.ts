@@ -8,9 +8,9 @@ export type JsonValue =
 
 export type DataViewRenderKind = "scalar" | "table" | "list" | "code";
 
-export interface SqliteDataSource {
+export interface QueryFormulaDataSource {
   name: string;
-  type: "sqlite";
+  type: "formula";
   query: string;
   edit?: SqliteEditDefinition;
 }
@@ -38,7 +38,7 @@ export interface RhaiDataSource {
   outputColumns: string[];
 }
 
-export interface FormulaDataSource {
+export interface ComputedFormulaDataSource {
   name: string;
   type: "formula";
   input: string;
@@ -46,7 +46,65 @@ export interface FormulaDataSource {
   outputColumns: string[];
 }
 
-export type DataSource = SqliteDataSource | RhaiDataSource | FormulaDataSource;
+export type ManagedCellConstraint = "any" | "text" | "number" | "boolean";
+
+export interface ManagedFormulaColumn {
+  id: string;
+  name: string;
+  constraint: ManagedCellConstraint;
+  /** Visible stable key used by three-argument REF expressions. */
+  identity?: boolean;
+  /** Schema v7 compatibility only. New definitions must not serialize hidden columns. */
+  hidden?: boolean;
+  /** Schema v7 compatibility only. New references are stored directly in REF expressions. */
+  reference?: {
+    source: string;
+    columnId: string;
+  };
+}
+
+export interface ManagedFormulaReferenceGroup {
+  id: string;
+  /** Managed Formula table selected by the group's reference picker. */
+  source: string;
+  /** Stable source-row identities covered by this editing constraint. */
+  rowIds: string[];
+  /** Stable current/target column mappings updated together for one selected row. */
+  columns: Array<{
+    columnId: string;
+    targetColumnId: string;
+  }>;
+}
+
+export type ManagedFormulaCellContent =
+  | { kind: "literal"; value: DataTableCell }
+  | { kind: "formula"; expression: string };
+
+export interface ManagedFormulaCell {
+  content: ManagedFormulaCellContent;
+  /** An explicit cell constraint. Omit to inherit the column constraint. */
+  constraint?: ManagedCellConstraint;
+}
+
+export interface ManagedFormulaRow {
+  id: string;
+  cells: ManagedFormulaCell[];
+}
+
+export interface ManagedFormulaDataSource {
+  name: string;
+  type: "formula";
+  columns: ManagedFormulaColumn[];
+  rows: ManagedFormulaRow[];
+  referenceGroups?: ManagedFormulaReferenceGroup[];
+}
+
+export type FormulaDataSource =
+  | QueryFormulaDataSource
+  | ComputedFormulaDataSource
+  | ManagedFormulaDataSource;
+
+export type DataSource = FormulaDataSource | RhaiDataSource;
 
 export type DataTableCell =
   | { type: "null" }
@@ -60,6 +118,9 @@ export interface DataSourceTable {
   kind: "table";
   columns: string[];
   rows: DataTableCell[][];
+  /** Shape of the query input before computed Formula rows/columns are added. */
+  inputRowCount?: number;
+  inputColumnCount?: number;
   editable?: DataSourceTableEditInfo;
 }
 
@@ -87,7 +148,7 @@ export interface TextAttachmentView extends TextAttachmentEdit {}
 
 export interface DataSourceRegistryView {
   editable: boolean;
-  schemaVersion?: 1 | 2 | 3 | 4;
+  schemaVersion?: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
   sources: DataSource[];
   issue?: string;
   rawRegistry?: string;

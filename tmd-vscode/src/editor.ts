@@ -4,8 +4,12 @@ import { findActiveDocument } from "./activity.js";
 import { TmdCliClient } from "./cli.js";
 import {
   inspectDataSourceRegistry,
+  isComputedFormulaDataSource,
+  isManagedFormulaDataSource,
+  isQueryFormulaDataSource,
   validateDataSources,
 } from "./data-sources.js";
+import { parseEditorDataSources } from "./editor-data-sources.js";
 import type { EditorState } from "./model.js";
 import { publishLatestRevision } from "./publication.js";
 import { ClientRevisionTracker } from "./revision.js";
@@ -14,7 +18,6 @@ import type {
   DataSource,
   DatabaseCellEdit,
   DataTableCell,
-  SqliteEditDefinition,
   ValidationReport,
 } from "./types.js";
 import { isEditorRequest } from "./webview-protocol.js";
@@ -134,6 +137,17 @@ export class TanuMarkdownEditorProvider
       try {
         await this.handleMessage(document, panel, message);
       } catch (error) {
+        const clientRevision = mutationClientRevision(message);
+        if (clientRevision !== undefined) {
+          this.panelClientRevisions.accept(panel, clientRevision);
+          await panel.webview.postMessage({
+            type: "editRejected",
+            clientRevision,
+            contentRevision: document.contentRevision,
+            issue: boundedMessage(error),
+          });
+          return;
+        }
         await this.errorHandler(error);
       }
     });
@@ -275,27 +289,51 @@ export class TanuMarkdownEditorProvider
         ) {
           return;
         }
-        const dataSources = parseDataSources(message.dataSources);
+        const dataSources = parseEditorDataSources(message.dataSources);
         if (!dataSources) {
-          return;
+          throw new Error("The editor sent an invalid data-source definition.");
         }
         validateDataSources(dataSources);
         dataSources.sort((left, right) => left.name.localeCompare(right.name));
         const before = document.snapshot();
+        const databaseEdits = before.databaseEdits.filter((edit) => {
+          const source = dataSources.find(
+            (candidate) => candidate.name === edit.source,
+          );
+          const previousSource = before.dataSources.find(
+            (candidate) => candidate.name === edit.source,
+          );
+          return (
+            isQueryFormulaDataSource(source) &&
+            isQueryFormulaDataSource(previousSource) &&
+            JSON.stringify(source) === JSON.stringify(previousSource) &&
+            source.edit !== undefined &&
+            edit.key.type !== "null" &&
+            source.edit.columns.some(
+              (column) => column.sourceColumn === edit.column,
+            )
+          );
+        });
+        const discardedEdits = before.databaseEdits.length - databaseEdits.length;
         await this.applyEditorState(
           document,
           panel,
           message.clientRevision,
-          { ...before, dataSources },
+          { ...before, dataSources, databaseEdits },
           "Edit TMD data sources",
+          discardedEdits === 0
+            ? undefined
+            : `${discardedEdits} staged table edit${discardedEdits === 1 ? " was" : "s were"} discarded because source or write-back definitions changed.`,
         );
         break;
       }
       case "editSpreadsheet": {
         if (
           typeof message.source !== "string" ||
-          typeof message.formulaProgram !== "string" ||
-          new TextEncoder().encode(message.formulaProgram).length > 256 * 1024 ||
+          (message.formulaProgram !== undefined &&
+            (typeof message.formulaProgram !== "string" ||
+              new TextEncoder().encode(message.formulaProgram).length >
+                256 * 1024)) ||
           typeof message.clientRevision !== "number" ||
           !Number.isSafeInteger(message.clientRevision) ||
           message.clientRevision <= 0
@@ -306,15 +344,32 @@ export class TanuMarkdownEditorProvider
         if (!incomingEdits) return;
         const before = document.snapshot();
         const formulaSource = before.dataSources.find(
-          (source) => source.name === message.source && source.type === "formula",
+          (source) => source.name === message.source,
         );
-        if (!formulaSource || formulaSource.type !== "formula") return;
-        const input = before.dataSources.find(
-          (source) => source.name === formulaSource.input && source.type === "sqlite",
-        );
-        if (!input || input.type !== "sqlite" || !input.edit) return;
+        if (formulaSource?.type !== "formula") return;
+        if (
+          !isQueryFormulaDataSource(formulaSource) &&
+          !isComputedFormulaDataSource(formulaSource)
+        ) {
+          return;
+        }
+        if (
+          isComputedFormulaDataSource(formulaSource) !==
+          (message.formulaProgram !== undefined)
+        ) {
+          return;
+        }
+        const input = isQueryFormulaDataSource(formulaSource)
+          ? formulaSource
+          : before.dataSources.find(
+              (source) => source.name === formulaSource.input,
+            );
+        if (!isQueryFormulaDataSource(input)) return;
+        if (isQueryFormulaDataSource(formulaSource) && incomingEdits.length === 0) {
+          return;
+        }
         const editableColumns = new Set(
-          input.edit.columns.map((column) => column.sourceColumn),
+          input.edit?.columns.map((column) => column.sourceColumn) ?? [],
         );
         if (
           incomingEdits.some(
@@ -327,7 +382,9 @@ export class TanuMarkdownEditorProvider
           return;
         }
         const dataSources = before.dataSources.map((source) =>
-          source.name === formulaSource.name && source.type === "formula"
+          source.name === formulaSource.name &&
+          isComputedFormulaDataSource(source) &&
+          message.formulaProgram !== undefined
             ? { ...source, program: message.formulaProgram }
             : source,
         );
@@ -396,9 +453,76 @@ export class TanuMarkdownEditorProvider
         }
         const contentRevision = document.contentRevision;
         try {
-          const table = await document.session.dataSourceTable(message.source, state);
+          const definition = state.dataSources.find(
+            (source) => source.name === message.source,
+          );
+          const inputDefinition = isComputedFormulaDataSource(definition)
+            ? state.dataSources.find(
+                (source) => source.name === definition.input,
+              )
+            : isQueryFormulaDataSource(definition)
+              ? definition
+              : undefined;
+          const [table, inputTable] = await Promise.all([
+            document.session.dataSourceTable(message.source, state),
+            inputDefinition && inputDefinition.name !== message.source
+              ? document.session.dataSourceTable(inputDefinition.name, state)
+              : Promise.resolve(undefined),
+          ]);
+          const tableWithInputShape = inputDefinition
+            ? {
+                ...table,
+                inputRowCount: inputTable?.rows.length ?? table.rows.length,
+                inputColumnCount:
+                  inputTable?.columns.length ?? table.columns.length,
+              }
+            : table;
           await panel.webview.postMessage({
             type: "dataSourceTable",
+            clientRevision: message.clientRevision,
+            contentRevision,
+            requestId: message.requestId,
+            source: message.source,
+            table: tableWithInputShape,
+          });
+        } catch (error) {
+          await panel.webview.postMessage({
+            type: "dataSourceTable",
+            clientRevision: message.clientRevision,
+            contentRevision,
+            requestId: message.requestId,
+            source: message.source,
+            issue: boundedMessage(error),
+          });
+        }
+        break;
+      }
+      case "referenceTargetTable": {
+        if (
+          typeof message.source !== "string" ||
+          typeof message.requestId !== "number" ||
+          !Number.isSafeInteger(message.requestId) ||
+          message.requestId <= 0 ||
+          typeof message.clientRevision !== "number" ||
+          !Number.isSafeInteger(message.clientRevision) ||
+          message.clientRevision < 0 ||
+          message.clientRevision !== this.panelClientRevisions.latest(panel)
+        ) {
+          return;
+        }
+        const state = document.snapshot();
+        const definition = state.dataSources.find(
+          (source) => source.name === message.source,
+        );
+        if (!isManagedFormulaDataSource(definition)) return;
+        const contentRevision = document.contentRevision;
+        try {
+          const table = await document.session.dataSourceTable(
+            message.source,
+            state,
+          );
+          await panel.webview.postMessage({
+            type: "referenceTargetTable",
             clientRevision: message.clientRevision,
             contentRevision,
             requestId: message.requestId,
@@ -407,7 +531,7 @@ export class TanuMarkdownEditorProvider
           });
         } catch (error) {
           await panel.webview.postMessage({
-            type: "dataSourceTable",
+            type: "referenceTargetTable",
             clientRevision: message.clientRevision,
             contentRevision,
             requestId: message.requestId,
@@ -524,6 +648,7 @@ export class TanuMarkdownEditorProvider
     clientRevision: number,
     after: EditorState,
     label: string,
+    notice?: string,
   ): Promise<void> {
     if (document.session.editingLocked) {
       this.panelClientRevisions.accept(panel, clientRevision);
@@ -535,6 +660,8 @@ export class TanuMarkdownEditorProvider
         type: "editAck",
         clientRevision,
         contentRevision: document.contentRevision,
+        applied: false,
+        notice: "This edit was superseded by a newer editor operation and was not applied.",
       });
       return;
     }
@@ -567,6 +694,8 @@ export class TanuMarkdownEditorProvider
       type: "editAck",
       clientRevision,
       contentRevision: document.contentRevision,
+      applied: true,
+      ...(notice === undefined ? {} : { notice }),
     });
   }
 
@@ -591,6 +720,7 @@ export class TanuMarkdownEditorProvider
           ),
           previewHtml,
           editingLocked: document.session.editingLocked,
+          persisted: document.isCurrentRevisionPersisted,
         };
         const panels = this.panels.get(document);
         if (!panels) {
@@ -616,127 +746,12 @@ export class TanuMarkdownEditorProvider
   }
 }
 
-function parseDataSources(value: unknown): DataSource[] | undefined {
-  if (!Array.isArray(value)) {
-    return undefined;
-  }
-  const sources: DataSource[] = [];
-  for (const source of value) {
-    if (
-      typeof source !== "object" ||
-      source === null ||
-      !("name" in source) ||
-      typeof source.name !== "string" ||
-      !("type" in source)
-    ) {
-      return undefined;
-    }
-    if (source.type === "sqlite" && "query" in source && typeof source.query === "string") {
-      const edit = "edit" in source ? parseSqliteEditDefinition(source.edit) : undefined;
-      if ("edit" in source && !edit) return undefined;
-      sources.push({
-        name: source.name,
-        type: "sqlite",
-        query: source.query,
-        ...(edit ? { edit } : {}),
-      });
-      continue;
-    }
-    if (
-      source.type === "formula" &&
-      "input" in source &&
-      typeof source.input === "string" &&
-      "program" in source &&
-      typeof source.program === "string" &&
-      "outputColumns" in source &&
-      Array.isArray(source.outputColumns) &&
-      source.outputColumns.every((column: unknown) => typeof column === "string")
-    ) {
-      sources.push({
-        name: source.name,
-        type: "formula",
-        input: source.input,
-        program: source.program,
-        outputColumns: [...source.outputColumns],
-      });
-      continue;
-    }
-    if (
-      source.type !== "rhai" ||
-      !("script" in source) ||
-      typeof source.script !== "string" ||
-      !("inputs" in source) ||
-      !Array.isArray(source.inputs) ||
-      !("outputColumns" in source) ||
-      !Array.isArray(source.outputColumns) ||
-      !source.outputColumns.every((column: unknown) => typeof column === "string")
-    ) {
-      return undefined;
-    }
-    const inputs: Array<{ alias: string; source: string }> = [];
-    for (const input of source.inputs) {
-      if (
-        typeof input !== "object" ||
-        input === null ||
-        !("alias" in input) ||
-        typeof input.alias !== "string" ||
-        !("source" in input) ||
-        typeof input.source !== "string"
-      ) {
-        return undefined;
-      }
-      inputs.push({ alias: input.alias, source: input.source });
-    }
-    inputs.sort((left, right) => left.alias.localeCompare(right.alias));
-    sources.push({
-      name: source.name,
-      type: "rhai",
-      script: source.script,
-      inputs,
-      outputColumns: [...source.outputColumns],
-    });
-  }
-  return sources;
-}
-
-function parseSqliteEditDefinition(value: unknown): SqliteEditDefinition | undefined {
-  if (
-    typeof value !== "object" ||
-    value === null ||
-    !("table" in value) ||
-    typeof value.table !== "string" ||
-    !("keySourceColumn" in value) ||
-    typeof value.keySourceColumn !== "string" ||
-    !("keyTableColumn" in value) ||
-    typeof value.keyTableColumn !== "string" ||
-    !("columns" in value) ||
-    !Array.isArray(value.columns)
-  ) {
-    return undefined;
-  }
-  const columns: SqliteEditDefinition["columns"] = [];
-  for (const column of value.columns) {
-    if (
-      typeof column !== "object" ||
-      column === null ||
-      !("sourceColumn" in column) ||
-      typeof column.sourceColumn !== "string" ||
-      !("tableColumn" in column) ||
-      typeof column.tableColumn !== "string"
-    ) {
-      return undefined;
-    }
-    columns.push({
-      sourceColumn: column.sourceColumn,
-      tableColumn: column.tableColumn,
-    });
-  }
-  return {
-    table: value.table,
-    keySourceColumn: value.keySourceColumn,
-    keyTableColumn: value.keyTableColumn,
-    columns,
-  };
+function hasOnlyKeys(
+  value: object,
+  allowedKeys: readonly string[],
+): boolean {
+  const allowed = new Set(allowedKeys);
+  return Object.keys(value).every((key) => allowed.has(key));
 }
 
 function parseDatabaseCellEdits(value: unknown): DatabaseCellEdit[] | undefined {
@@ -771,8 +786,8 @@ function isDataTableCell(value: unknown): value is DataTableCell {
   if (typeof value !== "object" || value === null || !("type" in value)) {
     return false;
   }
-  if (value.type === "null") return true;
-  if (!("value" in value)) return false;
+  if (value.type === "null") return hasOnlyKeys(value, ["type"]);
+  if (!hasOnlyKeys(value, ["type", "value"]) || !("value" in value)) return false;
   return (
     (value.type === "boolean" && typeof value.value === "boolean") ||
     (value.type === "integer" &&
@@ -838,6 +853,21 @@ function boundedMessage(error: unknown, maximumCharacters = 2_000): string {
   return message.length <= maximumCharacters
     ? message
     : `${message.slice(0, maximumCharacters)}…`;
+}
+
+function mutationClientRevision(message: unknown): number | undefined {
+  if (!isEditorRequest(message)) return undefined;
+  if (
+    message.type !== "edit" &&
+    message.type !== "editDataSources" &&
+    message.type !== "editSpreadsheet" &&
+    message.type !== "editRhaiScript"
+  ) {
+    return undefined;
+  }
+  return Number.isSafeInteger(message.clientRevision) && message.clientRevision > 0
+    ? message.clientRevision
+    : undefined;
 }
 
 export function editorHtml(

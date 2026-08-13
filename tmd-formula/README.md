@@ -7,6 +7,9 @@ evaluation, built-in functions, limits, and structured diagnostics.
 The crate operates only on `tmd-data` tables. It has no dependency on `.tmd`
 containers, manifests, SQLite, rendering, the CLI, or editor code. `tmd-core`
 owns those integration concerns and supplies its table-size policy when it
-evaluates a Formula data source.
+evaluates a Formula data source. Callers may also provide a bounded reference
+resolver for direct `REF("source", identity, "target_column")` lookups and the
+legacy `REF([@reference_column], "target_column")` form; the Formula engine does
+not know about registries or choose target tables itself.
 
 This is an internal, pre-1.0 workspace crate and is not currently publishable.

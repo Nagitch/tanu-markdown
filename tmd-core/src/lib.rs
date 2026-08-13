@@ -19,8 +19,10 @@ pub use views::{
     apply_data_cell_edits, data_source_edit_info, data_view_references, evaluate_data_source,
     inline_data_view_references, parse_data_view_block, DataCellEdit, DataSourceDefinition,
     DataSourceEditInfo, DataSourceOutput, DataSourceRegistry, DataValue, DataViewParseReport,
-    DataViewReference, DataViewRenderKind, InlineDataViewReference, SqliteEditDefinition,
-    SqliteEditKey, DATA_SOURCES_EXTRAS_KEY,
+    DataViewReference, DataViewRenderKind, FormulaCellConstraint, FormulaTableCell,
+    FormulaTableCellContent, FormulaTableColumn, FormulaTableColumnReference, FormulaTableLiteral,
+    FormulaTableRow, InlineDataViewReference, SqliteEditDefinition, SqliteEditKey,
+    DATA_SOURCES_EXTRAS_KEY,
 };
 
 mod validation;

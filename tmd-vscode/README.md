@@ -17,18 +17,22 @@ It opens `.tmd` files through `tmd inspect --json` and provides:
 - attachment and database summaries;
 - document validation with actionable issues;
 - a live, non-executable safe Markdown preview with attached images and dynamic
-  SQLite/Rhai/Formula `scalar`/`table` views;
-- dynamic-view reference inspection plus SQLite query, Rhai, and Formula
-  table-source definition add, edit, remove, undo/redo, preview, and save
-  workflows;
-- a read-only RevoGrid table viewer that selects and evaluates the current
-  SQLite, Rhai, or Formula table source, including unsaved source-definition
-  changes;
+  Formula/Rhai `scalar`/`table` views, a persistent visibility toggle, and
+  direct cell editing for Formula `tmd-view:table` output;
+- dynamic-view reference inspection plus managed Formula and Rhai table-source
+  definition add, edit, remove, undo/redo, preview, and save workflows;
+- a RevoGrid table editor that selects and evaluates the current Formula or
+  Rhai source, creates unconstrained 3-by-3 Formula sheets, supports per-column
+  and per-cell constraints, cell formulas, fill, insertion and duplication at
+  arbitrary positions, range extraction, normalization suggestions, and
+  double-click column auto-sizing;
+- a sticky bottom status bar for edit progress, timing, persistence reminders,
+  and errors;
 - a Rhai script editor below the table viewer with syntax highlighting,
   undo/redo-aware attachment edits, and debounced sandbox diagnostics shown in
   the status, error panel, gutter, and source range;
-- a Formula program editor below Formula tables with A1/range/header syntax
-  highlighting, a column legend, and typed line-and-column diagnostics;
+- conservative blue-outlined normalization candidates for literal tables,
+  with an atomic preview-and-confirm operation that creates a related table;
 - document creation, attachment add/remove, and HTML export.
 
 Container parsing remains exclusively in Rust. Platform-specific VSIX packages
@@ -36,8 +40,9 @@ contain the matching native CLI, and the extension passes argument arrays
 directly to that executable without invoking a shell.
 The preview bridge sends current unsaved Markdown together with the last
 retained `.tmd` bytes, so the CLI can resolve attachments and query the embedded
-database without the extension implementing either format. Unsaved SQLite,
-Rhai, and Formula source-definition edits are passed as a preview-only `extras`
+database without the extension implementing either format. Unsaved managed
+Formula, legacy Formula, and Rhai source-definition edits are passed as a
+preview-only `extras`
 override and are not written until the document is saved. Rhai script contents
 remain
 ordinary TMD attachments, but selecting a Rhai source in the Table tab exposes
@@ -45,11 +50,17 @@ its UTF-8 script in a CodeMirror editor. Script drafts participate in the same
 document dirty state, save, backup, undo, and redo lifecycle as Markdown and
 source-definition edits. Table and preview evaluation receive the draft as a
 bounded attachment override, so sandbox errors are reported without first
-writing the document. Formula programs are inline schema-version-3 source
-definitions and use the same dirty, save, backup, undo, and redo lifecycle. The
-Sources tab edits Rhai script paths/input mappings and Formula input/program
-fields together with ordered table output columns. An older configured external
-CLI falls back to the local safe Markdown renderer.
+writing the document. Managed Formula cells are inline source definitions;
+current schema version 8 stores visible target identities, direct cross-table
+`REF` formulas, and unlockable protected reference groups. Linked cells use a
+row picker and subdued lock outline; releasing a group preserves its formulas
+for free-form editing. Schema version 7 hidden relationships remain readable.
+These edits use the
+same dirty, save, backup, undo, and redo lifecycle. The Sources tab creates only
+Formula and Rhai source types; schema versions 1-7 and
+legacy SQLite/query/computed modes remain readable for compatibility. Rhai
+table output is always read-only. An older configured external CLI falls back
+to the local safe Markdown renderer.
 The preview displays a diagnostic banner when that fallback is active,
 distinguishing a missing, outdated, incompatible, or timed-out CLI and directing
 the user to `TMD: Select CLI Executable` without interrupting editing.
@@ -112,8 +123,16 @@ From the repository root:
 npm ci --prefix tmd-vscode
 npm run check --prefix tmd-vscode
 npm test --prefix tmd-vscode
+cargo build --locked -p tmd-cli
+TMD_E2E_CLI=../target/debug/tmd npm run test:e2e --prefix tmd-vscode
 npm run pack --prefix tmd-vscode
 ```
+
+The sample E2E test loads `tmd-sample/sample.tmd`, normalizes `contacts`, sends
+the resulting Schema v8 definitions through the extension-host message parser,
+and evaluates the draft with the real CLI to ensure every displayed value is
+preserved. It also selects a different protected reference and releases the
+group for a free-form Formula edit.
 
 The generic development VSIX does not contain a native CLI. CI builds the CLI
 on matching Linux, macOS, and Windows x64/arm64 runners, stages it under

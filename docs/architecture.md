@@ -55,9 +55,10 @@ The core crate owns:
 - `TmdDoc`, `Manifest`, and attachment metadata;
 - logical attachment path normalization and SHA-256 validation;
 - embedded SQLite lifecycle and migration helpers;
-- named dynamic-data registry parsing, read-only SQLite evaluation, sandboxed
-  Rhai transformation, Formula source resolution, and adaptation between
-  document data sources and the standalone Formula engine;
+- named dynamic-data registry parsing, SQLite-independent managed Formula table
+  evaluation, sandboxed Rhai transformation, legacy query/computed Formula
+  resolution, and adaptation between document data sources and the standalone
+  Formula engine;
 - `.tmd` ZIP serialization;
 - optional C ABI functions behind the `ffi` feature.
 
@@ -74,7 +75,7 @@ The CLI translates terminal inputs into `tmd-core` operations. It owns:
 - human-readable and schema-versioned JSON inspection/updates;
 - attachment and SQLite lifecycle UX;
 - Markdown-to-HTML and schema-versioned preview rendering with real `attach:`
-  URL rewriting and dynamic SQLite, Rhai, and Formula views.
+  URL rewriting and dynamic managed Formula, Rhai, and legacy Formula views.
 
 HTML rendering neutralizes raw markup and executable URL schemes. Self-contained
 exports retain passive raster-image and plain-text MIME types and downgrade
@@ -115,19 +116,22 @@ table tab displays a CodeMirror editor with a small Rhai lexer. Script drafts
 are document edits, while preview and table evaluation receive them as bounded
 in-memory attachment overrides. Debounced evaluation failures are translated
 to CodeMirror lint diagnostics when the Rhai runtime reports a source
-location. Formula programs are stored inline in schema-version-3 source
-definitions. Selecting a Formula source shows a separate CodeMirror editor,
-column legend, and syntax highlighting below the grid. Program edits flow
-immediately through the ordinary source-definition dirty/save/backup/undo
-lifecycle; table reevaluation is debounced, and the CLI/core returns typed
-line-and-column errors for editor diagnostics.
-For a Formula source whose SQLite input declares a schema-version-4 `edit`
-contract, the grid and formula bar stage either a primary-keyed database update
-or a Formula assignment. Cell/range selection inserts A1 references, and the
-fill handle translates relative references while preserving `$` components.
-The host stores database edits with the Formula program in revisioned editor
-state, applies them to temporary snapshots for preview and evaluation, and
-commits them transactionally only when the document is saved.
+location. Managed Formula rows, columns, typed literals, constraints, and
+per-cell expressions are stored inline in schema-version-6 source definitions;
+schema version 8 adds visible identity columns, self-contained cross-table
+`REF` evaluation, and unlockable reference-group editing constraints. Schema
+version 7 hidden relationships remain readable for compatibility.
+Their edits flow immediately through the ordinary source-definition
+dirty/save/backup/undo lifecycle; table reevaluation is debounced, and the
+CLI/core returns typed Formula diagnostics. The editor uses stable row and
+column identities for structure edits and rewrites position-based A1 references
+when inserting data. Range extraction and normalization update source
+definitions atomically; normalization retains the original visible columns as
+direct `REF` formulas, adds a visible identity to the extracted table, and
+protects the linked range with a releasable reference group.
+Query-backed and computed Formula modes keep their
+previous SQLite staging path for compatibility but are not created by the
+current editor.
 
 Platform-specific VSIX packages carry the matching native CLI. A machine-level
 setting may select an external CLI, while generic development packages fall

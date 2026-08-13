@@ -2,10 +2,13 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   formulaExpressionForCell,
+  insertFormulaColumns,
+  insertFormulaRows,
   setFormulaCellExpression,
   spreadsheetCellName,
   spreadsheetColumnName,
   translateFormulaExpression,
+  rebaseFormulaExpression,
 } from "../formula-program.js";
 
 test("Formula columns use familiar A1 spreadsheet labels", () => {
@@ -13,6 +16,13 @@ test("Formula columns use familiar A1 spreadsheet labels", () => {
   assert.equal(spreadsheetColumnName(25), "Z");
   assert.equal(spreadsheetColumnName(26), "AA");
   assert.equal(spreadsheetColumnName(127), "DX");
+});
+
+test("Formula extraction rebases absolute coordinates and HEADER references", () => {
+  assert.equal(
+    rebaseFormulaExpression('$B$2 + c3 + HEADER(B) + "A1" + [@Input]', -1, -1),
+    '$A$1 + B2 + HEADER(A) + "A1" + [@Input]',
+  );
 });
 
 test("Formula programs expose and replace individual cell assignments", () => {
@@ -42,4 +52,22 @@ test("Formula fill shifts relative references and preserves absolute references"
 test("Formula columns reject invalid indexes", () => {
   assert.throws(() => spreadsheetColumnName(-1));
   assert.throws(() => spreadsheetColumnName(1.5));
+});
+
+test("Formula row insertion shifts targets and structural references", () => {
+  assert.equal(
+    insertFormulaRows('A1 = B2\nB2 = SUM($A$1:B2) + "A1" + [A1]\n', 1),
+    'A1 = B3\nB3 = SUM($A$1:B3) + "A1" + [A1]\n',
+  );
+});
+
+test("Formula column insertion shifts targets and structural references", () => {
+  assert.equal(
+    insertFormulaColumns(
+      'A1 = B1 + HEADER(B) + HEADER(A) + "HEADER(B)" + [HEADER(B)]\nB2 = SUM(A1:$B$2) // HEADER(B)\n',
+      1,
+    ),
+    'A1 = C1 + HEADER(C) + HEADER(A) + "HEADER(B)" + [HEADER(B)]\nC2 = SUM(A1:$C$2) // HEADER(B)\n',
+  );
+  assert.throws(() => insertFormulaColumns("A1 = 1", -1));
 });

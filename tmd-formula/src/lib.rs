@@ -997,6 +997,32 @@ impl Default for FormulaEvaluationLimits {
     }
 }
 
+/// One registry-aware lookup requested by a legacy two-argument or direct
+/// three-argument `REF` Formula.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FormulaReferenceRequest<'a> {
+    /// Zero-based row containing the Formula.
+    pub row: usize,
+    /// Direct target source. Present for `REF("table", key, "column")`.
+    pub target_source: Option<&'a str>,
+    /// Legacy local current-row key column. Present for two-argument REF.
+    pub reference_column: Option<&'a str>,
+    /// Evaluated key value.
+    pub reference_value: DataScalar,
+    /// Display name of the requested column in the referenced table.
+    pub target_column: &'a str,
+}
+
+/// Caller-owned bridge used to resolve document-specific Formula references.
+pub trait FormulaReferenceResolver {
+    /// Resolve one lookup without granting the Formula engine access to the
+    /// caller's registry, filesystem, or database.
+    fn resolve_reference(
+        &mut self,
+        request: FormulaReferenceRequest<'_>,
+    ) -> Result<DataScalar, String>;
+}
+
 /// Evaluate a parsed Formula program with the engine's default table limits.
 pub fn evaluate_formula_program(
     program: &FormulaProgram,
@@ -1017,6 +1043,40 @@ pub fn evaluate_formula_program_with_limits(
     input: &DataTable,
     output_columns: &[String],
     limits: FormulaEvaluationLimits,
+) -> Result<DataTable, FormulaError> {
+    evaluate_formula_program_with_limits_and_optional_reference_resolver(
+        program,
+        input,
+        output_columns,
+        limits,
+        None,
+    )
+}
+
+/// Evaluate a parsed Formula program with caller-supplied table limits and a
+/// resolver for `REF([@reference_column], "target_column")` lookups.
+pub fn evaluate_formula_program_with_limits_and_reference_resolver(
+    program: &FormulaProgram,
+    input: &DataTable,
+    output_columns: &[String],
+    limits: FormulaEvaluationLimits,
+    reference_resolver: &mut dyn FormulaReferenceResolver,
+) -> Result<DataTable, FormulaError> {
+    evaluate_formula_program_with_limits_and_optional_reference_resolver(
+        program,
+        input,
+        output_columns,
+        limits,
+        Some(reference_resolver),
+    )
+}
+
+fn evaluate_formula_program_with_limits_and_optional_reference_resolver(
+    program: &FormulaProgram,
+    input: &DataTable,
+    output_columns: &[String],
+    limits: FormulaEvaluationLimits,
+    reference_resolver: Option<&mut dyn FormulaReferenceResolver>,
 ) -> Result<DataTable, FormulaError> {
     let fallback_span = program.assignments.values().next().map_or(
         Span {
@@ -1091,6 +1151,7 @@ pub fn evaluate_formula_program_with_limits(
         grid,
         states: BTreeMap::new(),
         steps: 0,
+        reference_resolver,
     };
     for target in program.assignments.keys().copied().collect::<Vec<_>>() {
         let value = evaluator.evaluate_cell(target)?;
@@ -1115,16 +1176,17 @@ enum FormulaValue {
     Identifier(String),
 }
 
-struct Evaluator<'a> {
-    program: &'a FormulaProgram,
-    columns: &'a [String],
+struct Evaluator<'program, 'resolver> {
+    program: &'program FormulaProgram,
+    columns: &'program [String],
     input_rows: usize,
     grid: Vec<Vec<DataScalar>>,
     states: BTreeMap<CellRef, EvaluationState>,
     steps: usize,
+    reference_resolver: Option<&'resolver mut dyn FormulaReferenceResolver>,
 }
 
-impl Evaluator<'_> {
+impl Evaluator<'_, '_> {
     fn evaluate_cell(&mut self, cell: CellRef) -> Result<DataScalar, FormulaError> {
         if cell.row >= self.grid.len() || cell.column >= self.columns.len() {
             return Err(FormulaError::new(
@@ -1306,6 +1368,90 @@ impl Evaluator<'_> {
                 )
             })?;
             return Ok(FormulaValue::Scalar(DataScalar::String(header.clone())));
+        }
+        if upper == "REF" {
+            if arguments.len() != 2 && arguments.len() != 3 {
+                return Err(FormulaError::new(
+                    FormulaErrorKind::Value,
+                    span,
+                    "REF expects 2 or 3 arguments",
+                ));
+            }
+            let (target_source, reference_column, reference_value, target_column) = if arguments
+                .len()
+                == 3
+            {
+                let ExprKind::Scalar(DataScalar::String(target_source)) = &arguments[0].kind else {
+                    return Err(FormulaError::new(
+                        FormulaErrorKind::Ref,
+                        arguments[0].span,
+                        "REF source must be a text literal",
+                    ));
+                };
+                let value = self.evaluate_expr(&arguments[1], target)?;
+                let reference_value = self.require_scalar(value, arguments[1].span)?;
+                let ExprKind::Scalar(DataScalar::String(target_column)) = &arguments[2].kind else {
+                    return Err(FormulaError::new(
+                        FormulaErrorKind::Ref,
+                        arguments[2].span,
+                        "REF target column must be a text literal",
+                    ));
+                };
+                (
+                    Some(target_source.as_str()),
+                    None,
+                    reference_value,
+                    target_column.as_str(),
+                )
+            } else {
+                let ExprKind::NamedColumn {
+                    name: reference_column,
+                    current_row: true,
+                } = &arguments[0].kind
+                else {
+                    return Err(FormulaError::new(
+                            FormulaErrorKind::Ref,
+                            arguments[0].span,
+                            "REF first argument must be a current-row reference such as `[@detail_ref]`",
+                        ));
+                };
+                let reference_column_index =
+                    self.column_by_name(reference_column, arguments[0].span)?;
+                let reference_value = self.evaluate_cell(CellRef {
+                    row: target.row,
+                    column: reference_column_index,
+                })?;
+                let ExprKind::Scalar(DataScalar::String(target_column)) = &arguments[1].kind else {
+                    return Err(FormulaError::new(
+                        FormulaErrorKind::Ref,
+                        arguments[1].span,
+                        "REF target column must be a text literal",
+                    ));
+                };
+                (
+                    None,
+                    Some(reference_column.as_str()),
+                    reference_value,
+                    target_column.as_str(),
+                )
+            };
+            let Some(reference_resolver) = self.reference_resolver.as_deref_mut() else {
+                return Err(FormulaError::new(
+                    FormulaErrorKind::Ref,
+                    span,
+                    "REF is unavailable without a caller-supplied reference resolver",
+                ));
+            };
+            let value = reference_resolver
+                .resolve_reference(FormulaReferenceRequest {
+                    row: target.row,
+                    target_source,
+                    reference_column,
+                    reference_value,
+                    target_column,
+                })
+                .map_err(|message| FormulaError::new(FormulaErrorKind::Ref, span, message))?;
+            return Ok(FormulaValue::Scalar(value));
         }
 
         let mut values = Vec::with_capacity(arguments.len());
@@ -1765,7 +1911,14 @@ fn evaluate_binary(
     span: Span,
 ) -> Result<DataScalar, FormulaError> {
     match operator {
-        BinaryOperator::Add | BinaryOperator::Subtract | BinaryOperator::Multiply => {
+        BinaryOperator::Add => match (left, right) {
+            (DataScalar::String(mut left), DataScalar::String(right)) => {
+                left.push_str(&right);
+                Ok(DataScalar::String(left))
+            }
+            (left, right) => arithmetic(operator, left, right, span),
+        },
+        BinaryOperator::Subtract | BinaryOperator::Multiply => {
             arithmetic(operator, left, right, span)
         }
         BinaryOperator::Divide => {
@@ -2023,6 +2176,107 @@ mod tests {
         .expect("formula table");
         assert_eq!(table.rows[0][2], DataScalar::Integer(10));
         assert_eq!(table.rows[1][2], DataScalar::Integer(40));
+    }
+
+    #[test]
+    fn resolves_bounded_current_row_references_through_the_caller() {
+        struct Resolver {
+            requests: Vec<(usize, String, DataScalar, String)>,
+        }
+
+        impl FormulaReferenceResolver for Resolver {
+            fn resolve_reference(
+                &mut self,
+                request: FormulaReferenceRequest<'_>,
+            ) -> Result<DataScalar, String> {
+                self.requests.push((
+                    request.row,
+                    request
+                        .reference_column
+                        .or(request.target_source)
+                        .unwrap_or_default()
+                        .to_owned(),
+                    request.reference_value.clone(),
+                    request.target_column.to_owned(),
+                ));
+                Ok(DataScalar::String(format!(
+                    "{}:{}",
+                    request.reference_value.display_text(),
+                    request.target_column
+                )))
+            }
+        }
+
+        let program = parse_formula_program(
+            "C1 = REF([@item], \"city\")\nC2 = CONCAT(REF([@item], \"country\"), \"!\")",
+        )
+        .expect("REF program");
+        let mut resolver = Resolver {
+            requests: Vec::new(),
+        };
+        let table = evaluate_formula_program_with_limits_and_reference_resolver(
+            &program,
+            &input_table(),
+            &["item".to_owned(), "amount".to_owned(), "result".to_owned()],
+            FormulaEvaluationLimits::default(),
+            &mut resolver,
+        )
+        .expect("resolved table");
+        assert_eq!(
+            table.rows[0][2],
+            DataScalar::String("books:city".to_owned())
+        );
+        assert_eq!(
+            table.rows[1][2],
+            DataScalar::String("games:country!".to_owned())
+        );
+        assert_eq!(resolver.requests.len(), 2);
+
+        let program = parse_formula_program(
+            "C1 = REF(\"contacts-detail\", \"contacts-detail-1\", \"city\") + \"さん\"",
+        )
+        .expect("direct REF program");
+        let table = evaluate_formula_program_with_limits_and_reference_resolver(
+            &program,
+            &input_table(),
+            &["item".to_owned(), "amount".to_owned(), "result".to_owned()],
+            FormulaEvaluationLimits::default(),
+            &mut resolver,
+        )
+        .expect("direct REF result");
+        assert_eq!(
+            table.rows[0][2],
+            DataScalar::String("contacts-detail-1:cityさん".to_owned())
+        );
+        assert_eq!(resolver.requests[2].1, "contacts-detail");
+
+        let error = evaluate("C1 = REF([@item], \"city\")", &["item", "amount", "result"])
+            .expect_err("REF requires a resolver");
+        assert!(error.to_string().contains("#REF!"));
+        assert!(error.to_string().contains("caller-supplied"));
+
+        let program = parse_formula_program("C1 = REF(A1, \"city\")").expect("REF syntax");
+        let error = evaluate_formula_program_with_limits_and_reference_resolver(
+            &program,
+            &input_table(),
+            &["item".to_owned(), "amount".to_owned(), "result".to_owned()],
+            FormulaEvaluationLimits::default(),
+            &mut resolver,
+        )
+        .expect_err("REF requires a current-row named column");
+        assert!(error.to_string().contains("current-row reference"));
+
+        let program =
+            parse_formula_program("C1 = REF([@item], CONCAT(\"ci\", \"ty\"))").expect("REF syntax");
+        let error = evaluate_formula_program_with_limits_and_reference_resolver(
+            &program,
+            &input_table(),
+            &["item".to_owned(), "amount".to_owned(), "result".to_owned()],
+            FormulaEvaluationLimits::default(),
+            &mut resolver,
+        )
+        .expect_err("REF target column must remain statically discoverable");
+        assert!(error.to_string().contains("text literal"));
     }
 
     #[test]

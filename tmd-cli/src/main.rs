@@ -1095,7 +1095,7 @@ fn render_block_data_view(
             Err(error) => render_view_error(&error.to_string(), true),
         },
         DataViewRenderKind::Table => match value.as_table() {
-            Ok(table) => render_data_table(table),
+            Ok(table) => render_data_table(table, &reference.source),
             Err(error) => render_view_error(&error.to_string(), true),
         },
         DataViewRenderKind::List | DataViewRenderKind::Code => render_view_error(
@@ -1109,18 +1109,23 @@ fn render_block_data_view(
     }
 }
 
-fn render_data_table(table: &tmd_core::DataTable) -> String {
-    let mut output = String::from("<table class=\"tmd-view-table\"><thead><tr>");
+fn render_data_table(table: &tmd_core::DataTable, source: &str) -> String {
+    let mut output = format!(
+        "<table class=\"tmd-view-table\" data-tmd-source=\"{}\"><thead><tr>",
+        encode_double_quoted_attribute(source)
+    );
     for column in &table.columns {
         output.push_str("<th>");
         output.push_str(&encode_text(column));
         output.push_str("</th>");
     }
     output.push_str("</tr></thead><tbody>");
-    for row in &table.rows {
+    for (row_index, row) in table.rows.iter().enumerate() {
         output.push_str("<tr>");
-        for value in row {
-            output.push_str("<td>");
+        for (column_index, value) in row.iter().enumerate() {
+            output.push_str(&format!(
+                "<td data-tmd-row=\"{row_index}\" data-tmd-column=\"{column_index}\">"
+            ));
             output.push_str(&encode_text(&value.display_text()));
             output.push_str("</td>");
         }

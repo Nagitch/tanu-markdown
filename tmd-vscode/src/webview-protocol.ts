@@ -25,7 +25,7 @@ export type EditorRequest =
       type: "editSpreadsheet";
       clientRevision: number;
       source: string;
-      formulaProgram: string;
+      formulaProgram?: string;
       databaseEdits: DatabaseCellEdit[];
     }
   | {
@@ -35,6 +35,12 @@ export type EditorRequest =
     }
   | {
       type: "dataSourceTable";
+      clientRevision: number;
+      requestId: number;
+      source: string;
+    }
+  | {
+      type: "referenceTargetTable";
       clientRevision: number;
       requestId: number;
       source: string;
@@ -68,12 +74,22 @@ export interface EditorModelMessage {
   dataSourceRegistry: DataSourceRegistryView;
   previewHtml: string;
   editingLocked: boolean;
+  persisted: boolean;
 }
 
 export interface EditorAcknowledgementMessage {
   type: "editAck";
   clientRevision: number;
   contentRevision: number;
+  applied?: boolean;
+  notice?: string;
+}
+
+export interface EditorRejectionMessage {
+  type: "editRejected";
+  clientRevision: number;
+  contentRevision: number;
+  issue: string;
 }
 
 export interface EditorPreviewMessage {
@@ -85,6 +101,16 @@ export interface EditorPreviewMessage {
 
 export interface EditorDataSourceTableMessage {
   type: "dataSourceTable";
+  clientRevision: number;
+  contentRevision: number;
+  requestId: number;
+  source: string;
+  table?: DataSourceTable;
+  issue?: string;
+}
+
+export interface EditorReferenceTargetTableMessage {
+  type: "referenceTargetTable";
   clientRevision: number;
   contentRevision: number;
   requestId: number;
@@ -107,8 +133,10 @@ export interface EditorRhaiScriptMessage {
 export type EditorHostMessage =
   | EditorModelMessage
   | EditorAcknowledgementMessage
+  | EditorRejectionMessage
   | EditorPreviewMessage
   | EditorDataSourceTableMessage
+  | EditorReferenceTargetTableMessage
   | EditorRhaiScriptMessage;
 
 export function isEditorRequest(value: unknown): value is EditorRequest {
@@ -127,6 +155,7 @@ export function isEditorRequest(value: unknown): value is EditorRequest {
     "editSpreadsheet",
     "preview",
     "dataSourceTable",
+    "referenceTargetTable",
     "rhaiScript",
     "editRhaiScript",
     "validate",

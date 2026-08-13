@@ -31,12 +31,12 @@ To exercise the custom editor:
 
 The pre-launch task incrementally rebuilds Rust and TypeScript, restages the
 CLI, validates `tmd-sample/sample.tmd`, and opens that file in an Extension
-Development Host window. Its Preview tab evaluates the SQLite-to-Rhai category
-summary through the same CLI/core path used by packaged extensions. The Sources
-tab edits SQLite queries, schema-version-2 Rhai tables, and schema-version-3
-Formula tables. Rhai script bodies remain attachments, while Formula programs
-are inline source definitions; unsaved definition changes are previewed without
-first writing the document.
+Development Host window. Its Preview tab evaluates managed Formula tables and
+a managed-Formula-to-Rhai view through the same CLI/core path used by packaged
+extensions. The Sources tab writes schema-version-7 managed Formula and Rhai
+tables. Rhai script bodies remain attachments, while managed cell values,
+constraints, and formulas are inline source definitions; unsaved changes are
+previewed without first writing the document.
 
 The default build task (**Terminal: Run Build Task**) runs the same preparation
 script without starting an Extension Development Host.
@@ -68,10 +68,12 @@ just check-all
 | Extension install | `npm ci --prefix tmd-vscode` |
 | Extension type check | `npm run check --prefix tmd-vscode` |
 | Extension tests | `npm test --prefix tmd-vscode` |
+| Sample normalization E2E | `TMD_E2E_CLI=../target/debug/tmd npm run test:e2e --prefix tmd-vscode` |
 | Extension package | `npm run pack --prefix tmd-vscode` |
 
 `just check-all` runs all checks. CI uses `--locked` for Cargo to ensure the
-committed dependency graph is reproducible.
+committed dependency graph is reproducible. The normalization E2E requires a
+current `target/debug/tmd`, which `just check-all` and CI build first.
 
 ## Dependency updates
 
