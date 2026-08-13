@@ -299,10 +299,20 @@ function rewriteFormulaReferences(
     if (character === "[") bracketDepth += 1;
     if (character === "]") bracketDepth = Math.max(0, bracketDepth - 1);
     if (bracketDepth === 0) {
+      const previous = expression[index - 1];
+      const header = /^HEADER\s*\(\s*([A-Za-z]+)\s*\)/iu.exec(
+        expression.slice(index),
+      );
+      if (header && !isReferenceIdentifierCharacter(previous)) {
+        const originalColumn = spreadsheetColumnIndex(header[1] ?? "");
+        const mapped = mapCell(0, originalColumn);
+        result += `HEADER(${spreadsheetColumnName(mapped.column)})`;
+        index += header[0].length;
+        continue;
+      }
       const match = /^(\$?)([A-Za-z]+)(\$?)([1-9][0-9]*)/u.exec(
         expression.slice(index),
       );
-      const previous = expression[index - 1];
       const next = match ? expression[index + match[0].length] : undefined;
       if (
         match &&

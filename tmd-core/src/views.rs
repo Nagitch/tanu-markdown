@@ -1840,9 +1840,13 @@ impl<'registry> ManagedFormulaEvaluator<'registry> {
                 )))
             }
         };
-        let table = self.evaluate_full(name)?;
+        self.ensure_evaluated(name)?;
+        let table = self
+            .cache
+            .get(name)
+            .expect("managed Formula table was cached after evaluation");
         if columns.iter().all(|column| !column.hidden) {
-            return Ok(table);
+            return Ok(table.clone());
         }
         let visible = columns
             .iter()
@@ -1856,15 +1860,15 @@ impl<'registry> ManagedFormulaEvaluator<'registry> {
                 .collect(),
             rows: table
                 .rows
-                .into_iter()
+                .iter()
                 .map(|row| visible.iter().map(|index| row[*index].clone()).collect())
                 .collect(),
         })
     }
 
-    fn evaluate_full(&mut self, name: &str) -> TmdResult<DataTable> {
-        if let Some(table) = self.cache.get(name) {
-            return Ok(table.clone());
+    fn ensure_evaluated(&mut self, name: &str) -> TmdResult<()> {
+        if self.cache.contains_key(name) {
+            return Ok(());
         }
         if let Some(start) = self.visiting.iter().position(|source| source == name) {
             let mut cycle = self.visiting[start..].to_vec();
@@ -1894,10 +1898,9 @@ impl<'registry> ManagedFormulaEvaluator<'registry> {
         let result = self.evaluate_definition(name, &columns, &rows);
         let popped = self.visiting.pop();
         debug_assert_eq!(popped.as_deref(), Some(name));
-        if let Ok(table) = &result {
-            self.cache.insert(name.to_owned(), table.clone());
-        }
-        result
+        let table = result?;
+        self.cache.insert(name.to_owned(), table);
+        Ok(())
     }
 
     fn evaluate_definition(
@@ -2018,37 +2021,44 @@ impl FormulaReferenceResolver for ManagedFormulaReferenceResolver<'_, '_, '_> {
                 reference_column, self.source_name
             )
         })?;
-        let target_columns = match self.evaluator.registry.sources.get(&reference.source) {
-            Some(DataSourceDefinition::FormulaTable { columns, .. }) => columns.clone(),
-            _ => {
-                return Err(format!(
-                    "REF relationship target `{}` is not a managed Formula table",
-                    reference.source
-                ))
-            }
-        };
-        let key_column = target_columns
-            .iter()
-            .position(|column| column.id == reference.column_id)
-            .ok_or_else(|| {
-                format!(
-                    "REF relationship target `{}` no longer contains key column id `{}`",
-                    reference.source, reference.column_id
-                )
-            })?;
-        let value_column = target_columns
-            .iter()
-            .position(|column| column.name == request.target_column)
-            .ok_or_else(|| {
-                format!(
-                    "REF target `{}` has no column `{}`",
-                    reference.source, request.target_column
-                )
-            })?;
+        let (key_column, value_column) =
+            match self.evaluator.registry.sources.get(&reference.source) {
+                Some(DataSourceDefinition::FormulaTable { columns, .. }) => {
+                    let key_column = columns
+                        .iter()
+                        .position(|column| column.id == reference.column_id)
+                        .ok_or_else(|| {
+                            format!(
+                            "REF relationship target `{}` no longer contains key column id `{}`",
+                            reference.source, reference.column_id
+                        )
+                        })?;
+                    let value_column = columns
+                        .iter()
+                        .position(|column| column.name == request.target_column)
+                        .ok_or_else(|| {
+                            format!(
+                                "REF target `{}` has no column `{}`",
+                                reference.source, request.target_column
+                            )
+                        })?;
+                    (key_column, value_column)
+                }
+                _ => {
+                    return Err(format!(
+                        "REF relationship target `{}` is not a managed Formula table",
+                        reference.source
+                    ))
+                }
+            };
+        self.evaluator
+            .ensure_evaluated(&reference.source)
+            .map_err(|error| error.to_string())?;
         let target = self
             .evaluator
-            .evaluate_full(&reference.source)
-            .map_err(|error| error.to_string())?;
+            .cache
+            .get(&reference.source)
+            .expect("REF target was cached after evaluation");
         let mut matches = target
             .rows
             .iter()
@@ -2084,28 +2094,36 @@ impl ManagedFormulaReferenceResolver<'_, '_, '_> {
         reference_value: DataScalar,
         target_column: &str,
     ) -> Result<DataScalar, String> {
-        let target_columns = match self.evaluator.registry.sources.get(target_source) {
-            Some(DataSourceDefinition::FormulaTable { columns, .. }) => columns.clone(),
+        let (key_column, value_column) = match self.evaluator.registry.sources.get(target_source) {
+            Some(DataSourceDefinition::FormulaTable { columns, .. }) => {
+                let key_column = columns
+                    .iter()
+                    .position(|column| column.identity)
+                    .ok_or_else(|| {
+                        format!("REF target `{target_source}` has no identity column")
+                    })?;
+                let value_column = columns
+                    .iter()
+                    .position(|column| column.name == target_column)
+                    .ok_or_else(|| {
+                        format!("REF target `{target_source}` has no column `{target_column}`")
+                    })?;
+                (key_column, value_column)
+            }
             _ => {
                 return Err(format!(
                     "REF target `{target_source}` is not a managed Formula table"
                 ))
             }
         };
-        let key_column = target_columns
-            .iter()
-            .position(|column| column.identity)
-            .ok_or_else(|| format!("REF target `{target_source}` has no identity column"))?;
-        let value_column = target_columns
-            .iter()
-            .position(|column| column.name == target_column)
-            .ok_or_else(|| {
-                format!("REF target `{target_source}` has no column `{target_column}`")
-            })?;
+        self.evaluator
+            .ensure_evaluated(target_source)
+            .map_err(|error| error.to_string())?;
         let target = self
             .evaluator
-            .evaluate_full(target_source)
-            .map_err(|error| error.to_string())?;
+            .cache
+            .get(target_source)
+            .expect("REF target was cached after evaluation");
         let mut matches = target
             .rows
             .iter()
