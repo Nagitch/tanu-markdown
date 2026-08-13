@@ -1640,7 +1640,7 @@ function addFormulaTableRow(): void {
   const managed = managedStructureContext();
   if (managed) {
     const row = managed.rows.length;
-    insertManagedRow(managed, row);
+    insertManagedRow(managed, row, currentTable ?? undefined);
     applyManagedStructure(managed, { row, column: selectedCell?.column ?? 0 }, "Adding row…");
     return;
   }
@@ -1655,7 +1655,12 @@ function duplicateFormulaTableRow(): void {
   const managed = managedStructureContext(true);
   if (managed && selectedCell) {
     const row = managed.rows.length;
-    duplicateManagedRow(managed, selectedCell.row, row);
+    duplicateManagedRow(
+      managed,
+      selectedCell.row,
+      row,
+      currentTable ?? undefined,
+    );
     applyManagedStructure(managed, { row, column: selectedCell.column }, "Duplicating row…");
     return;
   }
@@ -1693,7 +1698,7 @@ function duplicateFormulaTableRow(): void {
 function insertFormulaTableRow(): void {
   const managed = managedStructureContext(true);
   if (managed && selectedCell) {
-    insertManagedRow(managed, selectedCell.row);
+    insertManagedRow(managed, selectedCell.row, currentTable ?? undefined);
     applyManagedStructure(managed, { ...selectedCell }, "Inserting row…");
     return;
   }
@@ -2055,12 +2060,9 @@ async function applyCellText(
   try {
     if (managedSource) {
       if (managedSource.columns[position.column]?.identity) {
-        const previous = managedSource.rows[position.row]?.cells[position.column];
-        if (
-          previous?.content.kind !== "literal" ||
-          previous.content.value.type !== "string"
-        ) {
-          throw new Error("Identity cells require literal text values.");
+        const previousIdentity = currentTable.rows[position.row]?.[position.column];
+        if (!previousIdentity || previousIdentity.type === "null") {
+          throw new Error("Identity cells require evaluated non-null scalar values.");
         }
         const nextSources = tableSourceDefinitions.map(cloneDataSource);
         const updated = nextSources.find(
@@ -2073,29 +2075,24 @@ async function applyCellText(
         const next = updated.rows[position.row]?.cells[position.column];
         if (
           next?.content.kind !== "literal" ||
-          next.content.value.type !== "string" ||
-          next.content.value.value === ""
+          next.content.value.type === "null"
         ) {
-          throw new Error("Identity cells require non-empty literal text values.");
+          throw new Error("Identity edits require non-null literal scalar values.");
         }
-        const nextIdentity = next.content.value.value;
+        const nextIdentity = next.content.value;
         if (
-          updated.rows.some((row, index) => {
-            const content = row.cells[position.column]?.content;
-            return (
+          currentTable.rows.some(
+            (row, index) =>
               index !== position.row &&
-              content?.kind === "literal" &&
-              content.value.type === "string" &&
-              content.value.value === nextIdentity
-            );
-          })
+              dataTableCellsEqual(row[position.column], nextIdentity),
+          )
         ) {
           throw new Error("Identity values must be unique within their table.");
         }
         renameManagedReferenceIdentity(
           nextSources.filter(isManagedFormulaDataSource),
           updated.name,
-          previous.content.value.value,
+          previousIdentity,
           nextIdentity,
         );
         selectedCell = { ...position };

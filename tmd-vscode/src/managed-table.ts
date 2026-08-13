@@ -216,9 +216,11 @@ export function renameManagedReferencedSource(
 export function renameManagedReferenceIdentity(
   sources: readonly ManagedFormulaDataSource[],
   targetSourceName: string,
-  previousIdentity: string,
-  nextIdentity: string,
+  previousIdentity: string | DataTableCell,
+  nextIdentity: string | DataTableCell,
 ): void {
+  const previous = managedIdentityCell(previousIdentity);
+  const next = managedIdentityCell(nextIdentity);
   for (const source of sources) {
     for (const row of source.rows) {
       for (const cell of row.cells) {
@@ -226,14 +228,14 @@ export function renameManagedReferenceIdentity(
         cell.content.expression = rewriteDirectRefCalls(
           cell.content.expression,
           (reference) => {
-            const identity = parseFormulaStringArgument(
+            const identity = parseDirectRefIdentityExpression(
               reference.identityExpression.trim(),
             );
             return reference.source === targetSourceName &&
-              identity === previousIdentity
+              dataTableCellsEqual(identity, previous)
               ? {
                   ...reference,
-                  identityExpression: JSON.stringify(nextIdentity),
+                  identityExpression: directRefIdentityExpression(next),
                 }
               : reference;
           },
@@ -267,6 +269,7 @@ export function setManagedCellText(
 export function insertManagedRow(
   source: ManagedFormulaDataSource,
   index: number,
+  evaluatedSource?: DataSourceTable,
 ): void {
   const previousRows = source.rows.map((row) => row.id);
   const program = insertFormulaRows(managedFormulaProgram(source), index);
@@ -296,13 +299,14 @@ export function insertManagedRow(
       source.rows[index].cells[column] = cloneManagedCell(template);
     }
   }
-  assignGeneratedManagedIdentity(source, index);
+  assignGeneratedManagedIdentity(source, index, undefined, evaluatedSource);
 }
 
 export function duplicateManagedRow(
   source: ManagedFormulaDataSource,
   origin: number,
   destination = source.rows.length,
+  evaluatedSource?: DataSourceTable,
 ): void {
   const original = source.rows[origin];
   if (!original) throw new Error("Select a row to duplicate.");
@@ -317,7 +321,7 @@ export function duplicateManagedRow(
       );
     }
   }
-  assignGeneratedManagedIdentity(source, destination, row);
+  assignGeneratedManagedIdentity(source, destination, row, evaluatedSource);
   source.rows.splice(destination, 0, row);
   for (const group of source.referenceGroups ?? []) {
     if (!group.rowIds.includes(original.id)) continue;
@@ -671,7 +675,7 @@ function parseDirectRefIdentityExpression(expression: string): DataTableCell | u
     return { type: "boolean", value: /^true$/iu.test(expression) };
   }
   if (/^-?(?:0|[1-9]\d*)$/u.test(expression)) {
-    return { type: "integer", value: expression };
+    return { type: "integer", value: BigInt(expression).toString() };
   }
   const value = Number(expression);
   return Number.isFinite(value) ? { type: "real", value } : undefined;
@@ -1145,6 +1149,7 @@ function assignGeneratedManagedIdentity(
   source: ManagedFormulaDataSource,
   rowIndex: number,
   detachedRow?: ManagedFormulaRow,
+  evaluatedSource?: DataSourceTable,
 ): void {
   const identityColumn = source.columns.findIndex(
     (column) => column.identity === true,
@@ -1152,21 +1157,50 @@ function assignGeneratedManagedIdentity(
   const row = detachedRow ?? source.rows[rowIndex];
   const identityCell = row?.cells[identityColumn];
   if (identityColumn < 0 || !identityCell) return;
-  const used = new Set(
-    source.rows.flatMap((candidate) => {
-      if (candidate === row) return [];
-      const content = candidate.cells[identityColumn]?.content;
-      return content?.kind === "literal" && content.value.type === "string"
-        ? [content.value.value]
-        : [];
-    }),
-  );
+  const used = new Set<string>();
+  for (const evaluated of evaluatedSource?.rows ?? []) {
+    const identity = evaluated[identityColumn];
+    if (identity && identity.type !== "null") {
+      used.add(dataTableCellKey(identity));
+    }
+  }
+  for (const candidate of source.rows) {
+    if (candidate === row) continue;
+    const content = candidate.cells[identityColumn]?.content;
+    if (content?.kind === "literal" && content.value.type !== "null") {
+      used.add(dataTableCellKey(content.value));
+    }
+  }
   let number = 1;
-  while (used.has(`${source.name}-${number}`)) number += 1;
+  while (
+    used.has(
+      dataTableCellKey({ type: "string", value: `${source.name}-${number}` }),
+    )
+  ) {
+    number += 1;
+  }
   identityCell.content = {
     kind: "literal",
     value: { type: "string", value: `${source.name}-${number}` },
   };
+}
+
+function managedIdentityCell(identity: string | DataTableCell): DataTableCell {
+  return typeof identity === "string"
+    ? { type: "string", value: identity }
+    : identity;
+}
+
+function dataTableCellKey(cell: DataTableCell): string {
+  return JSON.stringify(cell);
+}
+
+function dataTableCellsEqual(
+  left: DataTableCell | undefined,
+  right: DataTableCell | undefined,
+): boolean {
+  return left !== undefined && right !== undefined &&
+    dataTableCellKey(left) === dataTableCellKey(right);
 }
 
 function uniqueManagedColumnName(

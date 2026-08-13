@@ -75,6 +75,25 @@ test("renaming a referenced column updates only related REF target arguments", (
   );
 });
 
+test("renaming an identity preserves scalar types in linked REF formulas", () => {
+  const source = createManagedFormulaDataSource("orders");
+  source.rows[0].cells[0].content = {
+    kind: "formula",
+    expression:
+      'REF("places", 1, "City") + REF("places", "1", "City")',
+  };
+  renameManagedReferenceIdentity(
+    [source],
+    "places",
+    { type: "integer", value: "1" },
+    { type: "boolean", value: true },
+  );
+  assert.equal(
+    managedCellText(source, 0, 0),
+    '=REF("places", true, "City") + REF("places", "1", "City")',
+  );
+});
+
 test("renaming referenced sources and columns preserves scalar identity expressions", () => {
   const target = createManagedFormulaDataSource("places");
   target.columns[0].name = "City";
@@ -361,4 +380,34 @@ test("reference selection uses evaluated Formula identity values", () => {
     managedCellText(result.source, 0, 1),
     '=REF("places", "computed-place", "City")',
   );
+});
+
+test("generated identities avoid evaluated Formula identity values", () => {
+  const target = createManagedFormulaDataSource("places");
+  target.columns[2] = {
+    ...target.columns[2],
+    name: "ID",
+    identity: true,
+  };
+  for (const [index, row] of target.rows.entries()) {
+    row.cells[2].content = {
+      kind: "formula",
+      expression: JSON.stringify(`places-${index + 1}`),
+    };
+  }
+  const evaluatedTarget = {
+    source: "places",
+    kind: "table" as const,
+    columns: target.columns.map((column) => column.name),
+    rows: target.rows.map((_, index) => [
+      { type: "null" as const },
+      { type: "null" as const },
+      { type: "string" as const, value: `places-${index + 1}` },
+    ]),
+  };
+
+  insertManagedRow(target, 1, evaluatedTarget);
+  assert.equal(managedCellText(target, 1, 2), "places-4");
+  duplicateManagedRow(target, 0, target.rows.length, evaluatedTarget);
+  assert.equal(managedCellText(target, target.rows.length - 1, 2), "places-5");
 });
