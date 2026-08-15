@@ -12,11 +12,12 @@ lint:
 test:
     cargo test --workspace --all-features
 
+samples-build:
+    cargo run --locked -p tmd-core --example generate_business_samples
+    cargo run --locked -p tmd-core --example generate_rpg_samples
+
 samples:
-    cargo run --locked -p tmd-cli -- validate tmd-sample/sample.tmd
-    printf '%s' '{"schema_version":1,"source":"orders"}' | cargo run --locked -p tmd-cli -- data-source tmd-sample/sample.tmd --json-stdin >/dev/null
-    printf '%s' '{"schema_version":1,"source":"contacts"}' | cargo run --locked -p tmd-cli -- data-source tmd-sample/sample.tmd --json-stdin >/dev/null
-    printf '%s' '{"schema_version":1,"source":"order-report"}' | cargo run --locked -p tmd-cli -- data-source tmd-sample/sample.tmd --json-stdin >/dev/null
+    for sample in tmd-sample/*.tmd; do cargo run --locked -p tmd-cli -- validate "$sample"; done
 
 doc:
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps

@@ -33,7 +33,7 @@ normative implemented contract and the
 | `tmd-cli/` | CLI for creating, validating, publishing, exporting, and editing documents |
 | `tmd-core-ffi/` | C ABI dynamic-library wrapper around the optional `tmd-core` FFI surface |
 | `tmd-vscode/` | VS Code custom editor using the `tmd` JSON bridge |
-| `tmd-sample/` | Reference `.tmd` file |
+| `tmd-sample/` | Executable reference and scenario `.tmd` documents |
 | `docs/` | Architecture, format, workflow, and release-readiness documentation |
 
 The Rust packages form one Cargo workspace and share the root `Cargo.lock`.

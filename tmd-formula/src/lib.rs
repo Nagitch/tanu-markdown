@@ -1471,6 +1471,9 @@ impl Evaluator<'_, '_> {
                 DataScalar::Boolean(!self.require_boolean(values[0].0.clone(), values[0].1)?)
             }
             "ROUND" => self.round(&values, span)?,
+            "CEILING" => self.round_to_multiple(&upper, &values, span, RoundingDirection::Up)?,
+            "FLOOR" => self.round_to_multiple(&upper, &values, span, RoundingDirection::Down)?,
+            "POWER" => self.power(&values, span)?,
             "ABS" => self.abs(&values, span)?,
             "CONCAT" => self.concat(&values, span)?,
             "LEN" => self.len(&values, span)?,
@@ -1628,6 +1631,85 @@ impl Evaluator<'_, '_> {
         let value = numeric_as_f64(number, values[0].1)?;
         let factor = 10_f64.powi(digits);
         finite_real((value * factor).round() / factor, span)
+    }
+
+    fn round_to_multiple(
+        &self,
+        name: &str,
+        values: &[(FormulaValue, Span)],
+        span: Span,
+        direction: RoundingDirection,
+    ) -> Result<DataScalar, FormulaError> {
+        if !(1..=2).contains(&values.len()) {
+            return Err(FormulaError::new(
+                FormulaErrorKind::Value,
+                span,
+                format!("{name} expects one or two arguments"),
+            ));
+        }
+        let number = finite_number(
+            self.require_scalar(values[0].0.clone(), values[0].1)?,
+            values[0].1,
+            name,
+        )?;
+        let significance = if values.len() == 2 {
+            finite_number(
+                self.require_scalar(values[1].0.clone(), values[1].1)?,
+                values[1].1,
+                name,
+            )?
+        } else {
+            1.0
+        };
+        if significance == 0.0 {
+            return Err(FormulaError::new(
+                FormulaErrorKind::DivZero,
+                values.get(1).map_or(span, |value| value.1),
+                format!("{name} significance must not be zero"),
+            ));
+        }
+
+        let significance = significance.abs();
+        let quotient = number / significance;
+        let multiple = match direction {
+            RoundingDirection::Up => quotient.ceil(),
+            RoundingDirection::Down => quotient.floor(),
+        };
+        let result = multiple * significance;
+        finite_real(if result == 0.0 { 0.0 } else { result }, span)
+    }
+
+    fn power(
+        &self,
+        values: &[(FormulaValue, Span)],
+        span: Span,
+    ) -> Result<DataScalar, FormulaError> {
+        require_value_count("POWER", values, 2, span)?;
+        let base = finite_number(
+            self.require_scalar(values[0].0.clone(), values[0].1)?,
+            values[0].1,
+            "POWER",
+        )?;
+        let exponent = finite_number(
+            self.require_scalar(values[1].0.clone(), values[1].1)?,
+            values[1].1,
+            "POWER",
+        )?;
+        if base == 0.0 && exponent < 0.0 {
+            return Err(FormulaError::new(
+                FormulaErrorKind::DivZero,
+                span,
+                "POWER cannot raise zero to a negative exponent",
+            ));
+        }
+        if base < 0.0 && exponent.fract() != 0.0 {
+            return Err(FormulaError::new(
+                FormulaErrorKind::Value,
+                span,
+                "POWER with a negative base requires an integer exponent",
+            ));
+        }
+        finite_real(base.powf(exponent), span)
     }
 
     fn abs(
@@ -1798,6 +1880,12 @@ fn require_value_count(
 enum Number {
     Integer(i64),
     Real(f64),
+}
+
+#[derive(Clone, Copy)]
+enum RoundingDirection {
+    Up,
+    Down,
 }
 
 #[derive(Clone, Copy)]
@@ -2012,6 +2100,19 @@ fn numeric_as_f64(value: DataScalar, span: Span) -> Result<f64, FormulaError> {
     }
 }
 
+fn finite_number(value: DataScalar, span: Span, name: &str) -> Result<f64, FormulaError> {
+    let value = numeric_as_f64(value, span)?;
+    if value.is_finite() {
+        Ok(value)
+    } else {
+        Err(FormulaError::new(
+            FormulaErrorKind::Value,
+            span,
+            format!("{name} arguments must be finite numbers"),
+        ))
+    }
+}
+
 fn finite_real(value: f64, span: Span) -> Result<DataScalar, FormulaError> {
     if value.is_finite() {
         Ok(DataScalar::Real(value))
@@ -2165,6 +2266,81 @@ mod tests {
         assert_eq!(result[7], DataScalar::Integer(2));
         assert_eq!(result[8], DataScalar::Boolean(true));
         assert_eq!(result[9], DataScalar::Real(22.0));
+    }
+
+    #[test]
+    fn evaluates_ceiling_floor_and_power() {
+        let table = evaluate(
+            r#"
+                C1 = CEILING(4.2)
+                C2 = CEILING(4.2, 0.5)
+                C3 = CEILING(-4.2, -0.5)
+                C4 = FLOOR(4.2)
+                C5 = FLOOR(-4.2, 0.5)
+                C6 = POWER(2, 3)
+                C7 = POWER(9, 0.5)
+                C8 = POWER(-2, 3)
+            "#,
+            &["item", "amount", "result"],
+        )
+        .expect("numeric functions");
+        let result = table
+            .rows
+            .iter()
+            .map(|row| row[2].clone())
+            .collect::<Vec<_>>();
+        assert_eq!(result[0], DataScalar::Real(5.0));
+        assert_eq!(result[1], DataScalar::Real(4.5));
+        assert_eq!(result[2], DataScalar::Real(-4.0));
+        assert_eq!(result[3], DataScalar::Real(4.0));
+        assert_eq!(result[4], DataScalar::Real(-4.5));
+        assert_eq!(result[5], DataScalar::Real(8.0));
+        assert_eq!(result[6], DataScalar::Real(3.0));
+        assert_eq!(result[7], DataScalar::Real(-8.0));
+    }
+
+    #[test]
+    fn validates_ceiling_floor_and_power_arguments() {
+        let error = evaluate("C1 = CEILING(1, 0)", &["item", "amount", "result"])
+            .expect_err("zero significance");
+        assert_eq!(error.code(), "#DIV/0!");
+        assert!(error.message().contains("significance"));
+
+        let error = evaluate("C1 = FLOOR(1, 2, 3)", &["item", "amount", "result"])
+            .expect_err("too many arguments");
+        assert_eq!(error.code(), "#VALUE!");
+
+        let error = evaluate("C1 = POWER(2)", &["item", "amount", "result"])
+            .expect_err("too few arguments");
+        assert_eq!(error.code(), "#VALUE!");
+
+        let error = evaluate("C1 = POWER(-1, 0.5)", &["item", "amount", "result"])
+            .expect_err("non-real result");
+        assert_eq!(error.code(), "#VALUE!");
+        assert!(error.message().contains("integer exponent"));
+
+        let error = evaluate("C1 = POWER(0, -1)", &["item", "amount", "result"])
+            .expect_err("division by zero");
+        assert_eq!(error.code(), "#DIV/0!");
+
+        let error = evaluate("C1 = CEILING(\"large\")", &["item", "amount", "result"])
+            .expect_err("non-number");
+        assert_eq!(error.code(), "#VALUE!");
+
+        let input = DataTable {
+            columns: vec!["value".to_owned()],
+            rows: vec![vec![DataScalar::Real(f64::INFINITY)]],
+        };
+        let program = parse_formula_program("B1 = POWER(A1, 2)").expect("formula program");
+        let error = evaluate_formula_program(&program, &input, &["value".into(), "result".into()])
+            .expect_err("non-finite input");
+        assert_eq!(error.code(), "#VALUE!");
+        assert!(error.message().contains("finite numbers"));
+
+        let error = evaluate("C1 = POWER(1e308, 2)", &["item", "amount", "result"])
+            .expect_err("non-finite output");
+        assert_eq!(error.code(), "#VALUE!");
+        assert!(error.message().contains("non-finite real"));
     }
 
     #[test]

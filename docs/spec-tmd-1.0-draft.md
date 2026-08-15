@@ -269,8 +269,14 @@ extent, `[@header]` selects the target row in that output column, and
 
 The language supports null, boolean, signed integer, finite real, and string
 literals; arithmetic, comparison, and unary operators; and `SUM`, `AVERAGE`,
-`MIN`, `MAX`, `COUNT`, `IF`, `AND`, `OR`, `NOT`, `ROUND`, `ABS`, `CONCAT`,
-`LEN`, and `ISNULL`. Types are strict. Formula dependencies are evaluated
+`MIN`, `MAX`, `COUNT`, `IF`, `AND`, `OR`, `NOT`, `ROUND`, `CEILING`, `FLOOR`,
+`POWER`, `ABS`, `CONCAT`, `LEN`, and `ISNULL`. `CEILING` and `FLOOR` accept
+one number and an optional significance whose default is `1`; they round toward
+positive and negative infinity respectively, using the absolute magnitude of
+the finite, non-zero significance. `POWER` accepts a base and exponent and MUST
+produce a finite real result; a negative base requires an integer exponent and
+zero raised to a negative exponent is a division-by-zero error. Types are
+strict. Formula dependencies are evaluated
 independent of program order; cycles produce diagnostics. Implementations MUST
 parse into an internal representation rather than interpolate Formula text
 into Rhai or SQL. Programs, syntax complexity, evaluation work, generated

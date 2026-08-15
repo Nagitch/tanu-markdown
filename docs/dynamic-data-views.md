@@ -405,11 +405,17 @@ functions are:
 
 - aggregation: `SUM`, `AVERAGE`, `MIN`, `MAX`, `COUNT`;
 - logic: `IF`, `AND`, `OR`, `NOT`, `ISNULL`;
-- numbers: `ROUND`, `ABS`; and
+- numbers: `ROUND`, `CEILING`, `FLOOR`, `POWER`, `ABS`; and
 - text: `CONCAT`, `LEN`.
 
 `IF` evaluates only the selected branch. Numeric aggregates ignore `NULL` but
-reject boolean or string values; `COUNT` counts numeric values. Runtime diagnostics carry
+reject boolean or string values; `COUNT` counts numeric values.
+`CEILING(number[, significance])` rounds toward positive infinity and
+`FLOOR(number[, significance])` rounds toward negative infinity, using `1` as
+the default significance and the absolute magnitude of an explicit finite,
+non-zero significance. `POWER(base, exponent)` computes a finite real result;
+a negative base requires an integer exponent, and zero to a negative exponent
+is a division-by-zero error. Runtime diagnostics carry
 the target cell when available, a typed code such as `#REF!`, `#VALUE!`,
 `#DIV/0!`, `#NAME?`, `#CYCLE!`, or `#LIMIT!`, and the Formula source line and
 column. Syntax failures use the same location-aware diagnostic path.

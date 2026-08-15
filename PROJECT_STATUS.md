@@ -1,6 +1,6 @@
 # Project Status
 
-Last reviewed: 2026-08-11
+Last reviewed: 2026-08-15
 
 Tanu Markdown is an early-stage, pre-1.0 project. The core Rust implementation
 supports document creation, `.tmd` round trips, attachment metadata
@@ -19,7 +19,7 @@ a functional custom editor backed exclusively by that bridge.
 | `tmd-cli` | Installs `tmd`; implements document create/inspect/update/publish/validate, attachment lifecycle including bounded UTF-8 reads and draft overrides, staged SQLite cell edits, shared safe preview/HTML rendering, typed table-source evaluation with edit metadata, dynamic `scalar`/`table` views, and embedded database lifecycle/query commands |
 | `tmd-core-ffi` | Builds a `cdylib` wrapper and retains the exported `tmd-core` FFI symbols |
 | `tmd-vscode` | Implements a CSP-restricted static SvelteKit Web UI with a RevoGrid managed Formula editor, 3-by-3 Any table creation, progressive column/cell constraints, per-cell formulas and type presence, arbitrary row/column insertion and duplication, range extraction, value-preserving normalization with visible target IDs, direct `REF`, protected row pickers and releasable reference groups, double-click column auto-sizing, editable Formula tables in safe preview, read-only Rhai output, a sticky operation status bar, and a shared local document session whose edits participate in undo, preview, save, revert, and backup |
-| `tmd-sample` | Contains a `.tmd` sample demonstrating managed Any/typed tables, per-cell Formula results, literal normalization presence, and a read-only Rhai view |
+| `tmd-sample` | Contains the compact editor reference plus generated project-profitability, inventory-replenishment, RPG battle, RPG growth, and RPG economy documents that exercise cross-table Formula relationships and read-only Rhai reports |
 
 ## Verified behavior
 
