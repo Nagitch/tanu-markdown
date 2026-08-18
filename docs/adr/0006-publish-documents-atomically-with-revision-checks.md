@@ -14,11 +14,17 @@ that is no longer current.
 ## Decision
 
 Stage a complete candidate document, validate it, and publish its exact bytes
-with the `tmd publish` compare-and-replace boundary. The caller supplies the
-expected destination state (a content digest or absence); publication fails if
-the destination changed. Path writes use same-directory temporary files and
-atomic replacement while preserving supported metadata and rejecting unsafe
-symlink or hard-link cases.
+with the checked atomic-publication boundary used by `tmd publish`. The caller
+supplies the expected destination state (a content digest or absence). Before
+replacement, the CLI checks that state while holding an advisory lock on the
+current destination; a mismatch at that check fails as a conflict. Path writes
+then use same-directory temporary files and atomic replacement while preserving
+supported metadata and rejecting unsafe symlink or hard-link cases.
+
+This is not an unconditional filesystem compare-and-swap operation. The lock
+coordinates cooperating publishers, but a non-cooperating process can modify or
+rename the destination after the check and before replacement. Such a change can
+still be overwritten.
 
 Within the editor, `LocalTmdSession` owns retained container bytes and monotonic
 draft/persisted revisions. Serialize all document I/O and mutations through a
@@ -28,10 +34,12 @@ any edit.
 
 ## Consequences
 
-- A save either publishes one validated container or leaves the previous file
-  intact.
-- External changes and racing saves become explicit conflicts instead of silent
-  last-writer-wins data loss.
+- Atomic replacement exposes one complete validated container instead of a
+  partially written container.
+- External changes observed at the revision check, including racing saves from
+  cooperating publishers, become explicit conflicts.
+- Non-cooperating filesystem writers remain a race and can be overwritten after
+  the revision check.
 - Save, backup, revert, attachment, export, and validation workflows share a
   revision model.
 - Full staging and hashing add I/O, memory, and state-management cost.
