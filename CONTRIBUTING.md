@@ -2,6 +2,8 @@
 
 Contributions should start with a focused GitHub Issue and preserve the
 responsibility boundaries documented in [the architecture](docs/architecture.md).
+Changes to an accepted cross-component or format-level decision must also add
+or supersede an [architecture decision record](docs/adr/README.md).
 
 ## Workflow
 
