@@ -1671,6 +1671,12 @@ impl Evaluator<'_, '_> {
 
         let significance = significance.abs();
         let quotient = number / significance;
+        let nearest_integer = quotient.round();
+        // Decimal inputs can put an exact multiple a few ULPs across an integer boundary.
+        let integer_tolerance = 4.0 * (quotient.next_up() - quotient).abs();
+        if quotient.is_finite() && (quotient - nearest_integer).abs() <= integer_tolerance {
+            return finite_real(if number == 0.0 { 0.0 } else { number }, span);
+        }
         let multiple = match direction {
             RoundingDirection::Up => quotient.ceil(),
             RoundingDirection::Down => quotient.floor(),
@@ -2297,6 +2303,39 @@ mod tests {
         assert_eq!(result[5], DataScalar::Real(8.0));
         assert_eq!(result[6], DataScalar::Real(3.0));
         assert_eq!(result[7], DataScalar::Real(-8.0));
+    }
+
+    #[test]
+    fn stabilizes_ceiling_and_floor_at_decimal_multiples() {
+        let table = evaluate(
+            r#"
+                C1 = FLOOR(0.3, 0.1)
+                C2 = CEILING(0.14, 0.01)
+                C3 = CEILING(-0.3, 0.1)
+                C4 = FLOOR(-0.14, 0.01)
+                C5 = CEILING(0.30000000000001, 0.1)
+                C6 = FLOOR(0.29999999999999, 0.1)
+                C7 = CEILING(1e-17, 1)
+                C8 = FLOOR(-1e-17, 1)
+                C9 = CEILING(562949953421312.5, 1)
+            "#,
+            &["item", "amount", "result"],
+        )
+        .expect("stable directed rounding");
+        let result = table
+            .rows
+            .iter()
+            .map(|row| row[2].clone())
+            .collect::<Vec<_>>();
+        assert_eq!(result[0], DataScalar::Real(0.3));
+        assert_eq!(result[1], DataScalar::Real(0.14));
+        assert_eq!(result[2], DataScalar::Real(-0.3));
+        assert_eq!(result[3], DataScalar::Real(-0.14));
+        assert_eq!(result[4], DataScalar::Real(0.4));
+        assert_eq!(result[5], DataScalar::Real(0.2));
+        assert_eq!(result[6], DataScalar::Real(1.0));
+        assert_eq!(result[7], DataScalar::Real(-1.0));
+        assert_eq!(result[8], DataScalar::Real(562949953421313.0));
     }
 
     #[test]
