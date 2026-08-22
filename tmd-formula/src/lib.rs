@@ -1673,7 +1673,7 @@ impl Evaluator<'_, '_> {
         let quotient = number / significance;
         let nearest_integer = quotient.round();
         // Decimal inputs can put an exact multiple a few ULPs across an integer boundary.
-        let integer_tolerance = 4.0 * (quotient.next_up() - quotient).abs();
+        let integer_tolerance = 2.0 * (quotient.next_up() - quotient).abs();
         if quotient.is_finite() && (quotient - nearest_integer).abs() <= integer_tolerance {
             return finite_real(if number == 0.0 { 0.0 } else { number }, span);
         }
