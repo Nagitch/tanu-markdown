@@ -1,5 +1,6 @@
 //! Bounded spreadsheet-style Formula parsing and evaluation.
 
+use openformula_kernel as calc;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -75,6 +76,7 @@ enum FormulaErrorKind {
     Value,
     DivZero,
     Name,
+    Num,
     Cycle,
     Limit,
 }
@@ -86,6 +88,7 @@ impl FormulaErrorKind {
             Self::Value => "#VALUE!",
             Self::DivZero => "#DIV/0!",
             Self::Name => "#NAME?",
+            Self::Num => "#NUM!",
             Self::Cycle => "#CYCLE!",
             Self::Limit => "#LIMIT!",
         }
@@ -1152,6 +1155,7 @@ fn evaluate_formula_program_with_limits_and_optional_reference_resolver(
         states: BTreeMap::new(),
         steps: 0,
         reference_resolver,
+        kernel: calc::FunctionRegistry::standard_with_policy(calc::CoercionPolicy::Strict),
     };
     for target in program.assignments.keys().copied().collect::<Vec<_>>() {
         let value = evaluator.evaluate_cell(target)?;
@@ -1184,6 +1188,7 @@ struct Evaluator<'program, 'resolver> {
     states: BTreeMap<CellRef, EvaluationState>,
     steps: usize,
     reference_resolver: Option<&'resolver mut dyn FormulaReferenceResolver>,
+    kernel: calc::FunctionRegistry,
 }
 
 impl Evaluator<'_, '_> {
@@ -1332,17 +1337,32 @@ impl Evaluator<'_, '_> {
     ) -> Result<FormulaValue, FormulaError> {
         let upper = name.to_ascii_uppercase();
         if upper == "IF" {
-            require_argument_count(&upper, arguments, 3, span)?;
+            if !(1..=3).contains(&arguments.len()) {
+                return Err(FormulaError::new(
+                    FormulaErrorKind::Value,
+                    span,
+                    "IF expects one to three arguments",
+                ));
+            }
             let condition = self.evaluate_expr(&arguments[0], target)?;
-            let condition = self.require_boolean(condition, arguments[0].span)?;
-            return self.evaluate_expr(
-                if condition {
-                    &arguments[1]
-                } else {
-                    &arguments[2]
-                },
-                target,
-            );
+            let condition = self.require_scalar(condition, arguments[0].span)?;
+            let condition_value = data_scalar_to_kernel(condition, arguments[0].span)?;
+            let condition = calc::coerce_logical(&condition_value, calc::CoercionPolicy::Strict)
+                .map_err(|error| kernel_error(error, arguments[0].span))?;
+            let selected = if condition { 1 } else { 2 };
+            let mut prepared = vec![calc::Argument::Missing; arguments.len()];
+            prepared[0] = calc::Argument::scalar(condition_value);
+            if selected < arguments.len() {
+                let value = self.evaluate_expr(&arguments[selected], target)?;
+                let value = self.require_scalar(value, arguments[selected].span)?;
+                prepared[selected] =
+                    calc::Argument::scalar(data_scalar_to_kernel(value, arguments[selected].span)?);
+            }
+            let value = self
+                .kernel
+                .evaluate("IF", &prepared, &mut calc::PureContext)
+                .map_err(|error| kernel_error(error, span))?;
+            return Ok(FormulaValue::Scalar(kernel_value_to_data(value, span)?));
         }
         if upper == "HEADER" {
             require_argument_count(&upper, arguments, 1, span)?;
@@ -1459,10 +1479,9 @@ impl Evaluator<'_, '_> {
             values.push((self.evaluate_expr(argument, target)?, argument.span));
         }
         let scalar = match upper.as_str() {
-            "SUM" => self.aggregate_numbers(&values, span, Aggregate::Sum)?,
-            "AVERAGE" => self.aggregate_numbers(&values, span, Aggregate::Average)?,
-            "MIN" => self.aggregate_numbers(&values, span, Aggregate::Min)?,
-            "MAX" => self.aggregate_numbers(&values, span, Aggregate::Max)?,
+            "SUM" | "AVERAGE" | "MIN" | "MAX" | "ROUND" | "ABS" | "FLOOR" | "CEILING" | "POWER" => {
+                self.evaluate_kernel_function(&upper, &values, span)?
+            }
             "COUNT" => self.count_numbers(&values, span)?,
             "AND" => self.logical_values(&values, span, true)?,
             "OR" => self.logical_values(&values, span, false)?,
@@ -1470,8 +1489,6 @@ impl Evaluator<'_, '_> {
                 require_value_count(&upper, &values, 1, span)?;
                 DataScalar::Boolean(!self.require_boolean(values[0].0.clone(), values[0].1)?)
             }
-            "ROUND" => self.round(&values, span)?,
-            "ABS" => self.abs(&values, span)?,
             "CONCAT" => self.concat(&values, span)?,
             "LEN" => self.len(&values, span)?,
             "ISNULL" => {
@@ -1488,6 +1505,45 @@ impl Evaluator<'_, '_> {
             }
         };
         Ok(FormulaValue::Scalar(scalar))
+    }
+
+    fn evaluate_kernel_function(
+        &mut self,
+        name: &str,
+        values: &[(FormulaValue, Span)],
+        span: Span,
+    ) -> Result<DataScalar, FormulaError> {
+        let mut arguments = Vec::with_capacity(values.len());
+        for (value, value_span) in values {
+            let argument = match value {
+                FormulaValue::Scalar(value) => {
+                    calc::Argument::scalar(data_scalar_to_kernel(value.clone(), *value_span)?)
+                }
+                FormulaValue::Range(cells) => {
+                    let mut range = Vec::with_capacity(cells.len());
+                    for cell in cells {
+                        range.push(data_scalar_to_kernel(
+                            self.evaluate_cell(*cell)?,
+                            *value_span,
+                        )?);
+                    }
+                    calc::Argument::range(range)
+                }
+                FormulaValue::Identifier(identifier) => {
+                    return Err(FormulaError::new(
+                        FormulaErrorKind::Name,
+                        *value_span,
+                        format!("unknown name `{identifier}`"),
+                    ));
+                }
+            };
+            arguments.push(argument);
+        }
+        let value = self
+            .kernel
+            .evaluate(name, &arguments, &mut calc::PureContext)
+            .map_err(|error| kernel_error(error, span))?;
+        kernel_value_to_data(value, span)
     }
 
     fn flattened_scalars(
@@ -1513,38 +1569,6 @@ impl Evaluator<'_, '_> {
             }
         }
         Ok(flattened)
-    }
-
-    fn aggregate_numbers(
-        &mut self,
-        values: &[(FormulaValue, Span)],
-        span: Span,
-        aggregate: Aggregate,
-    ) -> Result<DataScalar, FormulaError> {
-        if values.is_empty() {
-            return Err(FormulaError::new(
-                FormulaErrorKind::Value,
-                span,
-                "aggregate function requires at least one argument",
-            ));
-        }
-        let flattened = self.flattened_scalars(values)?;
-        let mut numbers = Vec::new();
-        for (value, value_span) in flattened {
-            match value {
-                DataScalar::Null => {}
-                DataScalar::Integer(value) => numbers.push(Number::Integer(value)),
-                DataScalar::Real(value) => numbers.push(Number::Real(value)),
-                DataScalar::Boolean(_) | DataScalar::String(_) => {
-                    return Err(FormulaError::new(
-                        FormulaErrorKind::Value,
-                        value_span,
-                        "aggregate arguments must contain only numbers or NULL",
-                    ))
-                }
-            }
-        }
-        aggregate_numbers(numbers, aggregate, span)
     }
 
     fn count_numbers(
@@ -1596,59 +1620,6 @@ impl Evaluator<'_, '_> {
             }
         }
         Ok(DataScalar::Boolean(result))
-    }
-
-    fn round(
-        &mut self,
-        values: &[(FormulaValue, Span)],
-        span: Span,
-    ) -> Result<DataScalar, FormulaError> {
-        if !(1..=2).contains(&values.len()) {
-            return Err(FormulaError::new(
-                FormulaErrorKind::Value,
-                span,
-                "ROUND expects one or two arguments",
-            ));
-        }
-        let number = self.require_scalar(values[0].0.clone(), values[0].1)?;
-        let digits = if values.len() == 2 {
-            match self.require_scalar(values[1].0.clone(), values[1].1)? {
-                DataScalar::Integer(value) if (-15..=15).contains(&value) => value as i32,
-                _ => {
-                    return Err(FormulaError::new(
-                        FormulaErrorKind::Value,
-                        values[1].1,
-                        "ROUND digits must be an integer from -15 to 15",
-                    ))
-                }
-            }
-        } else {
-            0
-        };
-        let value = numeric_as_f64(number, values[0].1)?;
-        let factor = 10_f64.powi(digits);
-        finite_real((value * factor).round() / factor, span)
-    }
-
-    fn abs(
-        &mut self,
-        values: &[(FormulaValue, Span)],
-        span: Span,
-    ) -> Result<DataScalar, FormulaError> {
-        require_value_count("ABS", values, 1, span)?;
-        match self.require_scalar(values[0].0.clone(), values[0].1)? {
-            DataScalar::Integer(value) => {
-                value.checked_abs().map(DataScalar::Integer).ok_or_else(|| {
-                    FormulaError::new(FormulaErrorKind::Value, span, "ABS integer overflow")
-                })
-            }
-            DataScalar::Real(value) => finite_real(value.abs(), span),
-            _ => Err(FormulaError::new(
-                FormulaErrorKind::Value,
-                values[0].1,
-                "ABS expects a number",
-            )),
-        }
     }
 
     fn concat(
@@ -1794,94 +1765,43 @@ fn require_value_count(
     }
 }
 
-#[derive(Clone, Copy)]
-enum Number {
-    Integer(i64),
-    Real(f64),
+fn data_scalar_to_kernel(value: DataScalar, span: Span) -> Result<calc::Value, FormulaError> {
+    match value {
+        DataScalar::Null => Ok(calc::Value::Empty),
+        DataScalar::Boolean(value) => Ok(calc::Value::Boolean(value)),
+        DataScalar::Integer(value) => Ok(calc::Value::from(value)),
+        DataScalar::Real(value) => calc::Number::try_from_f64(value)
+            .map(calc::Value::Number)
+            .map_err(|error| kernel_error(error, span)),
+        DataScalar::String(value) => Ok(calc::Value::Text(value)),
+    }
 }
 
-#[derive(Clone, Copy)]
-enum Aggregate {
-    Sum,
-    Average,
-    Min,
-    Max,
+fn kernel_value_to_data(value: calc::Value, span: Span) -> Result<DataScalar, FormulaError> {
+    match value {
+        calc::Value::Number(value) => Ok(value
+            .as_i64()
+            .map_or_else(|| DataScalar::Real(value.as_f64()), DataScalar::Integer)),
+        calc::Value::Text(value) => Ok(DataScalar::String(value)),
+        calc::Value::Boolean(value) => Ok(DataScalar::Boolean(value)),
+        calc::Value::Empty => Ok(DataScalar::Null),
+        calc::Value::Error(error) => Err(kernel_error(error, span)),
+    }
 }
 
-fn aggregate_numbers(
-    numbers: Vec<Number>,
-    aggregate: Aggregate,
-    span: Span,
-) -> Result<DataScalar, FormulaError> {
-    if numbers.is_empty() {
-        return match aggregate {
-            Aggregate::Average => Err(FormulaError::new(
-                FormulaErrorKind::DivZero,
-                span,
-                "AVERAGE has no numeric values",
-            )),
-            Aggregate::Sum | Aggregate::Min | Aggregate::Max => Ok(DataScalar::Integer(0)),
-        };
-    }
-    let has_real = numbers
-        .iter()
-        .any(|number| matches!(number, Number::Real(_)));
-    match aggregate {
-        Aggregate::Sum if !has_real => {
-            let mut total = 0i64;
-            for number in numbers {
-                let Number::Integer(value) = number else {
-                    unreachable!()
-                };
-                total = total.checked_add(value).ok_or_else(|| {
-                    FormulaError::new(FormulaErrorKind::Value, span, "SUM integer overflow")
-                })?;
-            }
-            Ok(DataScalar::Integer(total))
-        }
-        Aggregate::Min if !has_real => Ok(DataScalar::Integer(
-            numbers
-                .into_iter()
-                .map(|number| match number {
-                    Number::Integer(value) => value,
-                    Number::Real(_) => unreachable!(),
-                })
-                .min()
-                .expect("non-empty numbers"),
-        )),
-        Aggregate::Max if !has_real => Ok(DataScalar::Integer(
-            numbers
-                .into_iter()
-                .map(|number| match number {
-                    Number::Integer(value) => value,
-                    Number::Real(_) => unreachable!(),
-                })
-                .max()
-                .expect("non-empty numbers"),
-        )),
-        aggregate => {
-            let values = numbers
-                .into_iter()
-                .map(|number| match number {
-                    Number::Integer(value) => value as f64,
-                    Number::Real(value) => value,
-                })
-                .collect::<Vec<_>>();
-            let value = match aggregate {
-                Aggregate::Sum => values.iter().sum(),
-                Aggregate::Average => values.iter().sum::<f64>() / values.len() as f64,
-                Aggregate::Min => values
-                    .into_iter()
-                    .reduce(f64::min)
-                    .expect("non-empty values"),
-                Aggregate::Max => values
-                    .into_iter()
-                    .reduce(f64::max)
-                    .expect("non-empty values"),
-            };
-            finite_real(value, span)
-        }
-    }
+fn kernel_error(error: calc::CalcError, span: Span) -> FormulaError {
+    let kind = match error.kind() {
+        calc::CalcErrorKind::DivZero => FormulaErrorKind::DivZero,
+        calc::CalcErrorKind::Ref => FormulaErrorKind::Ref,
+        calc::CalcErrorKind::Name => FormulaErrorKind::Name,
+        calc::CalcErrorKind::Num => FormulaErrorKind::Num,
+        calc::CalcErrorKind::Limit => FormulaErrorKind::Limit,
+        calc::CalcErrorKind::Null
+        | calc::CalcErrorKind::Value
+        | calc::CalcErrorKind::NotAvailable
+        | calc::CalcErrorKind::Unsupported => FormulaErrorKind::Value,
+    };
+    FormulaError::new(kind, span, error.message())
 }
 
 fn evaluate_unary(
@@ -2146,6 +2066,9 @@ mod tests {
                 C8 = LEN(CONCAT("a", "β"))
                 C9 = ISNULL(B3)
                 C10 = (B2 / B1) + (B2 - B1) * 2
+                C11 = FLOOR(0.3, 0.1)
+                C12 = CEILING(0.14, 0.01)
+                C13 = POWER(2, 10)
             "#,
             &["item", "amount", "result"],
         )
@@ -2165,6 +2088,21 @@ mod tests {
         assert_eq!(result[7], DataScalar::Integer(2));
         assert_eq!(result[8], DataScalar::Boolean(true));
         assert_eq!(result[9], DataScalar::Real(22.0));
+        assert_eq!(result[10], DataScalar::Real(0.3));
+        assert_eq!(result[11], DataScalar::Real(0.14));
+        assert_eq!(result[12], DataScalar::Real(1024.0));
+    }
+
+    #[test]
+    fn if_short_circuits_and_supports_openformula_optional_forms() {
+        let table = evaluate(
+            "C1 = IF(TRUE, 7, 1 / 0)\nC2 = IF(FALSE, 1 / 0)\nC3 = IF(TRUE)\n",
+            &["item", "amount", "result"],
+        )
+        .expect("short-circuited IF table");
+        assert_eq!(table.rows[0][2], DataScalar::Integer(7));
+        assert_eq!(table.rows[1][2], DataScalar::Boolean(false));
+        assert_eq!(table.rows[2][2], DataScalar::Boolean(true));
     }
 
     #[test]

@@ -38,8 +38,10 @@ const functions = new Set([
   "ABS",
   "AND",
   "AVERAGE",
+  "CEILING",
   "CONCAT",
   "COUNT",
+  "FLOOR",
   "HEADER",
   "IF",
   "ISNULL",
@@ -48,6 +50,7 @@ const functions = new Set([
   "MIN",
   "NOT",
   "OR",
+  "POWER",
   "ROUND",
   "SUM",
 ]);

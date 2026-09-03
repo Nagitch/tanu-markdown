@@ -27,6 +27,7 @@ hex = "0.4.3"
 html-escape = "0.2.14"
 mime = "0.3.17"
 mime_guess = "2.0.5"
+openformula-kernel = { git = "https://github.com/Nagitch/openformula-kernel.git", rev = "5448dcf6d130e4355da15aeed6c88e56a9a15673", default-features = false }
 percent-encoding = "2.3.2"
 pulldown-cmark = "0.13.4"
 rhai = { version = "1.25.1", features = ["no_closure", "no_custom_syntax", "no_module", "no_time", "only_i64"] }

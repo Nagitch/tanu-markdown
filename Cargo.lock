@@ -590,6 +590,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 
 [[package]]
+name = "libm"
+version = "0.2.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
+
+[[package]]
 name = "libsqlite3-sys"
 version = "0.38.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -673,6 +679,14 @@ name = "once_cell_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
+
+[[package]]
+name = "openformula-kernel"
+version = "0.1.0"
+source = "git+https://github.com/Nagitch/openformula-kernel.git?rev=5448dcf6d130e4355da15aeed6c88e56a9a15673#5448dcf6d130e4355da15aeed6c88e56a9a15673"
+dependencies = [
+ "libm",
+]
 
 [[package]]
 name = "pbkdf2"
@@ -1120,6 +1134,7 @@ dependencies = [
 name = "tmd-formula"
 version = "0.0.1"
 dependencies = [
+ "openformula-kernel",
  "serde_json",
  "tmd-data",
 ]
