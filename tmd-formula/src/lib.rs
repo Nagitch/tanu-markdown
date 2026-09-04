@@ -1350,14 +1350,11 @@ impl Evaluator<'_, '_> {
             let condition = calc::coerce_logical(&condition_value, calc::CoercionPolicy::Strict)
                 .map_err(|error| kernel_error(error, arguments[0].span))?;
             let selected = if condition { 1 } else { 2 };
+            if selected < arguments.len() {
+                return self.evaluate_expr(&arguments[selected], target);
+            }
             let mut prepared = vec![calc::Argument::Missing; arguments.len()];
             prepared[0] = calc::Argument::scalar(condition_value);
-            if selected < arguments.len() {
-                let value = self.evaluate_expr(&arguments[selected], target)?;
-                let value = self.require_scalar(value, arguments[selected].span)?;
-                prepared[selected] =
-                    calc::Argument::scalar(data_scalar_to_kernel(value, arguments[selected].span)?);
-            }
             let value = self
                 .kernel
                 .evaluate("IF", &prepared, &mut calc::PureContext)
@@ -2103,6 +2100,17 @@ mod tests {
         assert_eq!(table.rows[0][2], DataScalar::Integer(7));
         assert_eq!(table.rows[1][2], DataScalar::Boolean(false));
         assert_eq!(table.rows[2][2], DataScalar::Boolean(true));
+    }
+
+    #[test]
+    fn if_preserves_selected_ranges_for_enclosing_aggregates() {
+        let table = evaluate(
+            "C1 = SUM(IF(TRUE, B1:B2, B2:B3))\nC2 = SUM(IF(FALSE, B1:B2, B2:B3))\n",
+            &["item", "amount", "result"],
+        )
+        .expect("range-valued IF table");
+        assert_eq!(table.rows[0][2], DataScalar::Integer(30));
+        assert_eq!(table.rows[1][2], DataScalar::Integer(20));
     }
 
     #[test]
