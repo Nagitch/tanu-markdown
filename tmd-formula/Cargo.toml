@@ -18,5 +18,6 @@ include = ["src/**", "Cargo.toml", "README.md"]
 path = "src/lib.rs"
 
 [dependencies]
+openformula-kernel.workspace = true
 serde_json.workspace = true
 tmd-data.workspace = true

@@ -405,7 +405,7 @@ functions are:
 
 - aggregation: `SUM`, `AVERAGE`, `MIN`, `MAX`, `COUNT`;
 - logic: `IF`, `AND`, `OR`, `NOT`, `ISNULL`;
-- numbers: `ROUND`, `ABS`; and
+- numbers: `ROUND`, `FLOOR`, `CEILING`, `POWER`, `ABS`; and
 - text: `CONCAT`, `LEN`.
 
 `IF` evaluates only the selected branch. Numeric aggregates ignore `NULL` but

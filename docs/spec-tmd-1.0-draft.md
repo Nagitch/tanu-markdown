@@ -269,7 +269,8 @@ extent, `[@header]` selects the target row in that output column, and
 
 The language supports null, boolean, signed integer, finite real, and string
 literals; arithmetic, comparison, and unary operators; and `SUM`, `AVERAGE`,
-`MIN`, `MAX`, `COUNT`, `IF`, `AND`, `OR`, `NOT`, `ROUND`, `ABS`, `CONCAT`,
+`MIN`, `MAX`, `COUNT`, `IF`, `AND`, `OR`, `NOT`, `ROUND`, `FLOOR`, `CEILING`,
+`POWER`, `ABS`, `CONCAT`,
 `LEN`, and `ISNULL`. Types are strict. Formula dependencies are evaluated
 independent of program order; cycles produce diagnostics. Implementations MUST
 parse into an internal representation rather than interpolate Formula text
