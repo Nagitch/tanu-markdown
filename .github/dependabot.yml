@@ -4,7 +4,7 @@ updates:
     directory: /
     schedule:
       interval: monthly
-    target-branch: main
+    target-branch: develop
     open-pull-requests-limit: 5
     groups:
       cargo-dependencies:
@@ -15,7 +15,7 @@ updates:
     directory: /tmd-vscode
     schedule:
       interval: monthly
-    target-branch: main
+    target-branch: develop
     open-pull-requests-limit: 5
     groups:
       vscode-extension-dependencies:
@@ -26,7 +26,7 @@ updates:
     directory: /
     schedule:
       interval: monthly
-    target-branch: main
+    target-branch: develop
     groups:
       github-actions:
         patterns:
@@ -36,10 +36,10 @@ updates:
     directory: /
     schedule:
       interval: monthly
-    target-branch: main
+    target-branch: develop
 
   - package-ecosystem: devcontainers
-    directory: /.devcontainer
+    directory: /
     schedule:
       interval: monthly
-    target-branch: main
+    target-branch: develop
