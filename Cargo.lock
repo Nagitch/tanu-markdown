@@ -683,7 +683,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 [[package]]
 name = "openformula-kernel"
 version = "0.1.0"
-source = "git+https://github.com/Nagitch/openformula-kernel.git?rev=5448dcf6d130e4355da15aeed6c88e56a9a15673#5448dcf6d130e4355da15aeed6c88e56a9a15673"
+source = "git+https://github.com/Nagitch/openformula-kernel.git?rev=a98f5dea1b2ad9c172248868c0f016563cfa9901#a98f5dea1b2ad9c172248868c0f016563cfa9901"
 dependencies = [
  "libm",
 ]
