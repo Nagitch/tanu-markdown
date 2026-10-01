@@ -13,6 +13,13 @@ updates:
 
   - package-ecosystem: npm
     directory: /tmd-vscode
+    # svelte-check 4 supports TypeScript 5 and 6. Revisit when its peer range expands.
+    ignore:
+      # Keep the API types compatible with engines.vscode.
+      - dependency-name: "@types/vscode"
+        versions: [">=1.91.0"]
+      - dependency-name: typescript
+        versions: [">=7"]
     schedule:
       interval: monthly
     target-branch: develop
