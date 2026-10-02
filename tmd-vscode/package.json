@@ -120,7 +120,7 @@
     "@codemirror/lint": "^6.9.7",
     "@codemirror/state": "^6.7.6",
     "@codemirror/view": "^6.43.13",
-    "@lezer/highlight": "^1.2.4",
+    "@lezer/highlight": "^1.2.5",
     "@revolist/revogrid": "^4.28.2",
     "@sveltejs/adapter-static": "^3.0.10",
     "@sveltejs/kit": "^2.70.3",
