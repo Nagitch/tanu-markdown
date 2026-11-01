@@ -116,20 +116,20 @@
   },
   "devDependencies": {
     "@codemirror/lang-markdown": "^6.5.2",
-    "@codemirror/language": "^6.12.4",
+    "@codemirror/language": "^6.13.1",
     "@codemirror/lint": "^6.9.7",
     "@codemirror/state": "^6.7.6",
-    "@codemirror/view": "^6.43.13",
+    "@codemirror/view": "^6.43.15",
     "@lezer/highlight": "^1.2.5",
-    "@revolist/revogrid": "^4.28.2",
-    "@sveltejs/adapter-static": "^3.0.10",
-    "@sveltejs/kit": "^2.70.3",
-    "@types/node": "^26.6.3",
+    "@revolist/revogrid": "^4.29.1",
+    "@sveltejs/adapter-static": "^4.0.0",
+    "@sveltejs/kit": "^3.1.0",
+    "@types/node": "^26.6.6",
     "@types/vscode": "1.90.0",
-    "@vscode/vsce": "^4.0.0",
-    "svelte": "^5.57.1",
-    "svelte-check": "^4.7.6",
+    "@vscode/vsce": "^4.1.0",
+    "svelte": "^5.57.3",
+    "svelte-check": "^4.7.7",
     "typescript": "^6.0.3",
-    "vite": "^8.3.1"
+    "vite": "^8.3.5"
   }
 }
