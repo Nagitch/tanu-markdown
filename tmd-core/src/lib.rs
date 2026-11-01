@@ -954,16 +954,15 @@ mod format {
         let mut names = HashSet::new();
         for index in 0..zip.len() {
             let file = zip.by_index(index)?;
+            let name = file.name()?.into_owned();
             if file.enclosed_name().is_none() {
                 return Err(TmdError::InvalidFormat(format!(
-                    "unsafe ZIP entry path `{}`",
-                    file.name()
+                    "unsafe ZIP entry path `{name}`"
                 )));
             }
-            if !names.insert(file.name().to_owned()) {
+            if !names.insert(name.clone()) {
                 return Err(TmdError::InvalidFormat(format!(
-                    "duplicate ZIP entry `{}`",
-                    file.name()
+                    "duplicate ZIP entry `{name}`"
                 )));
             }
         }
