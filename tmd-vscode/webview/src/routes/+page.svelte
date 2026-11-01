@@ -3,7 +3,7 @@
   import "../app.css";
 
   onMount(() => {
-    void import("$lib/editor-app");
+    void import("#lib/editor-app.ts");
   });
 </script>
 

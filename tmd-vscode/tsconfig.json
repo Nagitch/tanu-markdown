@@ -1,5 +1,6 @@
 {
-  "extends": "./.svelte-kit/tsconfig.json",
+  "extends": "$app/tsconfig",
+  "include": ["webview/src", "vite.config.mts"],
   "compilerOptions": {
     "allowJs": true,
     "checkJs": true,
