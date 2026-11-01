@@ -2377,7 +2377,6 @@ fn evaluate_formula_query(doc: &TmdDoc, name: &str, query: &str) -> TmdResult<Da
         }
         let columns = statement
             .column_names()
-            .into_iter()
             .map(ToOwned::to_owned)
             .collect::<Vec<_>>();
         if columns.len() > MAX_TABLE_COLUMNS {

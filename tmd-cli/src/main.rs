@@ -1223,11 +1223,7 @@ fn stream_db_query(
 ) -> Result<()> {
     let mut statement = conn.prepare(sql)?;
     ensure!(statement.readonly(), "query statement must be read-only");
-    let columns: Vec<String> = statement
-        .column_names()
-        .iter()
-        .map(ToString::to_string)
-        .collect();
+    let columns: Vec<String> = statement.column_names().map(ToString::to_string).collect();
 
     if json_output {
         write!(
