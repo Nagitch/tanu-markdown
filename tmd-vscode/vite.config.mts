@@ -15,7 +15,6 @@ export default defineConfig({
       }),
       files: {
         appTemplate: "webview/src/app.html",
-        lib: "webview/src/lib",
         routes: "webview/src/routes",
       },
       output: {

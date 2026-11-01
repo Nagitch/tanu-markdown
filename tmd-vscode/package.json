@@ -4,6 +4,9 @@
   "description": "Secure custom editor for Tanu Markdown .tmd documents.",
   "version": "0.0.1",
   "private": true,
+  "imports": {
+    "#lib/*": "./webview/src/lib/*"
+  },
   "publisher": "tanu-markdown",
   "license": "MIT",
   "repository": {
