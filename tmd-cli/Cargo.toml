@@ -7,12 +7,12 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-publish.workspace = true
+publish = ["crates-io"]
 description = "Command-line interface for creating, validating, and converting Tanu Markdown documents"
 readme = "README.md"
 keywords = ["markdown", "cli", "document", "sqlite"]
 categories = ["command-line-utilities"]
-include = ["src/**", "Cargo.toml", "README.md"]
+include = ["src/**", "Cargo.toml", "README.md", "LICENCE"]
 
 [[bin]]
 name = "tmd"
@@ -33,4 +33,4 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 tempfile.workspace = true
-tmd-core = { path = "../tmd-core" }
+tmd-core = { version = "0.1.0", path = "../tmd-core" }

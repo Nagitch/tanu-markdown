@@ -108,9 +108,9 @@ Component-specific usage is documented in each component's README.
 ## Compatibility and releases
 
 Tanu Markdown follows Semantic Versioning for packages, but the project remains
-at version `0.0.x`. No crate, extension, release, or file-format compatibility
+at version `0.1.x`. No crate, extension, release, or file-format compatibility
 guarantee should be assumed until an explicit stabilization milestone is
-completed. Publishing is disabled in the Cargo workspace.
+completed. The `0.1.0` Rust packages are development previews.
 
 ## License
 

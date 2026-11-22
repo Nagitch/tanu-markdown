@@ -7,12 +7,12 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-publish.workspace = true
+publish = ["crates-io"]
 description = "Core document model and I/O implementation for Tanu Markdown containers"
 readme = "README.md"
 keywords = ["markdown", "document", "archive", "sqlite"]
 categories = ["encoding", "parser-implementations"]
-include = ["src/**", "Cargo.toml", "README.md"]
+include = ["src/**", "Cargo.toml", "README.md", "LICENCE"]
 
 [lib]
 path = "src/lib.rs"
