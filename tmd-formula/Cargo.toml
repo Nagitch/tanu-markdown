@@ -7,12 +7,12 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-publish.workspace = true
+publish = ["crates-io"]
 description = "Bounded spreadsheet-style Formula parser and evaluator for Tanu Markdown"
 readme = "README.md"
 keywords = ["formula", "spreadsheet", "parser"]
 categories = ["parser-implementations"]
-include = ["src/**", "Cargo.toml", "README.md"]
+include = ["src/**", "Cargo.toml", "README.md", "LICENCE"]
 
 [lib]
 path = "src/lib.rs"

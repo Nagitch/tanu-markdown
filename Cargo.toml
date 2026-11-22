@@ -9,7 +9,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.0.1"
+version = "0.1.0"
 edition = "2021"
 rust-version = "1.96"
 authors = ["Tanu Markdown contributors"]
@@ -27,7 +27,7 @@ hex = "0.4.3"
 html-escape = "0.3.0"
 mime = "0.3.17"
 mime_guess = "2.0.5"
-openformula-kernel = { git = "https://github.com/Nagitch/openformula-kernel.git", rev = "157481473506f1242f5370c584253ddaa34be788", default-features = false }
+openformula-kernel = { version = "0.1.0", git = "https://github.com/Nagitch/openformula-kernel.git", rev = "157481473506f1242f5370c584253ddaa34be788", default-features = false }
 percent-encoding = "2.3.2"
 pulldown-cmark = "0.13.4"
 rhai = { version = "1.25.1", features = ["no_closure", "no_custom_syntax", "no_module", "no_time", "only_i64"] }
@@ -38,8 +38,8 @@ serde_json = "1.0.151"
 sha2 = "0.11.0"
 tempfile = "3.27.0"
 thiserror = "2.0.19"
-tmd-data = { path = "tmd-data" }
-tmd-formula = { path = "tmd-formula" }
+tmd-data = { version = "0.1.0", path = "tmd-data" }
+tmd-formula = { version = "0.1.0", path = "tmd-formula" }
 uuid = { version = "1.24.0", features = ["serde", "v4"] }
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem"] }
 xattr = "1.6.1"

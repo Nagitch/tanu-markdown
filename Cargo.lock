@@ -1119,7 +1119,7 @@ dependencies = [
 
 [[package]]
 name = "tmd-cli"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -1140,7 +1140,7 @@ dependencies = [
 
 [[package]]
 name = "tmd-core"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "chrono",
  "hex",
@@ -1163,21 +1163,21 @@ dependencies = [
 
 [[package]]
 name = "tmd-core-ffi"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "tmd-core",
 ]
 
 [[package]]
 name = "tmd-data"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "tmd-formula"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "openformula-kernel",
  "serde_json",
